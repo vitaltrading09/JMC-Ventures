@@ -33,10 +33,12 @@ const worker = new Worker('ingestion-queue', async (job) => {
         // Simulate data fetch latency
         // await new Promise(resolve => setTimeout(resolve, 100));
 
-        // Randomize mock data
-        const voltage = 230 + (Math.random() * 10 - 5);
-        const current = 50 + (Math.random() * 20 - 10);
-        const power = (voltage * current * 0.95) / 1000; // kW
+        // Randomize mock data (Industrial Enterprise Load: 200kW - 1000kW)
+        const voltage = 400 + (Math.random() * 20 - 10); // ~400V (3-phase line-to-line base)
+        const power = 200 + Math.random() * 800; // 200 - 1000 kW
+        // Power (kW) = (Voltage * Current * sqrt(3) * PF) / 1000
+        // Current = (Power * 1000) / (Voltage * 1.732 * 0.95)
+        const current = (power * 1000) / (voltage * 1.732 * 0.95);
 
         const query = `
             INSERT INTO meter_readings (
