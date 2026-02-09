@@ -1,0 +1,24 @@
+{
+  "name": "powerguard-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix apps/web\" \"npm run dev --prefix services/auth-service\" \"npm run dev --prefix services/ingestion-service\" \"npm run dev --prefix services/api-gateway\"",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.2",
+    "concurrently": "^8.2.0",
+    "eslint": "^8.56.0",
+    "prettier": "^3.2.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

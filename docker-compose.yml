@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # TimescaleDB (PostgreSQL for Time-Series & Relational Data)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: powerguard-db
+    restart: always
+    environment:
+      POSTGRES_USER: powerguard_user
+      POSTGRES_PASSWORD: powerguard_password
+      POSTGRES_DB: powerguard_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  # Redis (Caching & Message Broker for specialized queues if needed)
+  redis:
+    image: redis:alpine
+    container_name: powerguard-redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+volumes:
+  db_data:
