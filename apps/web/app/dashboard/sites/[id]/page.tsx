@@ -44,6 +44,7 @@ interface Reading {
 export default function SiteDetailsPage({ params }: { params: { id: string } }) {
     const [meter, setMeter] = useState<Meter | null>(null);
     const [readings, setReadings] = useState<Reading[]>([]);
+    const [activeTab, setActiveTab] = useState<'overview' | 'savings'>('overview');
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -109,8 +110,7 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
     const dailyUsage = readings.reduce((acc, curr) => acc + (curr.power_kw * (15 / 60)), 0); // Rough approximation for demo
     const powerFactor = latestReading?.power_factor ?? 0;
 
-    // State for Tabs
-    const [activeTab, setActiveTab] = useState<'overview' | 'savings'>('overview');
+    // State for Tabs (Moved to top)
 
     // Derived Savings Data (Live Calculation)
     const TARIFF_R_PER_KWH = 2.50; // User Tariff (Mocked)
