@@ -63,9 +63,13 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
                 // Format for Chart (take last 24h or 50 points)
                 // The API returns most recent first, so we reverse for chart
                 const formattedReadings = readingsData.slice(0, 50).reverse().map((r: any) => ({
-                    time: new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                    kwh: r.power_kw, // Using Power (kW) for the profile chart
-                    ...r
+                    time: new Date(r.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    power_kw: r.power_active_total, // Map DB 'power_active_total' to frontend 'power_kw'
+                    voltage_v: r.voltage_a,         // Map DB 'voltage_a' to frontend 'voltage_v'
+                    current_a: r.current_a,         // Pass through
+                    energy_kwh: r.energy_total,     // Assuming energy_total column exists? Or we just ignore for now if not in DB
+                    frequency_hz: 50,               // Mock frequency since we don't ingest it yet
+                    power_factor: 0.95              // Mock PF
                 }));
                 setReadings(formattedReadings);
 
