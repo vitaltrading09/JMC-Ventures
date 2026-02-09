@@ -32,6 +32,7 @@ interface Meter {
 
 interface Reading {
     timestamp: string;
+    time: string; // Added for frontend mapping
     energy_kwh: number;
     power_kw: number;
     voltage_v: number;
@@ -180,72 +181,137 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
                 </div>
             </div>
 
-            <>
-                {/* Savings Content (Live) */}
-                <div className="grid gap-6 md:grid-cols-4">
-                    <Card>
-                        <CardHeader title="Est. Savings (Today)" icon={DollarSign} />
-                        <div className="mt-2 text-2xl font-bold text-emerald-400">R {totalSavingsR.toFixed(2)}</div>
-                        <p className="text-xs text-slate-500 mt-1">Based on Recommended Sizing</p>
-                    </Card>
-                    <Card>
-                        <CardHeader title="Solar Yield" icon={Zap} />
-                        <div className="mt-2 text-2xl font-bold text-yellow-400">{totalSolarKwh.toFixed(1)} kWh</div>
-                        <p className="text-xs text-slate-500 mt-1">Self-Consumption</p>
-                    </Card>
-                    <Card>
-                        <CardHeader title="Grid Independence" icon={Activity} />
-                        <div className="mt-2 text-2xl font-bold text-white">
-                            {totalSolarKwh > 0 ? (totalSolarKwh / (dailyUsage + totalSolarKwh) * 100).toFixed(1) : 0}%
-                        </div>
-                        <div className="w-full bg-slate-800 h-2 rounded-full mt-2 overflow-hidden">
-                            <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${totalSolarKwh > 0 ? (totalSolarKwh / (dailyUsage + totalSolarKwh) * 100) : 0}%` }}></div>
-                        </div>
-                    </Card>
-                    {/* AI Insights Card */}
-                    <Card className="border-indigo-500/30 bg-indigo-950/20">
-                        <CardHeader title="AI Optimization" icon={Zap} />
-                        <div className="space-y-2 mt-2">
-                            <div className="flex items-center gap-2 text-xs text-indigo-300">
-                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
-                                PFC Correction Recommended
-                            </div>
-                            <div className="flex items-center gap-2 text-xs text-indigo-300">
-                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
-                                Harmonic Filtering: 5th Order
-                            </div>
-                            <div className="flex items-center gap-2 text-xs text-indigo-300">
-                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
-                                Load Shift: 08:00 - 10:00
-                            </div>
-                        </div>
-                    </Card>
-                </div>
+            {activeTab === 'overview' ? (
+                <>
+                    {/* Overview Stats */}
+                    <div className="grid gap-6 md:grid-cols-4">
+                        <Card>
+                            <CardHeader title="Real-time Power" icon={Zap} />
+                            <div className="mt-2 text-2xl font-bold text-white">{currentPower.toFixed(2)} kW</div>
+                        </Card>
+                        <Card>
+                            <CardHeader title="Est. Daily Usage" icon={Activity} />
+                            <div className="mt-2 text-2xl font-bold text-white">{dailyUsage.toFixed(1)} kWh</div>
+                        </Card>
+                        <Card>
+                            <CardHeader title="Power Factor" icon={Battery} />
+                            <div className="mt-2 text-2xl font-bold text-emerald-400">{powerFactor.toFixed(2)}</div>
+                        </Card>
+                        <Card>
+                            <CardHeader title="Est. Cost (Day)" icon={DollarSign} />
+                            <div className="mt-2 text-2xl font-bold text-white">R {(dailyUsage * 2.5).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                        </Card>
+                    </div>
 
-                <Card className="p-6">
-                    <div className="flex items-center justify-between mb-6">
-                        <CardHeader title="Impact Analysis" subtitle="Simulated Baseline vs Live Grid Load" />
-                        <div className="flex gap-2">
-                            <span className="flex items-center gap-1 text-xs text-slate-400"><span className="w-2 h-2 rounded-full bg-slate-500"></span> Baseline</span>
-                            <span className="flex items-center gap-1 text-xs text-slate-400"><span className="w-2 h-2 rounded-full bg-blue-500"></span> Actual (Grid)</span>
-                            <span className="flex items-center gap-1 text-xs text-slate-400"><span className="w-2 h-2 rounded-full bg-yellow-500"></span> Solar</span>
+                    {/* Overview Charts */}
+                    <div className="grid gap-6 md:grid-cols-3">
+                        {/* Detailed Chart */}
+                        <Card className="md:col-span-2">
+                            <CardHeader title="Power Profile" subtitle="Real-time Consumption (kW)" />
+                            <div className="h-[350px] w-full mt-4">
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <LineChart data={readings}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                                        <XAxis dataKey="time" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                                        <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                                        <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#f8fafc' }} />
+                                        <Line type="monotone" dataKey="power_kw" stroke="#3b82f6" strokeWidth={3} dot={false} activeDot={{ r: 6 }} />
+                                    </LineChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </Card>
+
+                        {/* Technical Meter Details */}
+                        <Card>
+                            <CardHeader title="Live Technicals" subtitle="Phase & Line Metrics" />
+                            <div className="space-y-4 text-sm mt-4">
+                                <div className="flex justify-between py-2 border-b border-slate-800">
+                                    <span className="text-slate-500">Voltage</span>
+                                    <span className="text-white">{(latestReading?.voltage_v ?? 0).toFixed(1)} V</span>
+                                </div>
+                                <div className="flex justify-between py-2 border-b border-slate-800">
+                                    <span className="text-slate-500">Current</span>
+                                    <span className="text-white">{(latestReading?.current_a ?? 0).toFixed(1)} A</span>
+                                </div>
+                                <div className="flex justify-between py-2 border-b border-slate-800">
+                                    <span className="text-slate-500">Frequency</span>
+                                    <span className="text-white">{(latestReading?.frequency_hz ?? 0).toFixed(2)} Hz</span>
+                                </div>
+                                <div className="flex justify-between py-2 border-b border-slate-800">
+                                    <span className="text-slate-500">Energy Total</span>
+                                    <span className="text-white">{(latestReading?.energy_kwh ?? 0).toFixed(1)} kWh</span>
+                                </div>
+                            </div>
+                        </Card>
+                    </div>
+                </>
+            ) : (
+                <>
+                    {/* Savings Content (Live) */}
+                    <div className="grid gap-6 md:grid-cols-4">
+                        <Card>
+                            <CardHeader title="Est. Savings (Today)" icon={DollarSign} />
+                            <div className="mt-2 text-2xl font-bold text-emerald-400">R {totalSavingsR.toFixed(2)}</div>
+                            <p className="text-xs text-slate-500 mt-1">Based on Recommended Sizing</p>
+                        </Card>
+                        <Card>
+                            <CardHeader title="Solar Yield" icon={Zap} />
+                            <div className="mt-2 text-2xl font-bold text-yellow-400">{totalSolarKwh.toFixed(1)} kWh</div>
+                            <p className="text-xs text-slate-500 mt-1">Self-Consumption</p>
+                        </Card>
+                        <Card>
+                            <CardHeader title="Grid Independence" icon={Activity} />
+                            <div className="mt-2 text-2xl font-bold text-white">
+                                {totalSolarKwh > 0 ? (totalSolarKwh / (dailyUsage + totalSolarKwh) * 100).toFixed(1) : 0}%
+                            </div>
+                            <div className="w-full bg-slate-800 h-2 rounded-full mt-2 overflow-hidden">
+                                <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${totalSolarKwh > 0 ? (totalSolarKwh / (dailyUsage + totalSolarKwh) * 100) : 0}%` }}></div>
+                            </div>
+                        </Card>
+                        {/* AI Insights Card */}
+                        <Card className="border-indigo-500/30 bg-indigo-950/20">
+                            <CardHeader title="AI Optimization" icon={Zap} />
+                            <div className="space-y-2 mt-2">
+                                <div className="flex items-center gap-2 text-xs text-indigo-300">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                                    PFC Correction Recommended
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-indigo-300">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                                    Harmonic Filtering: 5th Order
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-indigo-300">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                                    Load Shift: 08:00 - 10:00
+                                </div>
+                            </div>
+                        </Card>
+                    </div>
+
+                    <Card className="p-6">
+                        <div className="flex items-center justify-between mb-6">
+                            <CardHeader title="Impact Analysis" subtitle="Simulated Baseline vs Live Grid Load" />
+                            <div className="flex gap-2">
+                                <span className="flex items-center gap-1 text-xs text-slate-400"><span className="w-2 h-2 rounded-full bg-slate-500"></span> Baseline</span>
+                                <span className="flex items-center gap-1 text-xs text-slate-400"><span className="w-2 h-2 rounded-full bg-blue-500"></span> Actual (Grid)</span>
+                                <span className="flex items-center gap-1 text-xs text-slate-400"><span className="w-2 h-2 rounded-full bg-yellow-500"></span> Solar</span>
+                            </div>
                         </div>
-                    </div>
-                    <div className="h-[400px] w-full">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={savingsReadings}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                                <XAxis dataKey="time" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
-                                <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
-                                <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#f8fafc' }} />
-                                <Line type="monotone" dataKey="baseline_kw" stroke="#64748b" strokeDasharray="5 5" strokeWidth={2} dot={false} name="Baseline" />
-                                <Line type="monotone" dataKey="power_kw" stroke="#3b82f6" strokeWidth={3} dot={false} name="Grid Load" />
-                                <Line type="monotone" dataKey="solar_kw" stroke="#eab308" strokeWidth={2} fillOpacity={1} fill="url(#colorSolar)" name="Solar Gen" />
-                            </LineChart>
-                        </ResponsiveContainer>
-                    </div>
-                </Card>
-            </>
+                        <div className="h-[400px] w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={savingsReadings}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                                    <XAxis dataKey="time" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                                    <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                                    <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', color: '#f8fafc' }} />
+                                    <Line type="monotone" dataKey="baseline_kw" stroke="#64748b" strokeDasharray="5 5" strokeWidth={2} dot={false} name="Baseline" />
+                                    <Line type="monotone" dataKey="power_kw" stroke="#3b82f6" strokeWidth={3} dot={false} name="Grid Load" />
+                                    <Line type="monotone" dataKey="solar_kw" stroke="#eab308" strokeWidth={2} fillOpacity={1} fill="url(#colorSolar)" name="Solar Gen" />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </Card>
+                </>
             )}
         </div>
     );
