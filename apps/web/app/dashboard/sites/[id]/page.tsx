@@ -174,19 +174,19 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
                     <div className="space-y-4 text-sm mt-4">
                         <div className="flex justify-between py-2 border-b border-slate-800">
                             <span className="text-slate-500">Voltage</span>
-                            <span className="text-white">{latestReading?.voltage_v.toFixed(1)} V</span>
+                            <span className="text-white">{(latestReading?.voltage_v ?? 0).toFixed(1)} V</span>
                         </div>
                         <div className="flex justify-between py-2 border-b border-slate-800">
                             <span className="text-slate-500">Current</span>
-                            <span className="text-white">{latestReading?.current_a.toFixed(1)} A</span>
+                            <span className="text-white">{(latestReading?.current_a ?? 0).toFixed(1)} A</span>
                         </div>
                         <div className="flex justify-between py-2 border-b border-slate-800">
                             <span className="text-slate-500">Frequency</span>
-                            <span className="text-white">{latestReading?.frequency_hz.toFixed(2)} Hz</span>
+                            <span className="text-white">{(latestReading?.frequency_hz ?? 0).toFixed(2)} Hz</span>
                         </div>
                         <div className="flex justify-between py-2 border-b border-slate-800">
                             <span className="text-slate-500">Energy Total</span>
-                            <span className="text-white">{latestReading?.energy_kwh.toFixed(1)} kWh</span>
+                            <span className="text-white">{(latestReading?.energy_kwh ?? 0).toFixed(1)} kWh</span>
                         </div>
                     </div>
                 </Card>
