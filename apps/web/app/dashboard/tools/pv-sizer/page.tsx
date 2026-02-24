@@ -17,6 +17,7 @@ import {
 export default function PVSizerPage() {
     const [bill, setBill] = useState(5000);
     const [roofArea, setRoofArea] = useState(50);
+    const [tariff, setTariff] = useState(1.50); // Simulating fetched blended tariff
     const [calculated, setCalculated] = useState(false);
 
     // Mock Calculation Logic
@@ -24,16 +25,16 @@ export default function PVSizerPage() {
         setCalculated(true);
     };
 
-    const systemSize = Math.min(bill / 500, roofArea / 6).toFixed(1); // Rough estimate logic
+    const systemSize = Math.min(bill / (tariff * 150), roofArea / 6).toFixed(1); // Rough estimate logic: 150 kWh per month per kWp
     const cost = (parseFloat(systemSize) * 15000).toLocaleString(); // R15k per kWp
-    const savings = (parseFloat(systemSize) * 5 * 30 * 2.5).toLocaleString(); // 5 sun hours, 30 days, R2.50/kWh
+    const savings = (parseFloat(systemSize) * 5 * 30 * tariff).toLocaleString(undefined, { maximumFractionDigits: 0 }); // 5 sun hours, 30 days, dynamic tariff
 
     const roiData = [
-        { year: "Year 1", cumulative: -parseFloat(cost.replace(/,/g, '')) + parseFloat(savings.replace(/,/g, '')) },
-        { year: "Year 2", cumulative: -parseFloat(cost.replace(/,/g, '')) + parseFloat(savings.replace(/,/g, '')) * 2 },
-        { year: "Year 3", cumulative: -parseFloat(cost.replace(/,/g, '')) + parseFloat(savings.replace(/,/g, '')) * 3 },
-        { year: "Year 4", cumulative: -parseFloat(cost.replace(/,/g, '')) + parseFloat(savings.replace(/,/g, '')) * 4 },
-        { year: "Year 5", cumulative: 50000 }, // Break even roughly
+        { year: "Year 1", cumulative: -parseFloat(cost.replace(/,/g, '')) + parseFloat(savings.replace(/,/g, '')) * 12 },
+        { year: "Year 2", cumulative: -parseFloat(cost.replace(/,/g, '')) + parseFloat(savings.replace(/,/g, '')) * 12 * 2 },
+        { year: "Year 3", cumulative: -parseFloat(cost.replace(/,/g, '')) + parseFloat(savings.replace(/,/g, '')) * 12 * 3 },
+        { year: "Year 4", cumulative: -parseFloat(cost.replace(/,/g, '')) + parseFloat(savings.replace(/,/g, '')) * 12 * 4 },
+        { year: "Year 5", cumulative: -parseFloat(cost.replace(/,/g, '')) + parseFloat(savings.replace(/,/g, '')) * 12 * 5 },
     ];
 
     return (
@@ -88,6 +89,20 @@ export default function PVSizerPage() {
                                     <option>Durban (Med)</option>
                                     <option>Northern Cape (Ultra)</option>
                                 </select>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-slate-400 mb-1">Blended Tariff (ZAR/kWh)</label>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={tariff}
+                                    onChange={(e) => setTariff(Number(e.target.value))}
+                                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                                />
+                                <div className="mt-2 text-xs text-slate-500">
+                                    Pulls from <a href="/dashboard/settings/tariffs" className="text-blue-400 hover:underline">Tariff Settings</a>
+                                </div>
                             </div>
 
                             <button

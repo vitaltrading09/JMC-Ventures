@@ -1,4 +1,5 @@
 import { Sidebar } from "@/components/dashboard/Sidebar";
+import { ChatWidget } from "@/components/dashboard/ChatWidget";
 
 export default function DashboardLayout({
     children,
@@ -6,14 +7,17 @@ export default function DashboardLayout({
     children: React.ReactNode;
 }) {
     return (
-        <div className="flex min-h-screen bg-slate-950 text-slate-50">
+        <div className="flex min-h-screen bg-slate-950 text-slate-50 relative">
             <Sidebar />
-            <div className="flex-1 ml-64 flex flex-col min-h-screen">
+            <div className="flex-1 flex flex-col min-h-screen w-full lg:ml-64 transition-all duration-300">
                 {/* Main Content Area */}
-                <main className="flex-1 p-8 overflow-y-auto">
+                <main className="flex-1 p-4 md:p-6 lg:p-8 overflow-y-auto w-full max-w-[100vw]">
                     {children}
                 </main>
             </div>
+
+            {/* Global Chat Widget */}
+            <ChatWidget />
         </div>
     );
 }

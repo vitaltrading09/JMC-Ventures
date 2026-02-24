@@ -3,6 +3,7 @@ import { Pool } from 'pg';
 import cron from 'node-cron';
 import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
+import { initMqtt } from './mqtt';
 
 dotenv.config();
 
@@ -20,36 +21,95 @@ const pool = new Pool({
     idleTimeoutMillis: 30000,
 });
 
+// Initialize schema for site settings
+(async () => {
+    const client = await pool.connect();
+    try {
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS site_settings (
+                site_id UUID PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+                tariff_peak DECIMAL(10,2),
+                peak_times VARCHAR(255),
+                tariff_standard DECIMAL(10,2),
+                standard_times VARCHAR(255),
+                tariff_offpeak DECIMAL(10,2),
+                offpeak_times VARCHAR(255),
+                alert_max_kw DECIMAL(10,2),
+                alert_min_v DECIMAL(10,2),
+                alert_max_thd DECIMAL(10,2),
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        console.log("DB Schema initialized: site_settings verified");
+    } catch (e) {
+        console.error("DB Schema initialization failed", e);
+    } finally {
+        client.release();
+    }
+
+    // Start MQTT Listener bridging Mosquitto to TimescaleDB
+    await initMqtt(pool);
+})();
+
 // Queue Definition
 const ingestionQueue = new Queue('ingestion-queue', { connection: redisConnection });
 
 // Worker Definition (Consumer)
 const worker = new Worker('ingestion-queue', async (job) => {
     const { meterId } = job.data;
-    // console.log(`Processing job ${job.id} for meter ${meterId}`);
-
     const client = await pool.connect();
-    try {
-        // Simulate data fetch latency
-        // await new Promise(resolve => setTimeout(resolve, 100));
 
-        // Randomize mock data (Industrial Enterprise Load: 200kW - 1000kW)
+    try {
+        await client.query('BEGIN'); // Start transaction for atomicity
+
+        // 1. Fetch Tenant ID and their Alert Settings for this meter
+        const settingsQuery = `
+            SELECT s.tenant_id, ss.alert_max_kw as max_peak_kw, ss.alert_min_v as min_voltage, ss.alert_max_thd as max_thd
+            FROM meters m
+            JOIN sites s ON m.site_id = s.id
+            LEFT JOIN site_settings ss ON s.id = ss.site_id
+            WHERE m.id = $1
+        `;
+        const settingsRes = await client.query(settingsQuery, [meterId]);
+        const tenantInfo = settingsRes.rows[0];
+
+        if (!tenantInfo) {
+            throw new Error(`Meter ${meterId} not found or has no linked tenant.`);
+        }
+
+        // 2. Generate/Simulate Reading (or read from real hardware payload)
         const voltage = 400 + (Math.random() * 20 - 10); // ~400V (3-phase line-to-line base)
         const power = 200 + Math.random() * 800; // 200 - 1000 kW
-        // Power (kW) = (Voltage * Current * sqrt(3) * PF) / 1000
-        // Current = (Power * 1000) / (Voltage * 1.732 * 0.95)
         const current = (power * 1000) / (voltage * 1.732 * 0.95);
 
-        const query = `
+        // 3. Insert Reading into Hypertable
+        const insertQuery = `
             INSERT INTO meter_readings (
                 time, meter_id, voltage_a, current_a, power_active_total
             ) VALUES (
                 NOW(), $1, $2, $3, $4
             )
         `;
-        await client.query(query, [meterId, voltage, current, power]);
-        // console.log(`Ingested data for meter ${meterId}`);
+        await client.query(insertQuery, [meterId, voltage, current, power]);
+
+        // 4. Alerting Engine: Evaluate Thresholds
+        if (tenantInfo.max_peak_kw && power > Number(tenantInfo.max_peak_kw)) {
+            await client.query(`
+                INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
+                VALUES ($1, $2, 'PEAK_DEMAND', 'WARNING', $3)
+             `, [tenantInfo.tenant_id, meterId, `Peak demand threshold exceeded: ${power.toFixed(2)}kW (Limit: ${tenantInfo.max_peak_kw}kW)`]);
+        }
+
+        if (tenantInfo.min_voltage && voltage < Number(tenantInfo.min_voltage)) {
+            await client.query(`
+               INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
+               VALUES ($1, $2, 'VOLTAGE_SAG', 'CRITICAL', $3)
+            `, [tenantInfo.tenant_id, meterId, `Critical voltage sag detected: ${voltage.toFixed(2)}V (Min Limit: ${tenantInfo.min_voltage}V). Machinery at risk.`]);
+        }
+
+        await client.query('COMMIT');
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error(`Error processing job ${job.id}:`, err);
         throw err;
     } finally {
@@ -69,9 +129,8 @@ worker.on('failed', (job, err) => {
 });
 
 // Producer Logic (Scheduler)
-// In a real scenario, this could be triggered by webhooks
 async function scheduleIngestion() {
-    console.log('Scheduling ingestion jobs...');
+    // console.log('Scheduling ingestion jobs...');
     const client = await pool.connect();
     try {
         // Get all meters
@@ -79,7 +138,7 @@ async function scheduleIngestion() {
         const meters = metersRes.rows;
 
         if (meters.length === 0) {
-            console.log('No meters found. Skipping scheduling.');
+            // console.log('No meters found. Skipping scheduling.');
             return;
         }
 
@@ -91,8 +150,7 @@ async function scheduleIngestion() {
         }));
 
         await ingestionQueue.addBulk(jobs);
-        console.log(`Scheduled ${jobs.length} ingestion jobs.`);
-
+        // console.log(`Scheduled ${jobs.length} ingestion jobs.`);
     } catch (err) {
         console.error('Scheduling error:', err);
     } finally {
@@ -100,30 +158,200 @@ async function scheduleIngestion() {
     }
 }
 
-// Run scheduler every minute
-cron.schedule('* * * * *', () => {
+// -----------------------------------------------------------------------------
+// VIRTUAL METER LOAD GENERATOR
+// -----------------------------------------------------------------------------
+// Run scheduler every 5 seconds to simulate high frequency enterprise data
+cron.schedule('*/5 * * * * *', () => {
     scheduleIngestion();
+});
+
+// -----------------------------------------------------------------------------
+// PREDICTIVE MAINTENANCE AI ENGINE (Heuristic Scanner)
+// -----------------------------------------------------------------------------
+// Runs every 5 minutes in Dev (Hourly in Prod)
+cron.schedule('*/5 * * * *', async () => {
+    console.log('[PREDICTIVE AI] Analyzing historical equipment signatures for anomalies...');
+    const client = await pool.connect();
+    try {
+        const query = `
+            WITH rolling_stats AS (
+                SELECT 
+                    m.id as meter_id,
+                    s.tenant_id,
+                    m.name as meter_name,
+                    AVG(r.voltage_a) as avg_voltage,
+                    STDDEV(r.voltage_a) as voltage_stddev,
+                    MIN(r.voltage_a) as min_voltage
+                FROM meters m
+                JOIN sites s ON m.site_id = s.id
+                JOIN meter_readings r ON m.id = r.meter_id
+                -- Analyze the last 24 hours of data
+                WHERE r.time >= NOW() - INTERVAL '24 hours'
+                GROUP BY m.id, s.tenant_id, m.name
+            )
+            SELECT * FROM rolling_stats 
+            -- A machine whose voltage variance is extremely high might indicate a failing capacitor bank or winding short
+            WHERE voltage_stddev > 15 
+            OR min_voltage < 370; 
+        `;
+
+        const anomalies = await client.query(query);
+
+        if (anomalies.rows.length > 0) {
+            for (const machine of anomalies.rows) {
+                // Check if we already alerted them in the last 24h to prevent spam
+                const recentAlert = await client.query(`
+                    SELECT id FROM alerts 
+                    WHERE meter_id = $1 AND type = 'PREDICTIVE_WARNING' 
+                    AND created_at >= NOW() - INTERVAL '24 hours'
+                `, [machine.meter_id]);
+
+                if (recentAlert.rows.length === 0) {
+                    const message = `[AI PREDICTION]: High probability of equipment degradation on ${machine.meter_name}. ` +
+                        `Voltage variance is abnormally high (StdDev: ${Number(machine.voltage_stddev).toFixed(2)}). ` +
+                        `Recommend immediate inspection of motor windings or capacitor banks to prevent catastrophic failure.`;
+
+                    await client.query(`
+                        INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
+                        VALUES ($1, $2, 'PREDICTIVE_WARNING', 'CRITICAL', $3)
+                    `, [machine.tenant_id, machine.meter_id, message]);
+
+                    console.log(`[PREDICTIVE AI] Warning issued for meter: ${machine.meter_name}`);
+                }
+            }
+        }
+    } catch (err) {
+        console.error('[PREDICTIVE AI] Error running anomaly scan:', err);
+    } finally {
+        client.release();
+    }
 });
 
 // Express API for Data Access
 import express from 'express';
 import cors from 'cors';
+import jwt from 'jsonwebtoken';
 
 const app = express();
 const port = process.env.PORT || 3002;
+const JWT_SECRET = process.env.JWT_SECRET || 'powerguard-super-secret-key-change-in-prod';
 
 app.use(cors());
 app.use(express.json());
+
+// JWT Middleware
+const authenticateToken = (req: any, res: any, next: any) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token == null) return res.sendStatus(401);
+
+    jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
+        if (err) return res.sendStatus(403);
+        req.user = user;
+        next();
+    });
+};
 
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'ingestion-service', mode: 'queue+api' });
 });
 
-app.get('/meters', async (req, res) => {
+// Secure endpoint: Get Sites (filtered by Tenant)
+app.get('/sites', authenticateToken, async (req: any, res) => {
     const client = await pool.connect();
+    const { tenantId, role } = req.user;
+
     try {
-        // Fetch meters with their latest reading
+        let query = `SELECT * FROM sites`;
+        let params: any[] = [];
+
+        if (role !== 'super_admin') {
+            query += ` WHERE tenant_id = $1`;
+            params.push(tenantId);
+        }
+
+        query += ` ORDER BY created_at DESC`;
+
+        const result = await client.query(query, params);
+        res.json(result.rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Database error fetching sites' });
+    } finally {
+        client.release();
+    }
+});
+
+// Secure endpoint: Create Site
+app.post('/sites', authenticateToken, async (req: any, res) => {
+    const client = await pool.connect();
+    const { tenantId, role } = req.user;
+    const { name, address, timezone } = req.body;
+
+    if (!name) return res.status(400).json({ error: 'Site name is required' });
+
+    // For clients, force their tenantId. For super_admin, they could potentially pass a tenantId, but defaulting to their own for simplicity unless specified.
+    const targetTenantId = (role === 'super_admin' && req.body.tenant_id) ? req.body.tenant_id : tenantId;
+
+    try {
         const query = `
+            INSERT INTO sites (tenant_id, name, address, timezone)
+            VALUES ($1, $2, $3, $4)
+            RETURNING *
+        `;
+        const result = await client.query(query, [targetTenantId, name, address, timezone || 'UTC']);
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Database error creating site' });
+    } finally {
+        client.release();
+    }
+});
+
+// Secure endpoint: Create Meter
+app.post('/meters', authenticateToken, async (req: any, res) => {
+    const client = await pool.connect();
+    const { tenantId, role } = req.user;
+    const { site_id, name, serial_number, model } = req.body;
+
+    if (!site_id || !name) return res.status(400).json({ error: 'site_id and name are required' });
+
+    try {
+        // First verify the site belongs to the user's tenant (unless super_admin)
+        if (role !== 'super_admin') {
+            const siteCheck = await client.query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [site_id, tenantId]);
+            if (siteCheck.rows.length === 0) {
+                return res.status(403).json({ error: 'Forbidden: Site does not belong to your tenant or does not exist.' });
+            }
+        }
+
+        const query = `
+            INSERT INTO meters (site_id, name, serial_number, model)
+            VALUES ($1, $2, $3, $4)
+            RETURNING *
+        `;
+        const result = await client.query(query, [site_id, name, serial_number, model]);
+        res.status(201).json(result.rows[0]);
+    } catch (err: any) {
+        console.error(err);
+        if (err.code === '23505') { // Unique violation for serial_number
+            return res.status(409).json({ error: 'A meter with this serial number already exists.' });
+        }
+        res.status(500).json({ error: 'Database error creating meter' });
+    } finally {
+        client.release();
+    }
+});
+
+// Secure endpoint: Get Meters (filtered by Tenant)
+app.get('/meters', authenticateToken, async (req: any, res) => {
+    const client = await pool.connect();
+    const { tenantId, role } = req.user;
+
+    try {
+        let query = `
             SELECT m.*, 
             (
                 SELECT row_to_json(r) 
@@ -135,9 +363,19 @@ app.get('/meters', async (req, res) => {
                 ) r
             ) as latest_reading
             FROM meters m
-            ORDER BY m.created_at ASC
+            JOIN sites s ON m.site_id = s.id
         `;
-        const result = await client.query(query);
+        let params: any[] = [];
+
+        // Tenant Isolation
+        if (role !== 'super_admin') {
+            query += ` WHERE s.tenant_id = $1`;
+            params.push(tenantId);
+        }
+
+        query += ` ORDER BY m.created_at ASC`;
+
+        const result = await client.query(query, params);
         res.json(result.rows);
     } catch (err) {
         console.error(err);
@@ -147,22 +385,519 @@ app.get('/meters', async (req, res) => {
     }
 });
 
-app.get('/meters/:id/readings', async (req, res) => {
+// Secure endpoint: Get Site Settings
+app.get('/sites/:id/settings', authenticateToken, async (req: any, res) => {
+    const client = await pool.connect();
     const { id } = req.params;
-    const limit = req.query.limit || 100;
+    const { tenantId, role } = req.user;
+
+    try {
+        // Validate site ownership
+        const siteCheck = await client.query(`SELECT id FROM sites WHERE id = $1 ${role !== 'super_admin' ? 'AND tenant_id = $2' : ''}`, role !== 'super_admin' ? [id, tenantId] : [id]);
+        if (siteCheck.rows.length === 0) return res.status(403).json({ error: 'Site not found or access denied' });
+
+        const result = await client.query(`SELECT * FROM site_settings WHERE site_id = $1`, [id]);
+        res.json(result.rows[0] || {});
+    } catch (err) {
+        res.status(500).json({ error: 'Database error fetching site settings' });
+    } finally {
+        client.release();
+    }
+});
+
+// Secure endpoint: Update Site Settings (Upsert)
+app.post('/sites/:id/settings', authenticateToken, async (req: any, res) => {
+    const client = await pool.connect();
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const { tariff_peak, tariff_standard, tariff_offpeak, alert_max_kw, alert_min_v, alert_max_thd, peak_times, standard_times, offpeak_times } = req.body;
+
+    try {
+        // Validate site ownership
+        const siteCheck = await client.query(`SELECT id FROM sites WHERE id = $1 ${role !== 'super_admin' ? 'AND tenant_id = $2' : ''}`, role !== 'super_admin' ? [id, tenantId] : [id]);
+        if (siteCheck.rows.length === 0) return res.status(403).json({ error: 'Site not found or access denied' });
+
+        const query = `
+            INSERT INTO site_settings (site_id, tariff_peak, tariff_standard, tariff_offpeak, peak_times, standard_times, offpeak_times, alert_max_kw, alert_min_v, alert_max_thd, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+            ON CONFLICT (site_id) 
+            DO UPDATE SET 
+                tariff_peak = COALESCE(EXCLUDED.tariff_peak, site_settings.tariff_peak),
+                peak_times = COALESCE(EXCLUDED.peak_times, site_settings.peak_times),
+                tariff_standard = COALESCE(EXCLUDED.tariff_standard, site_settings.tariff_standard),
+                standard_times = COALESCE(EXCLUDED.standard_times, site_settings.standard_times),
+                tariff_offpeak = COALESCE(EXCLUDED.tariff_offpeak, site_settings.tariff_offpeak),
+                offpeak_times = COALESCE(EXCLUDED.offpeak_times, site_settings.offpeak_times),
+                alert_max_kw = COALESCE(EXCLUDED.alert_max_kw, site_settings.alert_max_kw),
+                alert_min_v = COALESCE(EXCLUDED.alert_min_v, site_settings.alert_min_v),
+                alert_max_thd = COALESCE(EXCLUDED.alert_max_thd, site_settings.alert_max_thd),
+                updated_at = CURRENT_TIMESTAMP
+            RETURNING *;
+        `;
+        const result = await client.query(query, [id, tariff_peak, tariff_standard, tariff_offpeak, peak_times, standard_times, offpeak_times, alert_max_kw, alert_min_v, alert_max_thd]);
+        res.status(200).json(result.rows[0]);
+    } catch (err) {
+        console.error("Error upserting site settings:", err);
+        res.status(500).json({ error: 'Database error saving site settings' });
+    } finally {
+        client.release();
+    }
+});
+
+// Secure endpoint: Get Active Alerts
+app.get('/alerts', authenticateToken, async (req: any, res) => {
+    const client = await pool.connect();
+    const { tenantId, role } = req.user;
+
+    try {
+        let query = `
+            SELECT a.*, m.name as meter_name 
+            FROM alerts a
+            JOIN meters m ON a.meter_id = m.id
+        `;
+        let params: any[] = [];
+
+        if (role !== 'super_admin') {
+            query += ` WHERE a.tenant_id = $1`;
+            params.push(tenantId);
+        }
+
+        query += ` ORDER BY a.created_at DESC LIMIT 50`;
+
+        const result = await client.query(query, params);
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Database error fetching alerts' });
+    } finally {
+        client.release();
+    }
+});
+
+// Secure endpoint: Mark Alert as Read
+app.post('/alerts/:id/read', authenticateToken, async (req: any, res) => {
+    const client = await pool.connect();
+    const { tenantId, role } = req.user;
+    const { id } = req.params;
+
+    try {
+        let query = `UPDATE alerts SET is_read = true WHERE id = $1`;
+        let params: any[] = [id];
+
+        if (role !== 'super_admin') {
+            query += ` AND tenant_id = $2`;
+            params.push(tenantId);
+        }
+
+        await client.query(query, params);
+        res.status(200).json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: 'Database error updating alert' });
+    } finally {
+        client.release();
+    }
+});
+
+// Secure endpoint: Generate AI Context String (Tenant specific)
+app.get('/ai-context', authenticateToken, async (req: any, res) => {
+    const client = await pool.connect();
+    const { tenantId, role } = req.user;
+    const effectiveTenantId = role !== 'super_admin' ? tenantId : null;
+
+    try {
+        // 1. Metering data with PF, THD, energy
+        let meterQuery = `
+            SELECT s.name as site_name, m.name as meter_name,
+            (
+                SELECT row_to_json(r)
+                FROM (
+                    SELECT power_active_total, voltage_a, current_a,
+                           power_factor_total, thd_voltage_a, energy_import_total, time
+                    FROM meter_readings
+                    WHERE meter_id = m.id
+                    ORDER BY time DESC
+                    LIMIT 1
+                ) r
+            ) as latest_reading
+            FROM meters m
+            JOIN sites s ON m.site_id = s.id
+        `;
+        const meterParams: any[] = [];
+        if (effectiveTenantId) {
+            meterQuery += ` WHERE s.tenant_id = $1`;
+            meterParams.push(effectiveTenantId);
+        }
+        const meterResult = await client.query(meterQuery, meterParams);
+
+        // 2. Active alerts (last 48h, unread)
+        let alertQuery = `
+            SELECT type, severity, message, created_at
+            FROM alerts
+            WHERE is_read = false
+            AND created_at > NOW() - INTERVAL '48 hours'
+        `;
+        const alertParams: any[] = [];
+        if (effectiveTenantId) {
+            alertQuery += ` AND tenant_id = $1`;
+            alertParams.push(effectiveTenantId);
+        }
+        alertQuery += ` ORDER BY created_at DESC LIMIT 5`;
+        const alertResult = await client.query(alertQuery, alertParams);
+
+        // 3. Alert & Tariff settings per site (thresholds configured by the client)
+        let settingsQuery = `
+            SELECT s.name as site_name, ss.* 
+            FROM sites s
+            JOIN site_settings ss ON s.id = ss.site_id
+        `;
+        const settingsParams: any[] = [];
+        if (effectiveTenantId) {
+            settingsQuery += ` WHERE s.tenant_id = $1`;
+            settingsParams.push(effectiveTenantId);
+        }
+        const settingsResult = await client.query(settingsQuery, settingsParams);
+        const settingsList = settingsResult.rows;
+
+
+        // 4. Monthly usage aggregate
+        let monthlyQuery = `
+            SELECT
+                ROUND((SUM(mr.power_active_total) * (5.0/3600.0))::numeric, 1) as kwh_this_month,
+                ROUND(MAX(mr.power_active_total)::numeric, 1) as peak_kw_this_month
+            FROM meter_readings mr
+            JOIN meters m ON mr.meter_id = m.id
+            JOIN sites s ON m.site_id = s.id
+            WHERE mr.time >= date_trunc('month', NOW())
+        `;
+        const monthlyParams: any[] = [];
+        if (effectiveTenantId) {
+            monthlyQuery += ` AND s.tenant_id = $1`;
+            monthlyParams.push(effectiveTenantId);
+        }
+        const monthlyResult = await client.query(monthlyQuery, monthlyParams);
+        const monthly = monthlyResult.rows[0];
+
+        // --- Build rich context string ---
+        let contextString = `=== POWERGUARD LIVE DATA SNAPSHOT ===\n`;
+        contextString += `Timestamp: ${new Date().toLocaleString()}\n\n`;
+
+        // Meters
+        if (meterResult.rows.length === 0) {
+            contextString += `METERS: No sites or meters configured.\n`;
+        } else {
+            contextString += `METERING DATA:\n`;
+            meterResult.rows.forEach(row => {
+                contextString += `• ${row.site_name} / ${row.meter_name}:\n`;
+                if (row.latest_reading) {
+                    const r = row.latest_reading;
+                    contextString += `  - Active Power: ${r.power_active_total ? r.power_active_total.toFixed(1) : 'N/A'} kW\n`;
+                    contextString += `  - Voltage: ${r.voltage_a ? r.voltage_a.toFixed(1) : 'N/A'} V\n`;
+                    contextString += `  - Current: ${r.current_a ? r.current_a.toFixed(1) : 'N/A'} A\n`;
+                    contextString += `  - Power Factor: ${r.power_factor_total ? r.power_factor_total.toFixed(3) : 'N/A'}\n`;
+                    contextString += `  - Voltage THD: ${r.thd_voltage_a ? r.thd_voltage_a.toFixed(2) : 'N/A'}%\n`;
+                    contextString += `  - Energy Import (total): ${r.energy_import_total ? r.energy_import_total.toFixed(1) : 'N/A'} kWh\n`;
+                    contextString += `  - Reading Time: ${new Date(r.time).toLocaleString()}\n`;
+                } else {
+                    contextString += `  - Status: Offline\n`;
+                }
+            });
+        }
+
+        // Monthly summary
+        contextString += `\nMONTHLY USAGE (current month):\n`;
+        contextString += `• Estimated Energy: ${monthly?.kwh_this_month ?? 'N/A'} kWh\n`;
+        contextString += `• Peak Demand: ${monthly?.peak_kw_this_month ?? 'N/A'} kW\n`;
+
+        // Alert thresholds
+        if (settingsList && settingsList.length > 0) {
+            contextString += `\nPER-SITE SETTINGS AND ALERT THRESHOLDS:\n`;
+            settingsList.forEach(s => {
+                contextString += `• Site: ${s.site_name}\n`;
+                if (s.alert_max_kw) contextString += `  - Max Peak Demand: ${s.alert_max_kw} kW\n`;
+                if (s.alert_min_v) contextString += `  - Min Voltage Limit: ${s.alert_min_v} V\n`;
+                if (s.tariff_peak) {
+                    contextString += `  - Tariffs: Peak R${Number(s.tariff_peak).toFixed(2)} (${s.peak_times || 'times not set'}), ` +
+                        `Std R${Number(s.tariff_standard).toFixed(2)} (${s.standard_times || 'times not set'}), ` +
+                        `Off-Peak R${Number(s.tariff_offpeak).toFixed(2)} (${s.offpeak_times || 'times not set'})\n`;
+                }
+            });
+        } else {
+            contextString += `\nSITE SETTINGS: No per-site thresholds or tariffs configured.\n`;
+        }
+
+        // Active alerts
+        contextString += `\nACTIVE ALERTS (last 48h, unread):\n`;
+        if (alertResult.rows.length === 0) {
+            contextString += `• No active alerts. All systems nominal.\n`;
+        } else {
+            alertResult.rows.forEach(a => {
+                const age = Math.round((Date.now() - new Date(a.created_at).getTime()) / 60000);
+                contextString += `• [${a.severity}] ${a.type}: ${a.message} (${age} mins ago)\n`;
+            });
+        }
+
+        // 7-day historical summary per meter (wrapped in try/catch so it doesn't kill the whole context)
+        let historyResult: any = { rows: [] };
+        try {
+            let historyQuery = `
+                SELECT
+                    m.name as meter_name,
+                    COUNT(mr.time) as reading_count,
+                    ROUND(MIN(mr.power_active_total)::numeric, 1) as min_kw,
+                    ROUND(MAX(mr.power_active_total)::numeric, 1) as max_kw,
+                    ROUND(AVG(mr.power_active_total)::numeric, 1) as avg_kw,
+                    ROUND(MIN(mr.power_factor_total)::numeric, 3) as min_pf,
+                    ROUND(AVG(mr.power_factor_total)::numeric, 3) as avg_pf,
+                    ROUND(MIN(mr.voltage_a)::numeric, 1) as min_v,
+                    ROUND(MAX(mr.voltage_a)::numeric, 1) as max_v,
+                    ROUND(AVG(mr.voltage_a)::numeric, 1) as avg_v,
+                    ROUND(AVG(mr.thd_voltage_a)::numeric, 2) as avg_thd,
+                    ROUND(MAX(mr.thd_voltage_a)::numeric, 2) as max_thd_reading,
+                    ROUND((SUM(mr.power_active_total) * 5.0 / 3600.0)::numeric, 1) as est_kwh_7d
+                FROM meter_readings mr
+                JOIN meters m ON mr.meter_id = m.id
+                JOIN sites s ON m.site_id = s.id
+                WHERE mr.time >= NOW() - INTERVAL '7 days'
+            `;
+            const historyParams: any[] = [];
+            if (effectiveTenantId) {
+                historyQuery += ` AND s.tenant_id = $1`;
+                historyParams.push(effectiveTenantId);
+            }
+            historyQuery += ` GROUP BY m.id, m.name ORDER BY max_kw DESC NULLS LAST LIMIT 10`;
+            historyResult = await client.query(historyQuery, historyParams);
+        } catch (histErr) {
+            console.error('History query error (non-fatal):', histErr);
+        }
+
+        if (historyResult.rows.length > 0) {
+            contextString += `\n7-DAY HISTORICAL SUMMARY (last 7 days):\n`;
+            historyResult.rows.forEach((h: any) => {
+                contextString += `• ${h.meter_name}: ${h.reading_count} readings | P: min ${h.min_kw} / avg ${h.avg_kw} / max ${h.max_kw} kW | Est. Energy: ${h.est_kwh_7d || 'N/A'} kWh`;
+                if (h.avg_pf) contextString += ` | PF avg: ${h.avg_pf} (min: ${h.min_pf})`;
+                if (h.avg_v) contextString += ` | V avg: ${h.avg_v} (range: ${h.min_v}-${h.max_v} V)`;
+                if (h.avg_thd) contextString += ` | THD avg: ${h.avg_thd}% (max: ${h.max_thd_reading}%)`;
+                contextString += `\n`;
+            });
+        } else {
+            contextString += `\n7-DAY HISTORY: No historical data recorded yet.\n`;
+        }
+
+        // Smart suggestions based on data
+        const suggestions: string[] = [];
+        if (alertResult.rows.length > 0) suggestions.push('What are my active alerts?');
+        suggestions.push('What is my current power demand?');
+        if (historyResult.rows.length > 0) suggestions.push('Summarise my energy usage for the last 7 days');
+        else suggestions.push('How can I reduce my energy costs?');
+        if (!suggestions.find(s => s.includes('power factor'))) {
+            suggestions.push('How can I improve my power factor?');
+        }
+
+        res.json({ context: contextString, suggestions: suggestions.slice(0, 3) });
+
+    } catch (err) {
+        console.error("AI Context creation error:", err);
+        res.status(500).json({ error: 'Database error generating AI context' });
+    } finally {
+        client.release();
+    }
+});
+
+// Delete a meter (with tenant auth)
+app.delete('/meters/:id', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const check = await client.query(
+                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id WHERE m.id = $1 AND s.tenant_id = $2`,
+                [id, tenantId]
+            );
+            if (check.rows.length === 0) {
+                client.release();
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+        }
+        // Delete readings first (cascade would also work if FK set)
+        await client.query('DELETE FROM meter_readings WHERE meter_id = $1', [id]);
+        await client.query('DELETE FROM alerts WHERE meter_id = $1', [id]);
+        await client.query('DELETE FROM meters WHERE id = $1', [id]);
+        res.json({ success: true, message: 'Meter and all its readings deleted.' });
+    } catch (err) {
+        console.error('Delete meter error:', err);
+        res.status(500).json({ error: 'Failed to delete meter' });
+    } finally {
+        client.release();
+    }
+});
+
+
+import multer from 'multer';
+import csv from 'csv-parser';
+import fs from 'fs';
+
+const upload = multer({ dest: 'uploads/' });
+
+// Secure endpoint: Get Readings for a specific Meter (verified access)
+app.get('/meters/:id/readings', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const limit = parseInt(String(req.query.limit || '500'));
+    const from = req.query.from as string | undefined;
+    const to = req.query.to as string | undefined;
+    const { tenantId, role } = req.user;
 
     const client = await pool.connect();
     try {
-        const result = await client.query(
-            'SELECT * FROM meter_readings WHERE meter_id = $1 ORDER BY time DESC LIMIT $2',
-            [id, limit]
-        );
+        if (role !== 'super_admin') {
+            const authCheck = await client.query(`
+                SELECT m.id FROM meters m
+                JOIN sites s ON m.site_id = s.id
+                WHERE m.id = $1 AND s.tenant_id = $2
+            `, [id, tenantId]);
+            if (authCheck.rows.length === 0) {
+                client.release();
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+        }
+
+        const params: any[] = [id];
+        let query = 'SELECT * FROM meter_readings WHERE meter_id = $1';
+        if (from) { params.push(new Date(from)); query += ` AND time >= $${params.length}`; }
+        if (to) { params.push(new Date(to)); query += ` AND time <= $${params.length}`; }
+        query += ' ORDER BY time ASC';
+        if (!from && !to) query += ` LIMIT ${limit}`;
+
+        const result = await client.query(query, params);
         res.json(result.rows);
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Database error' });
     } finally {
         client.release();
+    }
+});
+
+// Flexible column name mapper
+const mapRow = (row: any) => {
+    const k = (keys: string[]) => {
+        for (const key of keys) {
+            const found = Object.keys(row).find(r => r.trim().toLowerCase() === key.toLowerCase());
+            if (found !== undefined && row[found] !== '' && row[found] !== undefined) return row[found];
+        }
+        return undefined;
+    };
+    const parseN = (v: any) => { const n = parseFloat(v); return isNaN(n) ? undefined : n; };
+    const parseTime = (v: any) => {
+        if (!v) return undefined;
+        // Try ISO first, then DD/MM/YYYY HH:MM format (SA Excel)
+        const iso = new Date(v);
+        if (!isNaN(iso.getTime())) return iso;
+        const parts = v.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s*(\d{1,2}):(\d{2})/);
+        if (parts) return new Date(`${parts[3]}-${parts[2].padStart(2, '0')}-${parts[1].padStart(2, '0')}T${parts[4].padStart(2, '0')}:${parts[5]}:00`);
+        return undefined;
+    };
+    return {
+        time: parseTime(k(['time', 'timestamp', 'datetime', 'date'])),
+        power_active_total: parseN(k(['p', 'kw', 'active_power', 'power_active_total', 'power', 'p_kw'])),
+        power_reactive_total: parseN(k(['q', 'kvar', 'reactive_power', 'power_reactive_total', 'q_kvar'])),
+        power_apparent_total: parseN(k(['s', 'kva', 'apparent_power', 'power_apparent_total', 's_kva'])),
+        power_factor_total: parseN(k(['pf', 'power_factor', 'power_factor_total'])),
+        voltage_a: parseN(k(['v', 'voltage', 'v_a', 'voltage_a', 'volts'])),
+        current_a: parseN(k(['i', 'current', 'i_a', 'current_a', 'amps'])),
+        thd_voltage_a: parseN(k(['thd', 'harmonics', 'thd_v', 'thd_voltage_a', 'thd%'])),
+        energy_import_total: parseN(k(['kwh', 'energy', 'energy_kwh', 'energy_import_total'])),
+    };
+};
+
+// CSV preview endpoint (first 5 rows + detected columns)
+app.post('/upload/preview', authenticateToken, upload.single('file') as any, async (req: any, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+    const previewRows: any[] = [];
+    fs.createReadStream(req.file.path)
+        .pipe(csv())
+        .on('data', (row) => { if (previewRows.length < 5) previewRows.push(row); })
+        .on('end', () => {
+            fs.unlinkSync(req.file.path);
+            const headers = previewRows.length > 0 ? Object.keys(previewRows[0]) : [];
+            const mapped = previewRows.length > 0 ? mapRow(previewRows[0]) : {};
+            const detectedCols = Object.entries(mapped)
+                .filter(([, v]) => v !== undefined)
+                .map(([k]) => k);
+            res.json({ headers, rows: previewRows, detectedColumns: detectedCols });
+        })
+        .on('error', () => { fs.unlinkSync(req.file.path); res.status(400).json({ error: 'Invalid CSV' }); });
+});
+
+// CSV Upload Endpoint — full import with flexible column mapping
+app.post('/upload', authenticateToken, upload.single('file') as any, async (req: any, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const meterId = req.body.meter_id;
+    if (!meterId) { fs.unlinkSync(req.file.path); return res.status(400).json({ error: 'meter_id is required' }); }
+
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+
+    try {
+        if (role !== 'super_admin') {
+            const authCheck = await client.query(`
+                SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
+                WHERE m.id = $1 AND s.tenant_id = $2
+            `, [meterId, tenantId]);
+            if (authCheck.rows.length === 0) {
+                fs.unlinkSync(req.file.path); client.release();
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+        }
+
+        const results: any[] = [];
+        fs.createReadStream(req.file.path)
+            .pipe(csv())
+            .on('data', (row) => results.push(row))
+            .on('end', async () => {
+                fs.unlinkSync(req.file.path);
+                let inserted = 0;
+                let skipped = 0;
+                try {
+                    await client.query('BEGIN');
+                    for (const raw of results) {
+                        const r = mapRow(raw);
+                        if (!r.time) { skipped++; continue; }
+                        await client.query(`
+                            INSERT INTO meter_readings (
+                                time, meter_id,
+                                power_active_total, power_reactive_total, power_apparent_total,
+                                power_factor_total, voltage_a, current_a, thd_voltage_a, energy_import_total
+                            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                            ON CONFLICT DO NOTHING
+                        `, [
+                            r.time, meterId,
+                            r.power_active_total ?? null,
+                            r.power_reactive_total ?? null,
+                            r.power_apparent_total ?? null,
+                            r.power_factor_total ?? null,
+                            r.voltage_a ?? null,
+                            r.current_a ?? null,
+                            r.thd_voltage_a ?? null,
+                            r.energy_import_total ?? null,
+                        ]);
+                        inserted++;
+                    }
+                    await client.query('COMMIT');
+                    res.json({ success: true, count: inserted, skipped, total: results.length, message: `Successfully imported ${inserted} rows.` });
+                } catch (dbErr) {
+                    await client.query('ROLLBACK');
+                    console.error('DB Insert Error:', dbErr);
+                    res.status(500).json({ error: 'Failed to insert data into database' });
+                } finally {
+                    client.release();
+                }
+            })
+            .on('error', () => { fs.unlinkSync(req.file.path); client.release(); res.status(400).json({ error: 'Invalid CSV file' }); });
+    } catch (err) {
+        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        console.error('Upload Error:', err);
+        client.release();
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 

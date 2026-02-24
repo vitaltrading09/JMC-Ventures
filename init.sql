@@ -67,6 +67,35 @@ SELECT create_hypertable('meter_readings', 'time', if_not_exists => TRUE);
 -- Create Indexes for fast querying
 CREATE INDEX IF NOT EXISTS idx_meter_readings_meter_time ON meter_readings (meter_id, time DESC);
 
+-- Alerts Config (Per Tenant thresholds)
+CREATE TABLE IF NOT EXISTS alert_settings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    max_peak_kw DECIMAL(10, 2), -- Alert if power_active_total exceeds this
+    min_voltage DECIMAL(10, 2), -- Alert if voltage_a sags below this
+    max_thd DECIMAL(10, 2), -- Alert if Total Harmonic Distortion is too high
+    email_notifications BOOLEAN DEFAULT true,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(tenant_id)
+);
+
+-- Active Alerts Log
+CREATE TABLE IF NOT EXISTS alerts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    meter_id UUID REFERENCES meters(id) ON DELETE CASCADE,
+    type VARCHAR(50) NOT NULL, -- 'PEAK_DEMAND', 'VOLTAGE_SAG', 'PREDICTIVE_WARNING'
+    severity VARCHAR(20) NOT NULL, -- 'INFO', 'WARNING', 'CRITICAL'
+    message TEXT NOT NULL,
+    is_read BOOLEAN DEFAULT false,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for faster alert querying
+CREATE INDEX IF NOT EXISTS idx_alerts_tenant_id ON alerts(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_is_read ON alerts(is_read);
+
 -- Savings Ledger (Verified Savings for 10% model)
 CREATE TABLE IF NOT EXISTS savings_ledger (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

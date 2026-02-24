@@ -11,8 +11,10 @@ import {
     ResponsiveContainer,
     AreaChart,
     Area,
+    Brush,
 } from "recharts";
 import { Activity, Zap, DollarSign, TrendingUp, AlertTriangle } from "lucide-react";
+import { GridXBridge } from "@/components/dashboard/GridXBridge";
 
 // Mock Data
 const powerData = [
@@ -95,11 +97,11 @@ export default function DashboardPage() {
             </div>
 
             {/* Main Charts */}
-            <div className="grid gap-6 md:grid-cols-7">
+            <div className="grid gap-6 md:grid-cols-10">
                 {/* Power Trend Chart */}
-                <Card className="md:col-span-4">
+                <Card className="md:col-span-4 flex flex-col">
                     <CardHeader title="Power Consumption Trend" subtitle="Active Power (kW) over last 24h" />
-                    <div className="h-[300px] w-full mt-4">
+                    <div className="flex-1 min-h-[300px] w-full mt-4">
                         <ResponsiveContainer width="100%" height="100%">
                             <AreaChart data={powerData}>
                                 <defs>
@@ -122,10 +124,11 @@ export default function DashboardPage() {
                                     tickLine={false}
                                     axisLine={false}
                                     tickFormatter={(value) => `${value} kW`}
+                                    width={50}
                                 />
                                 <Tooltip
-                                    contentStyle={{ backgroundColor: "#0f172a", borderColor: "#1e293b", color: "#f8fafc" }}
-                                    itemStyle={{ color: "#3b82f6" }}
+                                    contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "0.5rem", color: "#f8fafc" }}
+                                    itemStyle={{ color: "#3b82f6", fontWeight: 500 }}
                                 />
                                 <Area
                                     type="monotone"
@@ -135,23 +138,24 @@ export default function DashboardPage() {
                                     fillOpacity={1}
                                     fill="url(#colorKw)"
                                 />
+                                <Brush dataKey="time" height={30} stroke="#475569" fill="#0f172a" tickFormatter={() => ''} />
                             </AreaChart>
                         </ResponsiveContainer>
                     </div>
                 </Card>
 
                 {/* Live Alerts / Feed */}
-                <Card className="md:col-span-3">
+                <Card className="md:col-span-3 flex flex-col bg-slate-900 border-slate-800">
                     <CardHeader title="Live Insights" subtitle="AI Detection Stream" />
-                    <div className="space-y-4 mt-4">
+                    <div className="space-y-4 mt-4 flex-1">
                         {[1, 2, 3].map((i) => (
                             <div key={i} className="flex items-center gap-4 p-3 rounded-lg bg-slate-800/30 border border-slate-800 hover:bg-slate-800/50 transition-colors">
-                                <div className="p-2 rounded-full bg-yellow-500/10 text-yellow-500">
+                                <div className="p-2 rounded-full bg-yellow-500/10 text-yellow-500 shrink-0">
                                     <AlertTriangle className="h-4 w-4" />
                                 </div>
-                                <div>
-                                    <h4 className="text-sm font-medium text-slate-200">Voltage Sag Detected</h4>
-                                    <p className="text-xs text-slate-500">Site A - Factory Floor 1 • 2 mins ago</p>
+                                <div className="min-w-0">
+                                    <h4 className="text-sm font-medium text-slate-200 truncate">Voltage Sag Detected</h4>
+                                    <p className="text-xs text-slate-500 truncate">Site A - Factory Floor 1 • 2 mins ago</p>
                                 </div>
                             </div>
                         ))}
@@ -162,6 +166,11 @@ export default function DashboardPage() {
                         </button>
                     </div>
                 </Card>
+
+                {/* Grid-X Integration */}
+                <div className="md:col-span-3">
+                    <GridXBridge />
+                </div>
             </div>
         </div>
     );
