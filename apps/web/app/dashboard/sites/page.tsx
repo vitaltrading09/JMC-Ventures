@@ -56,8 +56,8 @@ export default function SitesPage() {
         try {
             const headers = { Authorization: `Bearer ${token()}` };
             const [sitesRes, metersRes] = await Promise.all([
-                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, { headers }),
-                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, { headers }),
+                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081`}/ingestion/sites`, { headers }),
+                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081`}/ingestion/meters`, { headers }),
             ]);
             if (sitesRes.status === 401 || metersRes.status === 401) {
                 window.location.href = '/login'; return;

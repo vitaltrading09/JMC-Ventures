@@ -38,8 +38,8 @@ async function main() {
         const userCheck = await client.query("SELECT id FROM users WHERE email = 'demo@powerguard.com'");
         if (userCheck.rows.length === 0) {
             await client.query(`
-                INSERT INTO users (tenant_id, email, password_hash, role, full_name) 
-                VALUES ($1, 'demo@powerguard.com', $2, 'admin', 'Demo User')
+                INSERT INTO users (tenant_id, email, password_hash, role) 
+                VALUES ($1, 'demo@powerguard.com', $2, 'admin')
             `, [tenantId, hashedPassword]);
             console.log(`Created User: demo@powerguard.com`);
         } else {
