@@ -30,7 +30,7 @@ export function ChatWidget() {
             try {
                 const token = localStorage.getItem('token');
                 if (!token) return;
-                const res = await fetch('http://localhost:8081/ingestion/ai-context', {
+                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/ai-context', {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
                 if (res.ok) {
@@ -68,7 +68,7 @@ export function ChatWidget() {
             let currentContext = context;
             const token = localStorage.getItem('token');
             if (token) {
-                const ctxRes = await fetch('http://localhost:8081/ingestion/ai-context', {
+                const ctxRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/ai-context', {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
                 if (ctxRes.ok) {

@@ -45,7 +45,7 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
 
     // Fetch meter info once
     useEffect(() => {
-        fetch('http://localhost:8081/ingestion/meters', { headers: { Authorization: `Bearer ${token()}` } })
+        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters', { headers: { Authorization: `Bearer ${token()}` } })
             .then(r => r.json())
             .then((all: Meter[]) => { setMeter(all.find(m => m.id === params.id) || null); setLoading(false); })
             .catch(() => setLoading(false));
@@ -54,7 +54,7 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
     const fetchReadings = useCallback(async () => {
         setChartLoading(true);
         try {
-            const url = `http://localhost:8081/ingestion/meters/${params.id}/readings?from=${fromDate}T00:00:00&to=${toDate}T23:59:59&limit=2000`;
+            const url = `${process.env.NEXT_PUBLIC_API_URL || `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}'}/ingestion/meters/${params.id}/readings?from=${fromDate}T00:00:00&to=${toDate}T23:59:59&limit=2000`;
             const res = await fetch(url, { headers: { Authorization: `Bearer ${token()}` } });
             if (res.ok) {
                 const data = await res.json();
