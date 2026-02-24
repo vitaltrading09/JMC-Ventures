@@ -47,7 +47,7 @@ export default function AlertsPage() {
 
         const fetchSettings = async () => {
             try {
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}'}/ingestion/sites/${selectedSiteId}/settings`, {
+                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${selectedSiteId}/settings`, {
                     headers: { Authorization: `Bearer ${token()}` }
                 });
                 const data = await res.json();
@@ -71,7 +71,7 @@ export default function AlertsPage() {
         setSaving(true);
         setSuccess(false);
         try {
-            await fetch(`${process.env.NEXT_PUBLIC_API_URL || `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}'}/ingestion/sites/${selectedSiteId}/settings`, {
+            await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${selectedSiteId}/settings`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

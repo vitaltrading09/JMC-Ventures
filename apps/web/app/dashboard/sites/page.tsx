@@ -65,7 +65,7 @@ export default function SitesPage() {
             const [sitesData, metersData] = await Promise.all([sitesRes.json(), metersRes.json()]);
             setSites(Array.isArray(sitesData) ? sitesData : []);
             setMeters(Array.isArray(metersData) ? metersData : []);
-        } catch (err) { console.error("Fetch error:", err); }
+        } catch (err) { console.error(`Fetch error:", err); }
         finally { setLoading(false); }
     };
 
@@ -117,7 +117,7 @@ export default function SitesPage() {
         if (!confirm(`Delete meter "${meterName}" and ALL its readings? This cannot be undone.`)) return;
         setDeletingId(meterId);
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}'}/ingestion/meters/${meterId}`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${meterId}`, {
                 method: 'DELETE',
                 headers: { Authorization: `Bearer ${token()}` },
             });
