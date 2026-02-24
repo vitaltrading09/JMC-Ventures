@@ -45,7 +45,7 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
 
     // Fetch meter info once
     useEffect(() => {
-        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters', { headers: { Authorization: `Bearer ${token()}` } })
+        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, { headers: { Authorization: `Bearer ${token()}` } })
             .then(r => r.json())
             .then((all: Meter[]) => { setMeter(all.find(m => m.id === params.id) || null); setLoading(false); })
             .catch(() => setLoading(false));

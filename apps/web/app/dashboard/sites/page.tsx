@@ -56,8 +56,8 @@ export default function SitesPage() {
         try {
             const headers = { Authorization: `Bearer ${token()}` };
             const [sitesRes, metersRes] = await Promise.all([
-                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites', { headers }),
-                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters', { headers }),
+                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, { headers }),
+                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, { headers }),
             ]);
             if (sitesRes.status === 401 || metersRes.status === 401) {
                 window.location.href = '/login'; return;
@@ -65,7 +65,7 @@ export default function SitesPage() {
             const [sitesData, metersData] = await Promise.all([sitesRes.json(), metersRes.json()]);
             setSites(Array.isArray(sitesData) ? sitesData : []);
             setMeters(Array.isArray(metersData) ? metersData : []);
-        } catch (err) { console.error(`Fetch error:", err); }
+        } catch (err) { console.error('Fetch error:', err); }
         finally { setLoading(false); }
     };
 
@@ -79,7 +79,7 @@ export default function SitesPage() {
         e.preventDefault();
         setSubmitting(true); setError("");
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites', {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'} / ingestion / sites`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
                 body: JSON.stringify(siteForm),
@@ -100,7 +100,7 @@ export default function SitesPage() {
         e.preventDefault();
         setSubmitting(true); setError("");
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters', {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'} / ingestion / meters`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
                 body: JSON.stringify({ ...meterForm, site_id: selectedSiteId }),
@@ -114,10 +114,10 @@ export default function SitesPage() {
     };
 
     const handleDeleteMeter = async (meterId: string, meterName: string) => {
-        if (!confirm(`Delete meter "${meterName}" and ALL its readings? This cannot be undone.`)) return;
+        if (!confirm(`Delete meter "${meterName}" and ALL its readings ? This cannot be undone.`)) return;
         setDeletingId(meterId);
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${meterId}`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'} / ingestion / meters / ${meterId}`, {
                 method: 'DELETE',
                 headers: { Authorization: `Bearer ${token()}` },
             });
@@ -192,7 +192,7 @@ export default function SitesPage() {
                                 <button
                                     onClick={() => setExpandedSite(isExpanded ? null : site.id)}
                                     className="w-full flex items-center gap-4 px-5 py-4 hover:bg-slate-800/40 transition-colors text-left">
-                                    <div className={`transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}>
+                                    <div className={`transition - transform duration - 200 ${isExpanded ? 'rotate-90' : ''}`}>
                                         <ChevronRight className="w-4 h-4 text-slate-500" />
                                     </div>
                                     <div className="p-2 rounded-lg bg-blue-500/10 text-blue-400">
@@ -264,7 +264,7 @@ export default function SitesPage() {
                                                             {r?.power_factor_total != null && (
                                                                 <div className="text-right">
                                                                     <p className="text-slate-500">PF</p>
-                                                                    <p className={`font-mono ${r.power_factor_total < 0.85 ? 'text-red-400' : 'text-emerald-400'}`}>
+                                                                    <p className={`font - mono ${r.power_factor_total < 0.85 ? 'text-red-400' : 'text-emerald-400'}`}>
                                                                         {r.power_factor_total.toFixed(3)}
                                                                     </p>
                                                                 </div>
@@ -276,16 +276,17 @@ export default function SitesPage() {
                                                                 </div>
                                                             )}
                                                             {/* Status badge */}
-                                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${hasLive
-                                                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                                                                : r ? 'bg-slate-700 text-slate-400 border-slate-600' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'}`}>
+                                                            <span className={`px - 2 py - 0.5 rounded - full text - [10px] font - medium border ${hasLive
+                                                                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                                                    : r ? 'bg-slate-700 text-slate-400 border-slate-600' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                                                                }`}>
                                                                 {hasLive ? '● Live' : r ? 'Imported' : 'No data'}
                                                             </span>
                                                         </div>
 
                                                         {/* Actions */}
                                                         <div className="flex items-center gap-1 ml-2">
-                                                            <Link href={`/dashboard/sites/${meter.id}`}
+                                                            <Link href={`/ dashboard / sites / ${meter.id}`}
                                                                 className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors">
                                                                 <BarChart2 className="w-3.5 h-3.5" /> Chart
                                                             </Link>

@@ -31,7 +31,7 @@ export default function TariffsPage() {
     useEffect(() => {
         const fetchSites = async () => {
             try {
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites', {
+                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, {
                     headers: { Authorization: `Bearer ${token()}` }
                 });
                 const data = await res.json();
