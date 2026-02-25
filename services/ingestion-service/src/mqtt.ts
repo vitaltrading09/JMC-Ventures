@@ -11,6 +11,10 @@ export async function initMqtt(pool: Pool) {
             ALTER TABLE meter_readings 
             ADD COLUMN IF NOT EXISTS power_kw_draw DOUBLE PRECISION,
             ADD COLUMN IF NOT EXISTS power_kw_gen DOUBLE PRECISION;
+            
+            ALTER TABLE meters 
+            ADD COLUMN IF NOT EXISTS ct_ratio NUMERIC DEFAULT 1,
+            ADD COLUMN IF NOT EXISTS pt_ratio NUMERIC DEFAULT 1;
         `);
     } catch (e) {
         console.error("Failed to add Grid-X columns to meter_readings", e);
@@ -87,6 +91,23 @@ export async function initMqtt(pool: Pool) {
             const p_draw = data.power_kw_draw || (p_total && p_total > 0 ? p_total : 0);
             const p_gen = data.power_kw_gen || (p_total && p_total < 0 ? Math.abs(p_total) : 0);
 
+            let actualMeterId = meterId;
+
+            // Robust Lookup to find meter by Topic UUID or Serial Number
+            const serial = payload?.device?.serial || payload?.gateway?.serial;
+            const lookupRes = await pool.query(`
+                SELECT id FROM meters 
+                WHERE id::text = $1 OR (serial_number = $2 AND serial_number IS NOT NULL)
+                LIMIT 1
+            `, [meterId, serial || null]);
+
+            if (lookupRes.rows.length === 0) {
+                console.warn(`[MQTT WARNING] Discarding payload: No meter found for Topic/UUID: ${meterId} or Serial: ${serial}`);
+                return;
+            }
+
+            actualMeterId = lookupRes.rows[0].id;
+
             const insertQuery = `
                 INSERT INTO meter_readings (
                     time, meter_id, voltage_a, current_a, power_active_total, 
@@ -97,34 +118,9 @@ export async function initMqtt(pool: Pool) {
                 )
             `;
 
-            let actualMeterId = meterId;
-            let insertSuccess = false;
+            await pool.query(insertQuery, [actualMeterId, v_a, i_a, p_total, q_total, s_total, pf_total, freq, p_draw, p_gen]);
 
-            try {
-                await pool.query(insertQuery, [actualMeterId, v_a, i_a, p_total, q_total, s_total, pf_total, freq, p_draw, p_gen]);
-                insertSuccess = true;
-            } catch (dbErr: any) {
-                // 23503 = foreign_key_violation, 22P02 = invalid_text_representation (invalid UUID lookup)
-                if (dbErr.code === '23503' || dbErr.code === '22P02') {
-                    const serial = payload?.device?.serial || payload?.gateway?.serial;
-                    if (serial) {
-                        const lookup = await pool.query('SELECT id FROM meters WHERE serial_number = $1', [serial]);
-                        if (lookup.rows.length > 0) {
-                            actualMeterId = lookup.rows[0].id;
-                            await pool.query(insertQuery, [actualMeterId, v_a, i_a, p_total, q_total, s_total, pf_total, freq, p_draw, p_gen]);
-                            insertSuccess = true;
-                        }
-                    }
-                }
-
-                if (!insertSuccess) {
-                    console.error(`[MQTT ERROR] Failed to insert reading for meterId: ${meterId}. Error: ${dbErr.message}`);
-                }
-            }
-
-            if (insertSuccess) {
-                console.log(`[MQTT INGEST] -> ${actualMeterId} | V: ${v_a} | I: ${i_a} | Power: ${p_total}kW | PF: ${pf_total} | Hz: ${freq}`);
-            }
+            console.log(`[MQTT INGEST] -> ${actualMeterId} | V: ${v_a} | I: ${i_a} | P: ${p_total}kW | Serial: ${serial}`);
 
         } catch (error) {
             console.error('[MQTT] Error processing telemetry payload:', error);
