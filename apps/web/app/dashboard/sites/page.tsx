@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
     Plus, Search, MapPin, X, Loader2, Server,
     ChevronDown, ChevronRight, Trash2, BarChart2,
@@ -33,6 +34,8 @@ interface Meter {
 }
 
 export default function SitesPage() {
+    const router = useRouter();
+
     const [sites, setSites] = useState<Site[]>([]);
     const [meters, setMeters] = useState<Meter[]>([]);
     const [loading, setLoading] = useState(true);
@@ -238,7 +241,9 @@ export default function SitesPage() {
                                                 const r = meter.latest_reading;
                                                 const hasLive = r && r.time && (Date.now() - new Date(r.time).getTime()) < 120000;
                                                 return (
-                                                    <div key={meter.id} className="flex items-center gap-4 px-8 py-3.5 hover:bg-slate-800/30 transition-colors group">
+                                                    <div key={meter.id}
+                                                        onClick={() => router.push(`/dashboard/sites/${meter.id}`)}
+                                                        className="flex items-center gap-4 px-8 py-3.5 hover:bg-slate-800/30 transition-colors group cursor-pointer">
                                                         <div className="p-1.5 rounded-md bg-slate-800 text-slate-400">
                                                             <Activity className="w-4 h-4" />
                                                         </div>
@@ -277,8 +282,8 @@ export default function SitesPage() {
                                                             )}
                                                             {/* Status badge */}
                                                             <span className={`px - 2 py - 0.5 rounded - full text - [10px] font - medium border ${hasLive
-                                                                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                                                                    : r ? 'bg-slate-700 text-slate-400 border-slate-600' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                                                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                                                : r ? 'bg-slate-700 text-slate-400 border-slate-600' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
                                                                 }`}>
                                                                 {hasLive ? '● Live' : r ? 'Imported' : 'No data'}
                                                             </span>
@@ -286,12 +291,12 @@ export default function SitesPage() {
 
                                                         {/* Actions */}
                                                         <div className="flex items-center gap-1 ml-2">
-                                                            <Link href={`/ dashboard / sites / ${meter.id}`}
+                                                            <Link href={`/dashboard/sites/${meter.id}`}
                                                                 className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors">
                                                                 <BarChart2 className="w-3.5 h-3.5" /> Chart
                                                             </Link>
                                                             <button
-                                                                onClick={() => handleDeleteMeter(meter.id, meter.name)}
+                                                                onClick={(e) => { e.stopPropagation(); handleDeleteMeter(meter.id, meter.name); }}
                                                                 disabled={deletingId === meter.id}
                                                                 className="p-1.5 text-slate-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
                                                                 {deletingId === meter.id
