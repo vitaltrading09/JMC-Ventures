@@ -159,12 +159,12 @@ async function scheduleIngestion() {
 }
 
 // -----------------------------------------------------------------------------
-// VIRTUAL METER LOAD GENERATOR
+// VIRTUAL METER LOAD GENERATOR (DISABLED FOR PRODUCTION HARDWARE)
 // -----------------------------------------------------------------------------
 // Run scheduler every 5 seconds to simulate high frequency enterprise data
-cron.schedule('*/5 * * * * *', () => {
-    scheduleIngestion();
-});
+// cron.schedule('*/5 * * * * *', () => {
+//     scheduleIngestion();
+// });
 
 // -----------------------------------------------------------------------------
 // PREDICTIVE MAINTENANCE AI ENGINE (Heuristic Scanner)
