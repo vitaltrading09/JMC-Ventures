@@ -45,10 +45,18 @@ export async function initMqtt(pool: Pool) {
             const parts = topic.split('/');
             const meterId = parts[1];
             const payloadString = message.toString();
-            const payload = JSON.parse(payloadString);
 
-            // Log the raw payload once so we can see the exact names Acuvim uses
-            console.log(`\n[MQTT DEBUG] Raw payload from ${meterId}:`, payloadString);
+            // Log the raw payload FIRST so we always see what the meter sends
+            console.log(`\n[MQTT TIMESTAMP: ${new Date().toISOString()}]`);
+            console.log(`[MQTT DEBUG] Raw payload from ${meterId}:`, payloadString);
+
+            let payload;
+            try {
+                payload = JSON.parse(payloadString);
+            } catch (parseError) {
+                console.error(`[MQTT ERROR] Could not parse payload as JSON from ${meterId}.`);
+                return; // Exit early if it's not JSON
+            }
 
             // Extract the parameters (we check common Acuvim JSON keys for these types)
             // Note: If the Acuvim nests these inside a "Data" object, we check that too:
