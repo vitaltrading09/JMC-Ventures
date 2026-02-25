@@ -97,9 +97,34 @@ export async function initMqtt(pool: Pool) {
                 )
             `;
 
-            await pool.query(insertQuery, [meterId, v_a, i_a, p_total, q_total, s_total, pf_total, freq, p_draw, p_gen]);
+            let actualMeterId = meterId;
+            let insertSuccess = false;
 
-            console.log(`[MQTT INGEST] -> ${meterId} | V: ${v_a} | I: ${i_a} | Power: ${p_total}kW | PF: ${pf_total} | Hz: ${freq}`);
+            try {
+                await pool.query(insertQuery, [actualMeterId, v_a, i_a, p_total, q_total, s_total, pf_total, freq, p_draw, p_gen]);
+                insertSuccess = true;
+            } catch (dbErr: any) {
+                // 23503 = foreign_key_violation, 22P02 = invalid_text_representation (invalid UUID lookup)
+                if (dbErr.code === '23503' || dbErr.code === '22P02') {
+                    const serial = payload?.device?.serial || payload?.gateway?.serial;
+                    if (serial) {
+                        const lookup = await pool.query('SELECT id FROM meters WHERE serial_number = $1', [serial]);
+                        if (lookup.rows.length > 0) {
+                            actualMeterId = lookup.rows[0].id;
+                            await pool.query(insertQuery, [actualMeterId, v_a, i_a, p_total, q_total, s_total, pf_total, freq, p_draw, p_gen]);
+                            insertSuccess = true;
+                        }
+                    }
+                }
+
+                if (!insertSuccess) {
+                    console.error(`[MQTT ERROR] Failed to insert reading for meterId: ${meterId}. Error: ${dbErr.message}`);
+                }
+            }
+
+            if (insertSuccess) {
+                console.log(`[MQTT INGEST] -> ${actualMeterId} | V: ${v_a} | I: ${i_a} | Power: ${p_total}kW | PF: ${pf_total} | Hz: ${freq}`);
+            }
 
         } catch (error) {
             console.error('[MQTT] Error processing telemetry payload:', error);
