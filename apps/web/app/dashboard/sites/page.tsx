@@ -56,8 +56,8 @@ export default function SitesPage() {
         try {
             const headers = { Authorization: `Bearer ${token()}` };
             const [sitesRes, metersRes] = await Promise.all([
-                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081`}/ingestion/sites`, { headers }),
-                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081`}/ingestion/meters`, { headers }),
+                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, { headers }),
+                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, { headers }),
             ]);
             if (sitesRes.status === 401 || metersRes.status === 401) {
                 window.location.href = '/login'; return;
@@ -79,7 +79,7 @@ export default function SitesPage() {
         e.preventDefault();
         setSubmitting(true); setError("");
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'} / ingestion / sites`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
                 body: JSON.stringify(siteForm),
@@ -100,7 +100,7 @@ export default function SitesPage() {
         e.preventDefault();
         setSubmitting(true); setError("");
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'} / ingestion / meters`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
                 body: JSON.stringify({ ...meterForm, site_id: selectedSiteId }),
@@ -117,7 +117,7 @@ export default function SitesPage() {
         if (!confirm(`Delete meter "${meterName}" and ALL its readings ? This cannot be undone.`)) return;
         setDeletingId(meterId);
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'} / ingestion / meters / ${meterId}`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${meterId}`, {
                 method: 'DELETE',
                 headers: { Authorization: `Bearer ${token()}` },
             });

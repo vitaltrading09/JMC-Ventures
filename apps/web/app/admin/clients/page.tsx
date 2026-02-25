@@ -22,7 +22,7 @@ export default function ClientsPage() {
     const fetchTenants = async () => {
         try {
             const token = localStorage.getItem('token');
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081`}/auth/tenants`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/auth/tenants`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (!res.ok) throw new Error("Failed to fetch clients");
@@ -45,7 +45,7 @@ export default function ClientsPage() {
         setError("");
         try {
             const token = localStorage.getItem('token');
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081`}/auth/tenants`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/auth/tenants`, {
                 method: "POST",
                 headers: {
                     'Content-Type': 'application/json',
