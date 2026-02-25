@@ -44,7 +44,9 @@ export async function initMqtt(pool: Pool) {
             // Topic format: acuvim/{meter_id}/telemetry
             const parts = topic.split('/');
             const meterId = parts[1];
-            const payloadString = message.toString();
+            let payloadString = message.toString().trim();
+            // Strip any null bytes or weird unprintable control characters that break JSON.parse
+            payloadString = payloadString.replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, "");
 
             // Log the raw payload FIRST so we always see what the meter sends
             console.log(`\n[MQTT TIMESTAMP: ${new Date().toISOString()}]`);
@@ -53,22 +55,33 @@ export async function initMqtt(pool: Pool) {
             let payload;
             try {
                 payload = JSON.parse(payloadString);
-            } catch (parseError) {
-                console.error(`[MQTT ERROR] Could not parse payload as JSON from ${meterId}.`);
+            } catch (parseError: any) {
+                console.error(`[MQTT ERROR] Could not parse payload as JSON from ${meterId}. Error: ${parseError.message}`);
                 return; // Exit early if it's not JSON
             }
 
-            // Extract the parameters (we check common Acuvim JSON keys for these types)
-            // Note: If the Acuvim nests these inside a "Data" object, we check that too:
-            const data = payload.Data || payload;
+            // --- AXM-WEB2 Gateway Format Conversion ---
+            // The meter sends data like: { device: { readings: [ {param: "V1", value: "243.5"} ] } }
+            let data: any = payload.Data || payload; // Default assumption
 
-            const v_a = data.V_A || data.Voltage_LN || data.voltage_a || null;
-            const i_a = data.I_A || data.Current || data.current_a || null;
-            const p_total = data.P_Total || data.Active_Power || data.power_active_total || null;
-            const q_total = data.Q_Total || data.Reactive_Power || data.power_reactive_total || null;
-            const s_total = data.S_Total || data.Apparent_Power || data.power_apparent_total || null;
-            const pf_total = data.PF || data.Power_Factor || data.power_factor_total || null;
-            const freq = data.F || data.Freq || data.frequency || null;
+            if (payload.device && Array.isArray(payload.device.readings)) {
+                // Flatten the readings array into a dictionary object map
+                data = {};
+                for (const reading of payload.device.readings) {
+                    if (reading && reading.param) {
+                        data[reading.param] = parseFloat(reading.value);
+                    }
+                }
+            }
+
+            // Extract the parameters using standard Acuvim keys or the newly flattened AXM-WEB2 keys
+            const v_a = data.V1 || data.Vnavg_V || data.V_A || data.Voltage_LN || data.voltage_a || null;
+            const i_a = data.I1 || data.Iavg_A || data.I_A || data.Current || data.current_a || null;
+            const p_total = data.Psum_kW || data.P_Total || data.Active_Power || data.power_active_total || null;
+            const q_total = data.Qsum_kvar || data.Q_Total || data.Reactive_Power || data.power_reactive_total || null;
+            const s_total = data.Ssum_kVA || data.S_Total || data.Apparent_Power || data.power_apparent_total || null;
+            const pf_total = data.PF || data.Power_Factor || data.power_factor_total || data.PF1 || null;
+            const freq = data.Freq_Hz || data.F || data.Freq || data.frequency || null;
 
             // Grid-X specific derivations (if the meter doesn't explicitly send them)
             const p_draw = data.power_kw_draw || (p_total && p_total > 0 ? p_total : 0);
