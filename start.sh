@@ -13,9 +13,9 @@ echo "🗄️  Making sure Docker services are running (TimescaleDB, Redis, Mosq
 sudo docker-compose up -d
 sleep 5
 
-echo "🌱 Seeding the database with demo data..."
-DATABASE_URL="postgres://powerguard_user:powerguard_password@localhost:5432/powerguard_db" npx tsx services/auth-service/src/seed.ts
-echo "✅ Seed complete!"
+# echo "🌱 Seeding the database with demo data..."
+# DATABASE_URL="postgres://powerguard_user:powerguard_password@localhost:5432/powerguard_db" npx tsx services/auth-service/src/seed.ts
+# echo "✅ Seed complete!"
 
 echo "🚀 Starting Auth Service on port 3001..."
 nohup npx tsx services/auth-service/src/main.ts > /tmp/auth.log 2>&1 &
