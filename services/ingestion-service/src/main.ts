@@ -310,6 +310,59 @@ app.post('/sites', authenticateToken, async (req: any, res) => {
     }
 });
 
+// Secure endpoint: Delete Site (Cascade deletes meters and readings)
+app.delete('/sites/:id', authenticateToken, async (req: any, res) => {
+    const client = await pool.connect();
+    const { tenantId, role } = req.user;
+    const siteId = req.params.id;
+
+    try {
+        await client.query('BEGIN'); // Start transaction
+
+        // 1. Verify ownership
+        if (role !== 'super_admin') {
+            const checkQuery = `SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`;
+            const checkRes = await client.query(checkQuery, [siteId, tenantId]);
+            if (checkRes.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'Forbidden: Cannot delete this site' });
+            }
+        }
+
+        // 2. Delete the site (PostgreSQL CASCADE on the foreign keys will automatically delete meters, readings, and alerts if configured, otherwise we do it manually to be safe)
+
+        // Delete alerts linked to this site's meters
+        await client.query(`DELETE FROM alerts WHERE meter_id IN (SELECT id FROM meters WHERE site_id = $1)`, [siteId]);
+
+        // Delete readings linked to this site's meters
+        await client.query(`DELETE FROM meter_readings WHERE meter_id IN (SELECT id FROM meters WHERE site_id = $1)`, [siteId]);
+
+        // Delete meters linked to this site
+        await client.query(`DELETE FROM meters WHERE site_id = $1`, [siteId]);
+
+        // Delete site settings
+        await client.query(`DELETE FROM site_settings WHERE site_id = $1`, [siteId]);
+
+        // Finally, delete the site itself
+        const deleteQuery = `DELETE FROM sites WHERE id = $1 RETURNING id`;
+        const result = await client.query(deleteQuery, [siteId]);
+
+        if (result.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Site not found' });
+        }
+
+        await client.query('COMMIT');
+        res.status(200).json({ message: 'Site and all associated data deleted successfully' });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(err);
+        res.status(500).json({ error: 'Database error deleting site' });
+    } finally {
+        client.release();
+    }
+});
+
 // Secure endpoint: Create Meter
 app.post('/meters', authenticateToken, async (req: any, res) => {
     const client = await pool.connect();

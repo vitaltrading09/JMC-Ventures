@@ -130,6 +130,20 @@ export default function SitesPage() {
         finally { setDeletingId(null); }
     };
 
+    const handleDeleteSite = async (siteId: string, siteName: string) => {
+        if (!confirm(`WARNING: Are you sure you want to delete the site "${siteName}"? This will permanently delete ALL its meters and data.`)) return;
+        setDeletingId(siteId);
+        try {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${siteId}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token()}` },
+            });
+            if (!res.ok) throw new Error(await res.text());
+            fetchData();
+        } catch (err: any) { alert(`Site delete failed: ${err.message}`); }
+        finally { setDeletingId(null); }
+    };
+
     const filteredSites = sites.filter(s =>
         s.name.toLowerCase().includes(search.toLowerCase()) ||
         (s.address || '').toLowerCase().includes(search.toLowerCase())
@@ -192,9 +206,9 @@ export default function SitesPage() {
                         return (
                             <div key={site.id} className="rounded-xl border border-slate-800 bg-slate-900/60 overflow-hidden transition-all">
                                 {/* Site header row */}
-                                <button
+                                <div
                                     onClick={() => setExpandedSite(isExpanded ? null : site.id)}
-                                    className="w-full flex items-center gap-4 px-5 py-4 hover:bg-slate-800/40 transition-colors text-left">
+                                    className="w-full flex items-center gap-4 px-5 py-4 hover:bg-slate-800/40 transition-colors text-left cursor-pointer">
                                     <div className={`transition - transform duration - 200 ${isExpanded ? 'rotate-90' : ''}`}>
                                         <ChevronRight className="w-4 h-4 text-slate-500" />
                                     </div>
@@ -217,12 +231,20 @@ export default function SitesPage() {
                                             </div>
                                         )}
                                     </div>
-                                    <button
-                                        onClick={e => { e.stopPropagation(); setSelectedSiteId(site.id); setIsMeterModalOpen(true); setError(""); }}
-                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors border border-slate-700 ml-2">
-                                        <Plus className="w-3 h-3" /> Add Meter
-                                    </button>
-                                </button>
+                                    <div className="flex items-center gap-2 ml-2">
+                                        <button
+                                            onClick={e => { e.stopPropagation(); setSelectedSiteId(site.id); setIsMeterModalOpen(true); setError(""); }}
+                                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors border border-slate-700">
+                                            <Plus className="w-3 h-3" /> Add Meter
+                                        </button>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleDeleteSite(site.id, site.name); }}
+                                            disabled={deletingId === site.id}
+                                            className="p-1.5 text-slate-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors border border-transparent">
+                                            {deletingId === site.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                                        </button>
+                                    </div>
+                                </div>
 
                                 {/* Expanded meters */}
                                 {isExpanded && (
@@ -309,7 +331,8 @@ export default function SitesPage() {
                                             })
                                         )}
                                     </div>
-                                )}
+                                )
+                                }
                             </div>
                         );
                     })

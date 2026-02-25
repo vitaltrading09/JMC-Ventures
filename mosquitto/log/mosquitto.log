@@ -219,3 +219,23 @@ To fix this, use `chmod 0700 /mosquitto/config/passwd`.
 1771967420: New connection from 172.18.0.1:57026 on port 1883.
 1771967420: New client connected from 172.18.0.1:57026 as mqttjs_0f36a243 (p4, c1, k60, u'acuvim_meter').
 1771967509: Client mqttjs_0f36a243 [172.18.0.1:57026] disconnected: connection closed by client.
+1772031268: mosquitto version 2.1.2 starting
+1772031268: Config loaded from /mosquitto/config/mosquitto.conf.
+1772031268: Bridge support available.
+1772031268: Persistence support available.
+1772031268: TLS support available.
+1772031268: TLS-PSK support available.
+1772031268: Websockets support available.
+1772031268: Warning: File /mosquitto/config/passwd has world readable permissions. Future versions will refuse to load this file.
+To fix this, use `chmod 0700 /mosquitto/config/passwd`.
+
+1772031268: Warning: File /mosquitto/config/passwd owner is not mosquitto. Future versions will refuse to load this file.To fix this, use `chown mosquitto /mosquitto/config/passwd`.
+
+1772031268: Warning: File /mosquitto/config/passwd group is not mosquitto. Future versions will refuse to load this file.
+
+1772031268: Plugin builtin-security has registered to receive 'basic-auth' events.
+1772031268: Opening ipv4 listen socket on port 1883.
+1772031268: Opening ipv6 listen socket on port 1883.
+1772031268: Opening ipv4 listen socket on port 9001.
+1772031268: Opening ipv6 listen socket on port 9001.
+1772031268: mosquitto version 2.1.2 running
