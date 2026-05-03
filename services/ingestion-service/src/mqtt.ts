@@ -143,15 +143,20 @@ export async function initMqtt(pool: Pool) {
         }
 
         // ── Parameter extraction (Acuvim II key variants) ──────────────────
-        const v_a     = data.V1        ?? data.Vnavg_V     ?? data.V_A            ?? data.Voltage_LN          ?? data.voltage_a          ?? null;
-        const i_a     = data.I1        ?? data.Iavg_A      ?? data.I_A            ?? data.Current             ?? data.current_a          ?? null;
-        const p_total = data.Psum_kW   ?? data.P_Total     ?? data.Active_Power   ?? data.power_active_total   ?? null;
-        const q_total = data.Qsum_kvar ?? data.Q_Total     ?? data.Reactive_Power ?? data.power_reactive_total ?? null;
-        const s_total = data.Ssum_kVA  ?? data.S_Total     ?? data.Apparent_Power ?? data.power_apparent_total ?? null;
-        const pf      = data.PF        ?? data.PF1         ?? data.Power_Factor   ?? data.power_factor_total   ?? null;
-        const freq    = data.Freq_Hz   ?? data.F           ?? data.Freq           ?? data.frequency            ?? null;
+        const v_a     = data.V1        ?? data.Va          ?? data.Vavg        ?? data.Vnavg_V     ?? data.V_A            ?? data.Voltage_LN          ?? data.voltage_a          ?? null;
+        const v_b     = data.V2        ?? data.Vb          ?? data.voltage_b                                                                                               ?? null;
+        const v_c     = data.V3        ?? data.Vc          ?? data.voltage_c                                                                                               ?? null;
+        const i_a     = data.I1        ?? data.Ia          ?? data.Iavg        ?? data.Iavg_A      ?? data.I_A            ?? data.Current             ?? data.current_a          ?? null;
+        const i_b     = data.I2        ?? data.Ib          ?? data.current_b                                                                                               ?? null;
+        const i_c     = data.I3        ?? data.Ic          ?? data.current_c                                                                                               ?? null;
+        const p_total = data.Psum_kW   ?? data.Psum        ?? data.P_Total     ?? data.Active_Power   ?? data.power_active_total   ?? null;
+        const q_total = data.Qsum_kvar ?? data.Qsum        ?? data.Q_Total     ?? data.Reactive_Power ?? data.power_reactive_total ?? null;
+        const s_total = data.Ssum_kVA  ?? data.Ssum        ?? data.S_Total     ?? data.Apparent_Power ?? data.power_apparent_total ?? null;
+        const pf      = data.PF        ?? data.PFavg       ?? data.PF1         ?? data.Power_Factor   ?? data.power_factor_total   ?? null;
+        const freq    = data.Freq_Hz   ?? data.F           ?? data.Freq        ?? data.frequency            ?? null;
         const energy  = data.Ep_imp    ?? data.kWh         ?? data.energy_import_total                         ?? null;
-        const thd_v   = data.THD_V1    ?? data.THD_V       ?? data.thd_voltage_a                               ?? null;
+        const thd_v   = data.THD_V1    ?? data.THD_Va      ?? data.THD_V       ?? data.thd_voltage_a                               ?? null;
+        const thd_i   = data.THD_I1    ?? data.THD_Ia      ?? data.THD_I       ?? data.thd_current_a                               ?? null;
 
         // Require at least one meaningful electrical parameter
         if (v_a === null && i_a === null && p_total === null) {
@@ -204,29 +209,34 @@ export async function initMqtt(pool: Pool) {
             await dbClient.query(`
                 INSERT INTO meter_readings (
                     time,       meter_id,
-                    voltage_a,  current_a,
+                    voltage_a,  voltage_b,  voltage_c,
+                    current_a,  current_b,  current_c,
                     power_active_total,   power_reactive_total,   power_apparent_total,
                     power_factor_total,   frequency,
-                    energy_import_total,  thd_voltage_a
+                    energy_import_total,  thd_voltage_a,  thd_current_a
                 ) VALUES (
                     NOW(), $1,
-                    $2,  $3,
-                    $4,  $5,  $6,
-                    $7,  $8,
-                    $9,  $10
+                    $2,  $3,  $4,
+                    $5,  $6,  $7,
+                    $8,  $9,  $10,
+                    $11, $12,
+                    $13, $14, $15
                 )
                 ON CONFLICT (meter_id, time) DO NOTHING
             `, [
                 actualId,
-                v_a,     i_a,
+                v_a,  v_b,  v_c,
+                i_a,  i_b,  i_c,
                 p_total, q_total, s_total,
-                pf,      freq,
-                energy,  thd_v,
+                pf,   freq,
+                energy, thd_v, thd_i,
             ]);
 
             console.log(
-                `[MQTT ✓] ${actualId} | V: ${v_a} V | I: ${i_a} A | P: ${p_total} kW` +
-                ` | PF: ${pf} | THD: ${thd_v}% | serial: ${serial}`
+                `[MQTT ✓] ${actualId} | Va: ${v_a} Vb: ${v_b} Vc: ${v_c} V` +
+                ` | Ia: ${i_a} Ib: ${i_b} Ic: ${i_c} A` +
+                ` | P: ${p_total} kW | Q: ${q_total} kvar` +
+                ` | PF: ${pf} | THD_V: ${thd_v}% | THD_I: ${thd_i}% | E: ${energy} kWh`
             );
 
             // ── Alert threshold evaluation ─────────────────────────────────

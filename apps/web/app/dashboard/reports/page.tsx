@@ -9,6 +9,7 @@ import { Zap, Printer, ChevronDown, Loader2, Leaf, AlertTriangle } from "lucide-
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Site { id: string; name: string; address?: string; }
+interface Meter { id: string; site_id: string; name: string; }
 interface SiteScore {
     site_id: string;
     score: number;
@@ -57,15 +58,6 @@ const TYPE_LABEL: Record<string, string> = {
     ENERGY_AUDIT:            "Energy Audit",
 };
 
-// Placeholder — wire to /ingestion/meters/{id}/readings for live monthly kWh
-const MOCK_CONSUMPTION = [
-    { month: "Nov", kwh: 42_800 },
-    { month: "Dec", kwh: 38_200 },
-    { month: "Jan", kwh: 45_100 },
-    { month: "Feb", kwh: 39_600 },
-    { month: "Mar", kwh: 43_200 },
-    { month: "Apr", kwh: 41_500 },
-];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function fmtZAR(n: number) {
@@ -153,11 +145,13 @@ const TOOLTIP_STYLE = {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function ReportsPage() {
-    const [sites,      setSites]      = useState<Site[]>([]);
-    const [scores,     setScores]     = useState<SiteScore[]>([]);
-    const [recs,       setRecs]       = useState<Recommendation[]>([]);
-    const [loading,    setLoading]    = useState(true);
-    const [selectedId, setSelectedId] = useState<string | null>(null);
+    const [sites,       setSites]       = useState<Site[]>([]);
+    const [meters,      setMeters]      = useState<Meter[]>([]);
+    const [scores,      setScores]      = useState<SiteScore[]>([]);
+    const [recs,        setRecs]        = useState<Recommendation[]>([]);
+    const [consumption, setConsumption] = useState<{ month: string; kwh: number }[]>([]);
+    const [loading,     setLoading]     = useState(true);
+    const [selectedId,  setSelectedId]  = useState<string | null>(null);
 
     // Inject print CSS while this page is mounted
     useEffect(() => {
@@ -183,20 +177,23 @@ export default function ReportsPage() {
     const fetchAll = useCallback(async () => {
         const h = { Authorization: `Bearer ${getToken()}` };
         try {
-            const [sRes, scRes, rRes] = await Promise.all([
+            const [sRes, scRes, rRes, mRes] = await Promise.all([
                 fetch(`${API}/ingestion/sites`,           { headers: h }),
                 fetch(`${API}/ingestion/sites/scores`,    { headers: h }),
                 fetch(`${API}/ingestion/recommendations`, { headers: h }),
+                fetch(`${API}/ingestion/meters`,          { headers: h }),
             ]);
             if (sRes.status === 401) { window.location.href = "/login"; return; }
-            const [s, sc, r] = await Promise.all([
+            const [s, sc, r, m] = await Promise.all([
                 sRes.ok  ? sRes.json()  : [],
                 scRes.ok ? scRes.json() : [],
                 rRes.ok  ? rRes.json()  : [],
+                mRes.ok  ? mRes.json()  : [],
             ]);
-            setSites (Array.isArray(s)  ? s  : []);
-            setScores(Array.isArray(sc) ? sc : []);
-            setRecs  (Array.isArray(r)  ? r  : []);
+            setSites  (Array.isArray(s)  ? s  : []);
+            setScores (Array.isArray(sc) ? sc : []);
+            setRecs   (Array.isArray(r)  ? r  : []);
+            setMeters (Array.isArray(m)  ? m  : []);
         } catch { }
         finally { setLoading(false); }
     }, []);
@@ -209,6 +206,20 @@ export default function ReportsPage() {
         const firstScored = sites.find(s => scores.some(sc => sc.site_id === s.id));
         setSelectedId(firstScored?.id ?? sites[0].id);
     }, [sites, scores, selectedId]);
+
+    // Fetch monthly consumption when selected site changes
+    useEffect(() => {
+        if (!selectedId || meters.length === 0) return;
+        const meter = meters.find(m => m.site_id === selectedId);
+        if (!meter) { setConsumption([]); return; }
+        const h = { Authorization: `Bearer ${getToken()}` };
+        fetch(`${API}/ingestion/meters/${meter.id}/monthly?months=6`, { headers: h })
+            .then(r => r.ok ? r.json() : [])
+            .then((rows: { month: string; kwh: string | number }[]) => {
+                setConsumption(rows.map(r => ({ month: r.month, kwh: Number(r.kwh) })));
+            })
+            .catch(() => setConsumption([]));
+    }, [selectedId, meters]);
 
     // ── Derived ───────────────────────────────────────────────────────────────
     const selectedSite  = sites.find(s => s.id === selectedId) ?? null;
@@ -521,59 +532,53 @@ export default function ReportsPage() {
 
                             {/* 6-month consumption chart */}
                             <div className="p-5 rounded-xl border border-slate-100 bg-slate-50">
-                                <div className="flex items-start justify-between mb-4">
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                                        6-Month Consumption
-                                    </p>
-                                    <span className="text-[10px] text-slate-400 bg-slate-200 px-1.5 py-0.5 rounded font-medium shrink-0">
-                                        Illustrative
-                                    </span>
-                                </div>
-                                <ResponsiveContainer width="100%" height={200}>
-                                    <BarChart
-                                        data={MOCK_CONSUMPTION}
-                                        margin={{ top: 0, right: 4, left: -20, bottom: 0 }}
-                                    >
-                                        <CartesianGrid
-                                            strokeDasharray="3 3"
-                                            stroke="#e2e8f0"
-                                            vertical={false}
-                                        />
-                                        <XAxis
-                                            dataKey="month"
-                                            stroke="#94a3b8" fontSize={11}
-                                            axisLine={false} tickLine={false}
-                                        />
-                                        <YAxis
-                                            stroke="#94a3b8" fontSize={11}
-                                            axisLine={false} tickLine={false}
-                                            tickFormatter={v => `${(v / 1000).toFixed(0)}k`}
-                                        />
-                                        <Tooltip
-                                            {...TOOLTIP_STYLE}
-                                            formatter={(v: any) => [
-                                                `${Number(v).toLocaleString()} kWh`,
-                                                "Consumption",
-                                            ]}
-                                        />
-                                        <Bar dataKey="kwh" radius={[3, 3, 0, 0]}>
-                                            {MOCK_CONSUMPTION.map((_, i) => (
-                                                <Cell
-                                                    key={i}
-                                                    fill={i === MOCK_CONSUMPTION.length - 1 ? "#059669" : "#3b82f6"}
-                                                    fillOpacity={i === MOCK_CONSUMPTION.length - 1 ? 1 : 0.65}
-                                                />
-                                            ))}
-                                        </Bar>
-                                    </BarChart>
-                                </ResponsiveContainer>
-                                <p className="text-[10px] text-slate-400 mt-2">
-                                    Wire to{" "}
-                                    <code className="text-[10px] bg-slate-200 px-1 rounded">
-                                        /ingestion/meters/&#123;id&#125;/readings
-                                    </code>{" "}
-                                    for live data
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">
+                                    6-Month Consumption
                                 </p>
+                                {consumption.length > 0 ? (
+                                    <ResponsiveContainer width="100%" height={200}>
+                                        <BarChart
+                                            data={consumption}
+                                            margin={{ top: 0, right: 4, left: -20, bottom: 0 }}
+                                        >
+                                            <CartesianGrid
+                                                strokeDasharray="3 3"
+                                                stroke="#e2e8f0"
+                                                vertical={false}
+                                            />
+                                            <XAxis
+                                                dataKey="month"
+                                                stroke="#94a3b8" fontSize={11}
+                                                axisLine={false} tickLine={false}
+                                            />
+                                            <YAxis
+                                                stroke="#94a3b8" fontSize={11}
+                                                axisLine={false} tickLine={false}
+                                                tickFormatter={v => `${(v / 1000).toFixed(0)}k`}
+                                            />
+                                            <Tooltip
+                                                {...TOOLTIP_STYLE}
+                                                formatter={(v: any) => [
+                                                    `${Number(v).toLocaleString()} kWh`,
+                                                    "Consumption",
+                                                ]}
+                                            />
+                                            <Bar dataKey="kwh" radius={[3, 3, 0, 0]}>
+                                                {consumption.map((_, i) => (
+                                                    <Cell
+                                                        key={i}
+                                                        fill={i === consumption.length - 1 ? "#059669" : "#3b82f6"}
+                                                        fillOpacity={i === consumption.length - 1 ? 1 : 0.65}
+                                                    />
+                                                ))}
+                                            </Bar>
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                ) : (
+                                    <div className="h-[200px] flex items-center justify-center text-slate-400 text-sm">
+                                        No consumption data yet
+                                    </div>
+                                )}
                             </div>
                         </div>
 

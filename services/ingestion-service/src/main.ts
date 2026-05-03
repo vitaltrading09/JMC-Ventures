@@ -920,6 +920,53 @@ app.get('/meters/:id/readings', authenticateToken, async (req: any, res) => {
     }
 });
 
+// Monthly consumption aggregation endpoint
+app.get('/meters/:id/monthly', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const months = Math.min(parseInt(String(req.query.months || '6')), 24);
+    const { tenantId, role } = req.user;
+
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const authCheck = await client.query(`
+                SELECT m.id FROM meters m
+                JOIN sites s ON m.site_id = s.id
+                WHERE m.id = $1 AND s.tenant_id = $2
+            `, [id, tenantId]);
+            if (authCheck.rows.length === 0) {
+                client.release();
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+        }
+
+        const result = await client.query(`
+            SELECT
+                TO_CHAR(DATE_TRUNC('month', time), 'Mon') AS month,
+                DATE_TRUNC('month', time) AS month_start,
+                CASE
+                    WHEN MAX(energy_import_total) IS NOT NULL
+                         AND (MAX(energy_import_total) - MIN(energy_import_total)) > 0
+                    THEN ROUND((MAX(energy_import_total) - MIN(energy_import_total))::numeric, 0)
+                    ELSE ROUND((SUM(power_active_total) * 5.0 / 60.0)::numeric, 0)
+                END AS kwh
+            FROM meter_readings
+            WHERE meter_id = $1
+              AND time >= DATE_TRUNC('month', NOW() - ($2 || ' months')::INTERVAL)
+              AND power_active_total IS NOT NULL
+            GROUP BY DATE_TRUNC('month', time)
+            ORDER BY DATE_TRUNC('month', time) ASC
+        `, [id, months - 1]);
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Monthly readings error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
 // Flexible column name mapper
 const mapRow = (row: any) => {
     const k = (keys: string[]) => {

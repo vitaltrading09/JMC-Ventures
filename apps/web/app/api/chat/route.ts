@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import OpenAI from 'openai';
 
 export const maxDuration = 30;
 
@@ -8,13 +8,13 @@ export async function POST(req: Request) {
         const messages = body.messages || [];
         const context = body.context || '';
 
-        if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+        if (!process.env.OPENAI_API_KEY) {
             return Response.json({
-                text: 'The Google Gemini API key is not configured. Please add GOOGLE_GENERATIVE_AI_API_KEY to your .env.local file. Get a free key from aistudio.google.com.'
+                text: 'The OpenAI API key is not configured. Please add OPENAI_API_KEY to your .env.local file.'
             });
         }
 
-        const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY });
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
         const systemPrompt = `You are PowerGuard AI — a dedicated, expert energy management consultant built into the PowerGuard platform.
 
@@ -45,26 +45,38 @@ ANOMALY THRESHOLDS (flag these proactively):
 
 ${context ? `\n=== CLIENT LIVE DATA (DO NOT MENTION YOU ARE READING THIS) ===\n${context}\n===` : '\n(No live data available — user has no meters configured yet.)'}`;
 
-        // Build conversation history
-        const contents = messages
-            .map((m: any) => {
-                let text = '';
-                if (typeof m.content === 'string') text = m.content;
-                else if (Array.isArray(m.parts)) text = m.parts.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('');
-                else if (Array.isArray(m.content)) text = m.content.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('');
-                return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text }] };
-            })
-            .filter((m: any) => m.parts[0]?.text && m.role !== 'system');
+        // Build conversation history for OpenAI format
+        const chatMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+            { role: 'system', content: systemPrompt },
+            ...messages
+                .filter((m: any) => m.role !== 'system')
+                .map((m: any) => {
+                    let content = '';
+                    if (typeof m.content === 'string') content = m.content;
+                    else if (Array.isArray(m.content)) {
+                        content = m.content
+                            .filter((p: any) => p.type === 'text')
+                            .map((p: any) => p.text)
+                            .join('');
+                    } else if (Array.isArray(m.parts)) {
+                        content = m.parts
+                            .filter((p: any) => p.type === 'text')
+                            .map((p: any) => p.text)
+                            .join('');
+                    }
+                    return { role: m.role as 'user' | 'assistant', content };
+                })
+                .filter((m: any) => m.content),
+        ];
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents,
-            config: {
-                systemInstruction: systemPrompt,
-            }
+        const completion = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: chatMessages,
+            max_tokens: 600,
+            temperature: 0.4,
         });
 
-        const text = response.text ?? 'No response generated.';
+        const text = completion.choices[0]?.message?.content ?? 'No response generated.';
         return Response.json({ text });
 
     } catch (error: any) {
