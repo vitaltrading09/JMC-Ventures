@@ -13,6 +13,7 @@ build/
 
 # Typescript
 dist/
+*.tsbuildinfo
 
 # Misc
 .DS_Store
@@ -29,6 +30,9 @@ yarn-error.log*
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Claude Code session data
+.claude/
 
 # Vercel
 .vercel

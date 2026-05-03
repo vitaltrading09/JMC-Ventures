@@ -73,8 +73,8 @@ export default function LoginPage() {
                         <span className="text-blue-400">Modern Enterprise</span>.
                     </h1>
                     <p className="text-lg text-slate-400">
-                        Unlock 10-15% verified savings with our AI-driven consultant platform.
-                        Monitor, optimize, and trade energy seamlessly.
+                        AI-driven power quality monitoring and recommendations for industrial and commercial sites.
+                        Monitor, diagnose, and optimize your electrical infrastructure.
                     </p>
                     <div className="flex flex-wrap gap-4 pt-4">
                         <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/50 border border-slate-700 text-sm text-slate-300">
@@ -193,29 +193,6 @@ export default function LoginPage() {
                             </button>
                         </div>
                     </form>
-
-                    {/* Demo Credentials */}
-                    <div className="mt-4 p-3 rounded-lg bg-blue-950/30 border border-blue-800/30">
-                        <p className="text-xs text-blue-400 font-medium mb-2">⚡ Demo Access — click to auto-fill:</p>
-                        <div className="grid grid-cols-2 gap-2">
-                            <button
-                                type="button"
-                                onClick={() => { setEmail("demo@powerguard.com"); setPassword("password123"); }}
-                                className="text-left p-2 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 transition-colors"
-                            >
-                                <p className="text-[10px] text-slate-400">Client View</p>
-                                <p className="text-xs text-white font-mono truncate">demo@powerguard.com</p>
-                            </button>
-                            <button
-                                type="button"
-                                onClick={() => { setEmail("admin@powerguard.com"); setPassword("password123"); }}
-                                className="text-left p-2 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 transition-colors"
-                            >
-                                <p className="text-[10px] text-slate-400">Super Admin</p>
-                                <p className="text-xs text-white font-mono truncate">admin@powerguard.com</p>
-                            </button>
-                        </div>
-                    </div>
 
                     <p className="text-center text-sm text-slate-500">
                         Don't have an account?{" "}

@@ -1,32 +1,48 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
+import { useState, useEffect } from "react";
 import {
     LayoutDashboard,
     Zap,
     Users,
-    Server,
+    Building2,
     Settings,
     LogOut,
+    Briefcase,
+    Star,
 } from "lucide-react";
 
 export function AdminSidebar() {
     const pathname = usePathname();
-    const router = useRouter();
+    const [user, setUser] = useState({ name: "Platform Admin", email: "admin@powerguard.co.za", initials: "PG" });
+
+    useEffect(() => {
+        try {
+            const stored = localStorage.getItem("user");
+            if (stored) {
+                const u = JSON.parse(stored);
+                const name = u.name || u.email?.split("@")[0] || "Admin";
+                const initials = name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2);
+                setUser({ name, email: u.email || "", initials });
+            }
+        } catch { }
+    }, []);
 
     const handleLogout = () => {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
-        document.cookie = "token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-        router.push("/login");
+        document.cookie = "token=; path=/; max-age=0; SameSite=Strict";
+        window.location.href = "/login";
     };
 
     const links = [
-        { name: "Global Overview", href: "/admin", icon: LayoutDashboard },
-        { name: "Client Management", href: "/admin/clients", icon: Users },
-        { name: "Site Provisioning", href: "/admin/sites", icon: Server },
-        { name: "Platform Settings", href: "/admin/settings", icon: Settings },
+        { name: "Overview",          href: "/admin",             icon: LayoutDashboard },
+        { name: "Client Portfolios", href: "/admin/clients",     icon: Users },
+        { name: "Leads Queue",       href: "/admin/leads",       icon: Briefcase },
+        { name: "Site Provisioning", href: "/admin/sites",       icon: Building2 },
+        { name: "Platform Settings", href: "/admin/settings",    icon: Settings },
     ];
 
     return (
@@ -35,56 +51,74 @@ export function AdminSidebar() {
             <div className="p-6">
                 <Link href="/admin" className="flex items-center gap-2">
                     <Zap className="h-8 w-8 text-blue-500" />
-                    <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">
-                        PowerGuard <span className="text-xs text-red-500 align-top">ADMIN</span>
-                    </span>
+                    <div>
+                        <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">
+                            PowerGuard
+                        </span>
+                        <span className="ml-1.5 text-[10px] font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                            Operator
+                        </span>
+                    </div>
                 </Link>
             </div>
 
             {/* Navigation */}
-            <nav className="flex-1 px-4 space-y-2 mt-4 overflow-y-auto">
-                <div className="mb-2 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    Super Admin
+            <nav className="flex-1 px-4 space-y-1.5 overflow-y-auto">
+                <div className="mb-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    Operator Portal
                 </div>
                 {links.map((link) => {
-                    const isActive = pathname === link.href;
+                    const isActive = pathname === link.href || (link.href !== "/admin" && pathname.startsWith(link.href));
                     return (
                         <Link
                             key={link.name}
                             href={link.href}
-                            className={`flex items-center gap-3 px-4 py-2 rounded-lg transition-all duration-200 group ${isActive
-                                ? "bg-red-600/10 text-red-400 border border-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.15)]"
-                                : "text-slate-400 hover:bg-slate-900 hover:text-white"
-                                }`}
+                            className={`flex items-center gap-3 px-4 py-2.5 rounded-lg transition-all duration-200 group ${
+                                isActive
+                                    ? "bg-red-600/10 text-red-400 border border-red-500/20 shadow-[0_0_12px_rgba(239,68,68,0.12)]"
+                                    : "text-slate-400 hover:bg-slate-900 hover:text-white"
+                            }`}
                         >
                             <link.icon
-                                className={`h-5 w-5 ${isActive
-                                    ? "text-red-400 drop-shadow-[0_0_8px_rgba(239,68,68,0.5)]"
-                                    : "text-slate-500 group-hover:text-white transition-colors"
-                                    }`}
+                                className={`h-5 w-5 ${
+                                    isActive
+                                        ? "text-red-400 drop-shadow-[0_0_8px_rgba(239,68,68,0.5)]"
+                                        : "text-slate-500 group-hover:text-white transition-colors"
+                                }`}
                             />
                             <span className="font-medium text-sm">{link.name}</span>
                         </Link>
                     );
                 })}
+
+                <div className="mt-8 mb-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    Quick Links
+                </div>
+                <Link
+                    href="/dashboard"
+                    className="flex items-center gap-3 px-4 py-2.5 rounded-lg text-slate-400 hover:bg-slate-900 hover:text-white transition-all group"
+                >
+                    <Star className="h-5 w-5 text-slate-500 group-hover:text-yellow-400 transition-colors" />
+                    <span className="font-medium text-sm">Client View</span>
+                </Link>
             </nav>
 
-            {/* Footer / User Profile */}
+            {/* User */}
             <div className="p-4 border-t border-slate-800">
                 <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-900/50 border border-slate-800">
-                    <div className="h-10 w-10 rounded-full bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center text-white font-bold">
-                        PGA
+                    <div className="h-10 w-10 rounded-full bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
+                        {user.initials}
                     </div>
                     <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-white truncate">
-                            Platform Admin
-                        </p>
-                        <p className="text-xs text-slate-500 truncate">
-                            admin@powerguard.com
-                        </p>
+                        <p className="text-sm font-medium text-white truncate">{user.name}</p>
+                        <p className="text-xs text-slate-500 truncate">{user.email}</p>
                     </div>
-                    <button onClick={handleLogout} className="text-slate-400 hover:text-red-400 transition-colors">
-                        <LogOut className="h-5 w-5" />
+                    <button
+                        onClick={handleLogout}
+                        title="Log out"
+                        className="text-slate-400 hover:text-red-400 transition-colors p-1.5 rounded-lg hover:bg-red-500/10"
+                    >
+                        <LogOut className="h-4 w-4" />
                     </button>
                 </div>
             </div>

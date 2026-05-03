@@ -4,6 +4,12 @@ import cron from 'node-cron';
 import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { initMqtt } from './mqtt';
+import { computeAndStoreSiteScore, getLatestSiteScore } from './energy-score';
+import {
+    generateAndStoreSiteRecommendations,
+    getSiteRecommendations,
+    getTenantRecommendations,
+} from './ai-recommendations';
 
 dotenv.config();
 
@@ -25,6 +31,66 @@ const pool = new Pool({
 (async () => {
     const client = await pool.connect();
     try {
+        // Energy score weight columns (added to existing site_settings)
+        await client.query(`
+            ALTER TABLE site_settings
+            ADD COLUMN IF NOT EXISTS tariff_type VARCHAR(50),
+            ADD COLUMN IF NOT EXISTS weight_pf DECIMAL(4,3),
+            ADD COLUMN IF NOT EXISTS weight_thd DECIMAL(4,3),
+            ADD COLUMN IF NOT EXISTS weight_load_factor DECIMAL(4,3),
+            ADD COLUMN IF NOT EXISTS weight_voltage_quality DECIMAL(4,3);
+        `);
+
+        // Energy scores table
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS energy_scores (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                site_id UUID REFERENCES sites(id) ON DELETE CASCADE,
+                score DECIMAL(5,2) NOT NULL,
+                pf_score DECIMAL(5,2), thd_score DECIMAL(5,2),
+                load_factor_score DECIMAL(5,2), voltage_quality_score DECIMAL(5,2),
+                weight_pf DECIMAL(4,3), weight_thd DECIMAL(4,3),
+                weight_load_factor DECIMAL(4,3), weight_voltage_quality DECIMAL(4,3),
+                tariff_type VARCHAR(50), calculated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_energy_scores_site ON energy_scores (site_id, calculated_at DESC);
+        `);
+
+        // Recommendations table
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS recommendations (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                site_id UUID REFERENCES sites(id) ON DELETE CASCADE,
+                tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+                type VARCHAR(100) NOT NULL, priority INTEGER DEFAULT 1,
+                title VARCHAR(255) NOT NULL, problem TEXT, solution TEXT,
+                estimated_monthly_saving_zar DECIMAL(12,2) DEFAULT 0,
+                estimated_implementation_cost_zar DECIMAL(12,2) DEFAULT 0,
+                payback_months INTEGER DEFAULT 0,
+                confidence VARCHAR(20) DEFAULT 'MEDIUM',
+                standard_reference VARCHAR(255),
+                status VARCHAR(50) DEFAULT 'ACTIVE',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_recommendations_site ON recommendations (site_id, status, created_at DESC);
+        `);
+
+        // Leads table
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS leads (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                site_id UUID REFERENCES sites(id) ON DELETE CASCADE,
+                tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+                recommendation_id UUID REFERENCES recommendations(id) ON DELETE SET NULL,
+                status VARCHAR(50) DEFAULT 'NEW',
+                notes TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status, created_at DESC);
+        `);
+
+        console.log('DB Schema initialized: energy_scores, recommendations, leads verified');
         await client.query(`
             CREATE TABLE IF NOT EXISTS site_settings (
                 site_id UUID PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
@@ -165,6 +231,30 @@ async function scheduleIngestion() {
 // cron.schedule('*/5 * * * * *', () => {
 //     scheduleIngestion();
 // });
+
+// -----------------------------------------------------------------------------
+// ENERGY SCORE ENGINE — recalculates every 5 minutes for all sites
+// -----------------------------------------------------------------------------
+cron.schedule('*/5 * * * *', async () => {
+    const client = await pool.connect();
+    try {
+        const sites = await client.query(`SELECT id FROM sites`);
+        for (const site of sites.rows) {
+            try {
+                const result = await computeAndStoreSiteScore(pool, site.id);
+                if (result) {
+                    console.log(`[SCORE] Site ${site.id} → ${result.score}/100 (${result.tariffType})`);
+                }
+            } catch (e) {
+                console.error(`[SCORE] Error for site ${site.id}:`, e);
+            }
+        }
+    } catch (err) {
+        console.error('[SCORE] Cron error:', err);
+    } finally {
+        client.release();
+    }
+});
 
 // -----------------------------------------------------------------------------
 // PREDICTIVE MAINTENANCE AI ENGINE (Heuristic Scanner)
@@ -951,6 +1041,227 @@ app.post('/upload', authenticateToken, upload.single('file') as any, async (req:
         console.error('Upload Error:', err);
         client.release();
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ── Energy Score endpoints ────────────────────────────────────────────────────
+
+// GET /sites/:id/score — latest stored energy score for a site
+app.get('/sites/:id/score', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const check = await client.query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
+            if (check.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
+        }
+        const score = await getLatestSiteScore(pool, id);
+        if (!score) return res.json({ score: null, message: 'Insufficient data — need at least 10 readings' });
+        res.json(score);
+    } catch (err) {
+        res.status(500).json({ error: 'Error fetching energy score' });
+    } finally {
+        client.release();
+    }
+});
+
+// POST /sites/:id/score/calculate — force recalculate score now
+app.post('/sites/:id/score/calculate', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const check = await client.query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
+            if (check.rows.length === 0) { client.release(); return res.status(403).json({ error: 'Forbidden' }); }
+        }
+        client.release();
+        const result = await computeAndStoreSiteScore(pool, id);
+        if (!result) return res.json({ score: null, message: 'Insufficient data' });
+        res.json(result);
+    } catch (err) {
+        client.release();
+        res.status(500).json({ error: 'Error calculating score' });
+    }
+});
+
+// GET /sites/scores — latest score for every site in the tenant
+app.get('/sites/scores', authenticateToken, async (req: any, res) => {
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        let query = `
+            SELECT s.id as site_id, s.name as site_name,
+                   es.score, es.tariff_type, es.calculated_at,
+                   es.pf_score, es.thd_score, es.load_factor_score, es.voltage_quality_score
+            FROM sites s
+            LEFT JOIN LATERAL (
+                SELECT * FROM energy_scores
+                WHERE site_id = s.id
+                ORDER BY calculated_at DESC LIMIT 1
+            ) es ON true
+        `;
+        const params: any[] = [];
+        if (role !== 'super_admin') { query += ` WHERE s.tenant_id = $1`; params.push(tenantId); }
+        query += ` ORDER BY s.created_at ASC`;
+        const result = await client.query(query, params);
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Error fetching scores' });
+    } finally {
+        client.release();
+    }
+});
+
+// ── Recommendation endpoints ──────────────────────────────────────────────────
+
+// GET /sites/:id/recommendations — active recommendations for a site
+app.get('/sites/:id/recommendations', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const check = await client.query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
+            if (check.rows.length === 0) { client.release(); return res.status(403).json({ error: 'Forbidden' }); }
+        }
+        client.release();
+        const recs = await getSiteRecommendations(pool, id);
+        res.json(recs);
+    } catch (err) {
+        client.release();
+        res.status(500).json({ error: 'Error fetching recommendations' });
+    }
+});
+
+// GET /recommendations — all recommendations for the tenant
+app.get('/recommendations', authenticateToken, async (req: any, res) => {
+    const { tenantId, role } = req.user;
+    try {
+        const recs = await getTenantRecommendations(pool, role === 'super_admin' ? null : tenantId);
+        res.json(recs);
+    } catch (err) {
+        res.status(500).json({ error: 'Error fetching recommendations' });
+    }
+});
+
+// POST /sites/:id/recommendations/generate — trigger Claude analysis for a site
+app.post('/sites/:id/recommendations/generate', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        const siteCheck = await client.query(
+            `SELECT id, name, address, tenant_id FROM sites WHERE id = $1 ${role !== 'super_admin' ? 'AND tenant_id = $2' : ''}`,
+            role !== 'super_admin' ? [id, tenantId] : [id]
+        );
+        if (siteCheck.rows.length === 0) { client.release(); return res.status(403).json({ error: 'Forbidden' }); }
+        const site = siteCheck.rows[0];
+        client.release();
+
+        // Compute fresh score first
+        const score = await computeAndStoreSiteScore(pool, id);
+        if (!score) return res.status(400).json({ error: 'Insufficient meter data to generate recommendations (need ≥10 readings in last 30 days)' });
+
+        const recs = await generateAndStoreSiteRecommendations(
+            pool, id, site.tenant_id, score, site.name, site.address || ''
+        );
+        res.json({ generated: recs.length, recommendations: recs });
+    } catch (err: any) {
+        console.error('[API] Recommendation generation error:', err);
+        res.status(500).json({ error: err.message || 'Failed to generate recommendations' });
+    }
+});
+
+// POST /recommendations/:id/notify — client clicks "Notify Team" → creates a lead
+app.post('/recommendations/:id/notify', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        // Verify the recommendation belongs to this tenant
+        const recCheck = await client.query(
+            `SELECT r.id, r.site_id, r.tenant_id FROM recommendations r
+             WHERE r.id = $1 ${role !== 'super_admin' ? 'AND r.tenant_id = $2' : ''}`,
+            role !== 'super_admin' ? [id, tenantId] : [id]
+        );
+        if (recCheck.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
+        const rec = recCheck.rows[0];
+
+        // Prevent duplicate active leads for the same recommendation
+        const existing = await client.query(
+            `SELECT id FROM leads WHERE recommendation_id = $1 AND status NOT IN ('WON','LOST')`,
+            [id]
+        );
+        if (existing.rows.length > 0) {
+            return res.status(409).json({ error: 'A lead for this recommendation already exists', leadId: existing.rows[0].id });
+        }
+
+        const lead = await client.query(`
+            INSERT INTO leads (site_id, tenant_id, recommendation_id, status)
+            VALUES ($1, $2, $3, 'NEW')
+            RETURNING *
+        `, [rec.site_id, rec.tenant_id, id]);
+
+        console.log(`[LEAD] New lead created: ${lead.rows[0].id} (rec: ${id})`);
+        res.status(201).json(lead.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Error creating lead' });
+    } finally {
+        client.release();
+    }
+});
+
+// ── Lead management endpoints ─────────────────────────────────────────────────
+
+// GET /leads — all leads (super_admin = all tenants, admin = own tenant)
+app.get('/leads', authenticateToken, async (req: any, res) => {
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        let query = `
+            SELECT l.*,
+                   s.name as site_name, s.address as site_address,
+                   r.type as rec_type, r.title as rec_title,
+                   r.estimated_monthly_saving_zar, r.priority as rec_priority
+            FROM leads l
+            JOIN sites s ON l.site_id = s.id
+            LEFT JOIN recommendations r ON l.recommendation_id = r.id
+        `;
+        const params: any[] = [];
+        if (role !== 'super_admin') { query += ` WHERE l.tenant_id = $1`; params.push(tenantId); }
+        query += ` ORDER BY l.created_at DESC LIMIT 100`;
+        const result = await client.query(query, params);
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Error fetching leads' });
+    } finally {
+        client.release();
+    }
+});
+
+// PATCH /leads/:id — update lead status (NEW → IN_REVIEW → QUOTED → WON/LOST)
+app.patch('/leads/:id', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { status, notes } = req.body;
+    const { tenantId, role } = req.user;
+    const validStatuses = ['NEW', 'IN_REVIEW', 'QUOTED', 'WON', 'LOST'];
+    if (!validStatuses.includes(status)) return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
+
+    const client = await pool.connect();
+    try {
+        let query = `UPDATE leads SET status = $1, notes = COALESCE($2, notes), updated_at = NOW() WHERE id = $3`;
+        const params: any[] = [status, notes ?? null, id];
+        if (role !== 'super_admin') { query += ` AND tenant_id = $4`; params.push(tenantId); }
+        query += ` RETURNING *`;
+        const result = await client.query(query, params);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Lead not found or access denied' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Error updating lead' });
+    } finally {
+        client.release();
     }
 });
 

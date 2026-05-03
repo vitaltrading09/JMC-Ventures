@@ -11,7 +11,9 @@ import {
     ShoppingCart,
     LineChart,
     Building2,
+    Lightbulb,
     FileSpreadsheet,
+    FileText,
     BadgeDollarSign,
     Menu,
     X,
@@ -59,18 +61,20 @@ export function Sidebar() {
     }, [pathname]);
 
     const links = [
-        { name: "Overview", href: "/dashboard", icon: LayoutDashboard },
-        { name: "Sites", href: "/dashboard/sites", icon: Building2 },
-        { name: "Analytics", href: "/dashboard/analytics", icon: LineChart },
-        { name: "Savings", href: "/dashboard/savings", icon: PieChart },
-        { name: "Marketplace", href: "/dashboard/marketplace", icon: ShoppingCart },
-        { name: "Settings", href: "/dashboard/settings", icon: Settings },
+        { name: "Overview",        href: "/dashboard",                  icon: LayoutDashboard },
+        { name: "Sites",           href: "/dashboard/sites",            icon: Building2 },
+        { name: "Recommendations", href: "/dashboard/recommendations",  icon: Lightbulb },
+        { name: "Analytics",       href: "/dashboard/analytics",        icon: LineChart },
+        { name: "Savings",         href: "/dashboard/savings",          icon: PieChart },
+        { name: "Reports",         href: "/dashboard/reports",          icon: FileText },
+        { name: "Marketplace",     href: "/dashboard/marketplace",      icon: ShoppingCart },
+        { name: "Settings",        href: "/dashboard/settings",         icon: Settings },
     ];
 
     return (
         <>
             {/* Mobile Nav Toggle */}
-            <div className="lg:hidden fixed top-0 left-0 w-full h-16 bg-slate-950 border-b border-slate-800 z-40 flex items-center px-4 justify-between">
+            <div className="print:hidden lg:hidden fixed top-0 left-0 w-full h-16 bg-slate-950 border-b border-slate-800 z-40 flex items-center px-4 justify-between">
                 <Link href="/" className="flex items-center gap-2">
                     <Zap className="h-6 w-6 text-blue-500" />
                     <span className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">
@@ -97,7 +101,7 @@ export function Sidebar() {
             )}
 
             {/* Sidebar */}
-            <aside className={`fixed left-0 top-0 z-50 h-[100dvh] w-64 bg-slate-950 border-r border-slate-800 flex flex-col justify-between transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
+            <aside className={`print:hidden fixed left-0 top-0 z-50 h-[100dvh] w-64 bg-slate-950 border-r border-slate-800 flex flex-col justify-between transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
                 {/* Logo */}
                 <div className="p-6 hidden lg:block">
                     <Link href="/" className="flex items-center gap-2">

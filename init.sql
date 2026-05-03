@@ -64,8 +64,13 @@ CREATE TABLE IF NOT EXISTS meter_readings (
 -- Convert to Hypertable
 SELECT create_hypertable('meter_readings', 'time', if_not_exists => TRUE);
 
--- Create Indexes for fast querying
+-- Primary query index
 CREATE INDEX IF NOT EXISTS idx_meter_readings_meter_time ON meter_readings (meter_id, time DESC);
+
+-- Unique index required for ON CONFLICT (meter_id, time) DO NOTHING idempotent inserts.
+-- Prevents duplicate rows when AXM-WEB2 store-and-forward replays packets after an outage.
+-- Must include the time partitioning dimension for TimescaleDB hypertables.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_meter_readings_unique ON meter_readings (meter_id, time);
 
 -- Alerts Config (Per Tenant thresholds)
 CREATE TABLE IF NOT EXISTS alert_settings (
@@ -95,6 +100,76 @@ CREATE TABLE IF NOT EXISTS alerts (
 -- Index for faster alert querying
 CREATE INDEX IF NOT EXISTS idx_alerts_tenant_id ON alerts(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_is_read ON alerts(is_read);
+
+-- Dead-letter payloads: captures unparseable or unrecognised MQTT messages
+-- so no telemetry is silently discarded. Inspect to diagnose firmware mismatches.
+CREATE TABLE IF NOT EXISTS dead_letter_payloads (
+    id          BIGSERIAL PRIMARY KEY,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    topic       TEXT,
+    raw_payload TEXT,
+    error_msg   TEXT
+);
+
+-- Energy Score weights — configurable per site, override auto-detected defaults
+-- Added to site_settings as optional columns (NULL = use auto-detected defaults)
+-- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS tariff_type VARCHAR(50);
+-- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS weight_pf DECIMAL(4,3);
+-- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS weight_thd DECIMAL(4,3);
+-- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS weight_load_factor DECIMAL(4,3);
+-- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS weight_voltage_quality DECIMAL(4,3);
+-- (These are added at runtime via the ingestion-service startup migration)
+
+-- Energy Scores — calculated every 5 min, tracked over time per site
+CREATE TABLE IF NOT EXISTS energy_scores (
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    site_id              UUID REFERENCES sites(id) ON DELETE CASCADE,
+    score                DECIMAL(5,2) NOT NULL CHECK (score >= 0 AND score <= 100),
+    pf_score             DECIMAL(5,2),
+    thd_score            DECIMAL(5,2),
+    load_factor_score    DECIMAL(5,2),
+    voltage_quality_score DECIMAL(5,2),
+    weight_pf            DECIMAL(4,3),
+    weight_thd           DECIMAL(4,3),
+    weight_load_factor   DECIMAL(4,3),
+    weight_voltage_quality DECIMAL(4,3),
+    tariff_type          VARCHAR(50),
+    calculated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_energy_scores_site ON energy_scores (site_id, calculated_at DESC);
+
+-- AI Recommendations — Claude-generated, ranked by ROI, per site
+CREATE TABLE IF NOT EXISTS recommendations (
+    id                              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    site_id                         UUID REFERENCES sites(id) ON DELETE CASCADE,
+    tenant_id                       UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    type                            VARCHAR(100) NOT NULL,
+    priority                        INTEGER DEFAULT 1,
+    title                           VARCHAR(255) NOT NULL,
+    problem                         TEXT,
+    solution                        TEXT,
+    estimated_monthly_saving_zar    DECIMAL(12,2) DEFAULT 0,
+    estimated_implementation_cost_zar DECIMAL(12,2) DEFAULT 0,
+    payback_months                  INTEGER DEFAULT 0,
+    confidence                      VARCHAR(20) DEFAULT 'MEDIUM',
+    standard_reference              VARCHAR(255),
+    status                          VARCHAR(50) DEFAULT 'ACTIVE',
+    created_at                      TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_recommendations_site ON recommendations (site_id, status, created_at DESC);
+
+-- Leads — created when client clicks "Notify Team" on a recommendation
+CREATE TABLE IF NOT EXISTS leads (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    site_id           UUID REFERENCES sites(id) ON DELETE CASCADE,
+    tenant_id         UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    recommendation_id UUID REFERENCES recommendations(id) ON DELETE SET NULL,
+    status            VARCHAR(50) DEFAULT 'NEW',
+    notes             TEXT,
+    created_at        TIMESTAMPTZ DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status, created_at DESC);
 
 -- Savings Ledger (Verified Savings for 10% model)
 CREATE TABLE IF NOT EXISTS savings_ledger (

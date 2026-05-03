@@ -9,6 +9,7 @@
         "dev": "ts-node-dev --respawn src/main.ts"
     },
     "dependencies": {
+        "@anthropic-ai/sdk": "^0.39.0",
         "@types/cors": "^2.8.19",
         "@types/express": "^5.0.6",
         "@types/jsonwebtoken": "^9.0.10",

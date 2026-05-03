@@ -1,133 +1,346 @@
 import mqtt from 'mqtt';
 import { Pool } from 'pg';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Main entry point — called once from main.ts after the DB pool is ready
+// ─────────────────────────────────────────────────────────────────────────────
 export async function initMqtt(pool: Pool) {
-    console.log("Initializing MQTT Acuvim Telemetry Listener...");
+    console.log('[MQTT] Initializing Acuvim telemetry listener...');
 
-    // Ensure Grid-X columns exist
-    const client = await pool.connect();
+    // ── Schema bootstrap ───────────────────────────────────────────────────
+    const schemaClient = await pool.connect();
     try {
-        await client.query(`
-            ALTER TABLE meter_readings 
-            ADD COLUMN IF NOT EXISTS power_kw_draw DOUBLE PRECISION,
-            ADD COLUMN IF NOT EXISTS power_kw_gen DOUBLE PRECISION;
-            
-            ALTER TABLE meters 
+        // CT/PT ratio scaling columns (safe to run every startup)
+        await schemaClient.query(`
+            ALTER TABLE meters
             ADD COLUMN IF NOT EXISTS ct_ratio NUMERIC DEFAULT 1,
             ADD COLUMN IF NOT EXISTS pt_ratio NUMERIC DEFAULT 1;
         `);
+
+        // Unique index required for idempotent ON CONFLICT inserts.
+        // TimescaleDB hypertable unique indexes MUST include the time dimension.
+        await schemaClient.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_meter_readings_unique
+            ON meter_readings (meter_id, time);
+        `);
+
+        // Dead-letter table: captures payloads we cannot parse or map
+        // so no telemetry is ever silently discarded.
+        await schemaClient.query(`
+            CREATE TABLE IF NOT EXISTS dead_letter_payloads (
+                id          BIGSERIAL PRIMARY KEY,
+                received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                topic       TEXT,
+                raw_payload TEXT,
+                error_msg   TEXT
+            );
+        `);
+
+        console.log('[MQTT] Schema bootstrap complete.');
     } catch (e) {
-        console.error("Failed to add Grid-X columns to meter_readings", e);
+        console.error('[MQTT] Schema bootstrap error (non-fatal):', e);
     } finally {
-        client.release();
+        schemaClient.release();
     }
 
-    // Connect to the Mosquitto Broker (using the internal docker network or localhost)
+    // ── Broker connection ──────────────────────────────────────────────────
+    // All sensitive values come from environment — never hardcoded.
+    // TLS: set MQTT_BROKER_URL=mqtts://host:8883 and optionally MQTT_CA_CERT
     const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';
+    const mqttUser  = process.env.MQTT_USERNAME   || '';
+    const mqttPass  = process.env.MQTT_PASSWORD   || '';
 
-    const mqttClient = mqtt.connect(brokerUrl, {
-        username: 'acuvim_meter',
-        password: 'secure_password123',
-        reconnectPeriod: 5000,
-    });
+    const connectOptions: mqtt.IClientOptions = {
+        username: mqttUser || undefined,
+        password: mqttPass || undefined,
+        reconnectPeriod: 5_000,
+        connectTimeout: 10_000,
+    };
+
+    // Optional TLS configuration (mqtts:// scheme)
+    if (brokerUrl.startsWith('mqtts')) {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const fs = require('fs');
+        const caPath = process.env.MQTT_CA_CERT;
+        if (caPath) {
+            try {
+                connectOptions.ca = fs.readFileSync(caPath);
+                console.log('[MQTT] TLS CA certificate loaded.');
+            } catch (e) {
+                console.error('[MQTT] Cannot read CA certificate at', caPath, e);
+            }
+        }
+        connectOptions.rejectUnauthorized =
+            process.env.MQTT_TLS_REJECT_UNAUTHORIZED !== 'false';
+    }
+
+    const mqttClient = mqtt.connect(brokerUrl, connectOptions);
 
     mqttClient.on('connect', () => {
-        console.log(`Connected to MQTT Broker at ${brokerUrl}`);
-        // Subscribe to Acuvim telemetry data
+        console.log(`[MQTT] Connected to broker: ${brokerUrl}`);
         mqttClient.subscribe('acuvim/+/telemetry', (err) => {
-            if (!err) {
-                console.log('Subscribed to Acuvim telemetry topics (acuvim/+/telemetry)');
+            if (err) {
+                console.error('[MQTT] Subscribe error:', err);
             } else {
-                console.error('Failed to subscribe to MQTT topic:', err);
+                console.log('[MQTT] Subscribed to acuvim/+/telemetry');
             }
         });
     });
 
-    mqttClient.on('message', async (topic, message) => {
-        try {
-            // Topic format: acuvim/{meter_id}/telemetry
-            const parts = topic.split('/');
-            const meterId = parts[1];
-            let payloadString = message.toString().trim();
-            // Strip any null bytes or weird unprintable control characters that break JSON.parse
-            payloadString = payloadString.replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, "");
-
-            // Log the raw payload FIRST so we always see what the meter sends
-            console.log(`\n[MQTT TIMESTAMP: ${new Date().toISOString()}]`);
-            console.log(`[MQTT DEBUG] Raw payload from ${meterId}:`, payloadString);
-
-            let payload;
-            try {
-                payload = JSON.parse(payloadString);
-            } catch (parseError: any) {
-                console.error(`[MQTT ERROR] Could not parse payload as JSON from ${meterId}. Error: ${parseError.message}`);
-                return; // Exit early if it's not JSON
-            }
-
-            // --- AXM-WEB2 Gateway Format Conversion ---
-            // The meter sends data like: { device: { readings: [ {param: "V1", value: "243.5"} ] } }
-            let data: any = payload.Data || payload; // Default assumption
-
-            if (payload.device && Array.isArray(payload.device.readings)) {
-                // Flatten the readings array into a dictionary object map
-                data = {};
-                for (const reading of payload.device.readings) {
-                    if (reading && reading.param) {
-                        data[reading.param] = parseFloat(reading.value);
-                    }
-                }
-            }
-
-            // Extract the parameters using standard Acuvim keys or the newly flattened AXM-WEB2 keys
-            const v_a = data.V1 || data.Vnavg_V || data.V_A || data.Voltage_LN || data.voltage_a || null;
-            const i_a = data.I1 || data.Iavg_A || data.I_A || data.Current || data.current_a || null;
-            const p_total = data.Psum_kW || data.P_Total || data.Active_Power || data.power_active_total || null;
-            const q_total = data.Qsum_kvar || data.Q_Total || data.Reactive_Power || data.power_reactive_total || null;
-            const s_total = data.Ssum_kVA || data.S_Total || data.Apparent_Power || data.power_apparent_total || null;
-            const pf_total = data.PF || data.Power_Factor || data.power_factor_total || data.PF1 || null;
-            const freq = data.Freq_Hz || data.F || data.Freq || data.frequency || null;
-
-            // Grid-X specific derivations (if the meter doesn't explicitly send them)
-            const p_draw = data.power_kw_draw || (p_total && p_total > 0 ? p_total : 0);
-            const p_gen = data.power_kw_gen || (p_total && p_total < 0 ? Math.abs(p_total) : 0);
-
-            let actualMeterId = meterId;
-
-            // Robust Lookup to find meter by Topic UUID or Serial Number
-            const serial = payload?.device?.serial || payload?.gateway?.serial;
-            const lookupRes = await pool.query(`
-                SELECT id FROM meters 
-                WHERE id::text = $1 OR (serial_number = $2 AND serial_number IS NOT NULL)
-                LIMIT 1
-            `, [meterId, serial || null]);
-
-            if (lookupRes.rows.length === 0) {
-                console.warn(`[MQTT WARNING] Discarding payload: No meter found for Topic/UUID: ${meterId} or Serial: ${serial}`);
-                return;
-            }
-
-            actualMeterId = lookupRes.rows[0].id;
-
-            const insertQuery = `
-                INSERT INTO meter_readings (
-                    time, meter_id, voltage_a, current_a, power_active_total, 
-                    power_reactive_total, power_apparent_total, power_factor_total, frequency,
-                    power_kw_draw, power_kw_gen
-                ) VALUES (
-                    NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-                )
-            `;
-
-            await pool.query(insertQuery, [actualMeterId, v_a, i_a, p_total, q_total, s_total, pf_total, freq, p_draw, p_gen]);
-
-            console.log(`[MQTT INGEST] -> ${actualMeterId} | V: ${v_a} | I: ${i_a} | P: ${p_total}kW | Serial: ${serial}`);
-
-        } catch (error) {
-            console.error('[MQTT] Error processing telemetry payload:', error);
-        }
+    mqttClient.on('reconnect', () => {
+        console.warn('[MQTT] Reconnecting to broker...');
     });
 
     mqttClient.on('error', (err) => {
-        console.error('MQTT Client Error:', err);
+        console.error('[MQTT] Client error:', err);
     });
+
+    mqttClient.on('offline', () => {
+        console.warn('[MQTT] Client is offline.');
+    });
+
+    // ── Message handler ────────────────────────────────────────────────────
+    mqttClient.on('message', async (topic, messageBuffer) => {
+        // Strip null bytes and other non-printable control characters that
+        // would break JSON.parse on some Acuvim firmware versions
+        const rawPayload = messageBuffer
+            .toString()
+            .trim()
+            .replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, '');
+
+        // Extract meter UUID from topic: acuvim/{meter_id}/telemetry
+        const topicParts   = topic.split('/');
+        const topicMeterId = topicParts[1] ?? 'unknown';
+
+        console.log(
+            `\n[MQTT ${new Date().toISOString()}] topic=${topic}` +
+            ` | payload(200)=${rawPayload.slice(0, 200)}`
+        );
+
+        // ── JSON parsing ───────────────────────────────────────────────────
+        let payload: any;
+        try {
+            payload = JSON.parse(rawPayload);
+        } catch (parseError: any) {
+            console.error(`[MQTT] JSON parse error from ${topicMeterId}: ${parseError.message}`);
+            await deadLetter(pool, topic, rawPayload, `JSON parse: ${parseError.message}`);
+            return;
+        }
+
+        // ── Format normalisation ───────────────────────────────────────────
+        // Two supported formats:
+        //   1. Direct dict:  { V1: 243.5, I1: 45.2, Psum_kW: 12.5, … }
+        //   2. AXM-WEB2:     { device: { readings: [{ param:"V1", value:"243.5" }] } }
+        let data: Record<string, number | null> = payload.Data ?? payload;
+
+        if (payload.device && Array.isArray(payload.device.readings)) {
+            data = {};
+            for (const reading of payload.device.readings) {
+                if (reading?.param) {
+                    data[reading.param] = parseFloat(reading.value);
+                }
+            }
+        }
+
+        // ── Parameter extraction (Acuvim II key variants) ──────────────────
+        const v_a     = data.V1        ?? data.Vnavg_V     ?? data.V_A            ?? data.Voltage_LN          ?? data.voltage_a          ?? null;
+        const i_a     = data.I1        ?? data.Iavg_A      ?? data.I_A            ?? data.Current             ?? data.current_a          ?? null;
+        const p_total = data.Psum_kW   ?? data.P_Total     ?? data.Active_Power   ?? data.power_active_total   ?? null;
+        const q_total = data.Qsum_kvar ?? data.Q_Total     ?? data.Reactive_Power ?? data.power_reactive_total ?? null;
+        const s_total = data.Ssum_kVA  ?? data.S_Total     ?? data.Apparent_Power ?? data.power_apparent_total ?? null;
+        const pf      = data.PF        ?? data.PF1         ?? data.Power_Factor   ?? data.power_factor_total   ?? null;
+        const freq    = data.Freq_Hz   ?? data.F           ?? data.Freq           ?? data.frequency            ?? null;
+        const energy  = data.Ep_imp    ?? data.kWh         ?? data.energy_import_total                         ?? null;
+        const thd_v   = data.THD_V1    ?? data.THD_V       ?? data.thd_voltage_a                               ?? null;
+
+        // Require at least one meaningful electrical parameter
+        if (v_a === null && i_a === null && p_total === null) {
+            console.warn(`[MQTT] No recognized parameters in payload from ${topicMeterId}`);
+            await deadLetter(pool, topic, rawPayload, 'No recognized Acuvim parameters in payload');
+            return;
+        }
+
+        // ── Meter ID resolution ────────────────────────────────────────────
+        // Match by MQTT topic UUID first, then by serial number from device
+        const serial = payload?.device?.serial ?? payload?.gateway?.serial ?? null;
+
+        const dbClient = await pool.connect();
+        try {
+            const lookupRes = await dbClient.query<{
+                id: string;
+                tenant_id: string;
+                alert_max_kw: number | null;
+                alert_min_v: number | null;
+                alert_max_thd: number | null;
+            }>(`
+                SELECT
+                    m.id,
+                    s.tenant_id,
+                    ss.alert_max_kw,
+                    ss.alert_min_v,
+                    ss.alert_max_thd
+                FROM meters m
+                JOIN sites s ON m.site_id = s.id
+                LEFT JOIN site_settings ss ON s.id = ss.site_id
+                WHERE m.id::text = $1
+                   OR (m.serial_number = $2 AND m.serial_number IS NOT NULL)
+                LIMIT 1
+            `, [topicMeterId, serial]);
+
+            if (lookupRes.rows.length === 0) {
+                console.warn(
+                    `[MQTT] No meter found — topic-ID: "${topicMeterId}", serial: "${serial}" — discarding`
+                );
+                return;
+            }
+
+            const meter    = lookupRes.rows[0];
+            const actualId = meter.id;
+
+            // ── Idempotent insert ──────────────────────────────────────────
+            // ON CONFLICT (meter_id, time) DO NOTHING prevents duplicate rows
+            // if the AXM-WEB2 store-and-forward replays the same packet after
+            // an internet outage.
+            await dbClient.query(`
+                INSERT INTO meter_readings (
+                    time,       meter_id,
+                    voltage_a,  current_a,
+                    power_active_total,   power_reactive_total,   power_apparent_total,
+                    power_factor_total,   frequency,
+                    energy_import_total,  thd_voltage_a
+                ) VALUES (
+                    NOW(), $1,
+                    $2,  $3,
+                    $4,  $5,  $6,
+                    $7,  $8,
+                    $9,  $10
+                )
+                ON CONFLICT (meter_id, time) DO NOTHING
+            `, [
+                actualId,
+                v_a,     i_a,
+                p_total, q_total, s_total,
+                pf,      freq,
+                energy,  thd_v,
+            ]);
+
+            console.log(
+                `[MQTT ✓] ${actualId} | V: ${v_a} V | I: ${i_a} A | P: ${p_total} kW` +
+                ` | PF: ${pf} | THD: ${thd_v}% | serial: ${serial}`
+            );
+
+            // ── Alert threshold evaluation ─────────────────────────────────
+            await evaluateAlerts(dbClient, {
+                meterId:  actualId,
+                tenantId: meter.tenant_id,
+                power:    p_total as number | null,
+                voltage:  v_a    as number | null,
+                thd:      thd_v  as number | null,
+                maxKw:    meter.alert_max_kw,
+                minV:     meter.alert_min_v,
+                maxThd:   meter.alert_max_thd,
+            });
+
+        } catch (dbErr) {
+            console.error(`[MQTT] DB error processing reading for ${topicMeterId}:`, dbErr);
+        } finally {
+            dbClient.release();
+        }
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Alert threshold evaluation
+// Mirrors the BullMQ worker logic to keep threshold behaviour consistent.
+// Deduplicates: at most 1 alert of the same type per meter per hour.
+// ─────────────────────────────────────────────────────────────────────────────
+interface AlertParams {
+    meterId:  string;
+    tenantId: string;
+    power:    number | null;
+    voltage:  number | null;
+    thd:      number | null;
+    maxKw:    number | null;
+    minV:     number | null;
+    maxThd:   number | null;
+}
+
+async function evaluateAlerts(client: any, p: AlertParams): Promise<void> {
+    if (p.maxKw !== null && p.power !== null && p.power > Number(p.maxKw)) {
+        await maybeInsertAlert(
+            client, p.tenantId, p.meterId,
+            'PEAK_DEMAND', 'WARNING',
+            `Peak demand threshold exceeded: ${p.power.toFixed(2)} kW (limit: ${p.maxKw} kW)`
+        );
+    }
+
+    if (p.minV !== null && p.voltage !== null && p.voltage < Number(p.minV)) {
+        await maybeInsertAlert(
+            client, p.tenantId, p.meterId,
+            'VOLTAGE_SAG', 'CRITICAL',
+            `Voltage sag detected: ${p.voltage.toFixed(1)} V (minimum: ${p.minV} V) — machinery at risk`
+        );
+    }
+
+    if (p.maxThd !== null && p.thd !== null && p.thd > Number(p.maxThd)) {
+        await maybeInsertAlert(
+            client, p.tenantId, p.meterId,
+            'HIGH_THD', 'WARNING',
+            `Voltage THD exceeded: ${p.thd.toFixed(2)}% (limit: ${p.maxThd}%) — check for harmonic sources`
+        );
+    }
+}
+
+async function maybeInsertAlert(
+    client: any,
+    tenantId: string,
+    meterId: string,
+    type: string,
+    severity: string,
+    message: string
+): Promise<void> {
+    // One alert of this type per meter per hour to prevent notification floods
+    const recent = await client.query(`
+        SELECT id FROM alerts
+        WHERE meter_id  = $1
+          AND type      = $2
+          AND created_at >= NOW() - INTERVAL '1 hour'
+        LIMIT 1
+    `, [meterId, type]);
+
+    if (recent.rows.length === 0) {
+        await client.query(`
+            INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
+            VALUES ($1, $2, $3, $4, $5)
+        `, [tenantId, meterId, type, severity, message]);
+        console.log(`[MQTT ALERT] ${type} (${severity}) → meter ${meterId}`);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dead-letter store
+// Any payload that cannot be parsed or lacks known parameters is written here
+// instead of being silently dropped. Inspect dead_letter_payloads to diagnose
+// firmware mismatches or misconfigured meters.
+// ─────────────────────────────────────────────────────────────────────────────
+async function deadLetter(
+    pool: Pool,
+    topic: string,
+    rawPayload: string,
+    errorMsg: string
+): Promise<void> {
+    try {
+        const client = await pool.connect();
+        try {
+            await client.query(`
+                INSERT INTO dead_letter_payloads (topic, raw_payload, error_msg)
+                VALUES ($1, $2, $3)
+            `, [topic, rawPayload.slice(0, 4_096), errorMsg]);
+        } finally {
+            client.release();
+        }
+    } catch (e) {
+        // Swallow — dead-letter failures must never crash the main message loop
+        console.error('[MQTT] Dead-letter insert failed:', e);
+    }
 }
