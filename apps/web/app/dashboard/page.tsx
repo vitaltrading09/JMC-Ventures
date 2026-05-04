@@ -96,15 +96,47 @@ function scoreLabel(score: number | null): { text: string; cls: string } {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
-    const [meters,      setMeters]      = useState<Meter[]>([]);
-    const [alerts,      setAlerts]      = useState<Alert[]>([]);
-    const [scores,      setScores]      = useState<SiteScore[]>([]);
-    const [chartData,   setChartData]   = useState<{ time: string; kw: number }[]>([]);
-    const [loading,     setLoading]     = useState(true);
-    const [refreshedAt, setRefreshedAt] = useState<Date>(new Date());
+    const [meters,              setMeters]              = useState<Meter[]>([]);
+    const [alerts,              setAlerts]              = useState<Alert[]>([]);
+    const [scores,              setScores]              = useState<SiteScore[]>([]);
+    const [chartData,           setChartData]           = useState<{ time: string; kw: number }[]>([]);
+    const [loading,             setLoading]             = useState(true);
+    const [chartLoading,        setChartLoading]        = useState(false);
+    const [refreshedAt,         setRefreshedAt]         = useState<Date>(new Date());
+    const [selectedChartMeter,  setSelectedChartMeter]  = useState<string | null>(null);
 
     const getToken = () =>
         typeof window !== "undefined" ? (localStorage.getItem("token") ?? "") : "";
+
+    // Fetch chart data for a specific meter
+    const fetchChartData = useCallback(async (meterId: string) => {
+        setChartLoading(true);
+        try {
+            const headers = { Authorization: `Bearer ${getToken()}` };
+            const from = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
+            const res = await fetch(
+                `${API}/ingestion/meters/${meterId}/readings?from=${from}&limit=288`,
+                { headers }
+            );
+            if (res.ok) {
+                const readings: Reading[] = await res.json();
+                setChartData(
+                    readings
+                        .filter((r) => r.power_active_total != null)
+                        .map((r) => ({
+                            time: new Date(r.time).toLocaleTimeString("en-ZA", {
+                                hour: "2-digit", minute: "2-digit",
+                            }),
+                            kw: Math.round((r.power_active_total ?? 0) * 10) / 10,
+                        }))
+                );
+            }
+        } catch (err) {
+            console.error("Chart fetch error:", err);
+        } finally {
+            setChartLoading(false);
+        }
+    }, []);
 
     const fetchDashboard = useCallback(async () => {
         try {
@@ -126,30 +158,11 @@ export default function DashboardPage() {
             setAlerts(Array.isArray(alertsData) ? alertsData : []);
             setScores(Array.isArray(scoresData) ? scoresData : []);
 
-            // 24-hour chart for first live meter
-            const activeMeter = metersData.find((m) => m.latest_reading?.time);
-            if (activeMeter) {
-                const from = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
-                const readingsRes = await fetch(
-                    `${API}/ingestion/meters/${activeMeter.id}/readings?from=${from}&limit=288`,
-                    { headers }
-                );
-                if (readingsRes.ok) {
-                    const readings: Reading[] = await readingsRes.json();
-                    setChartData(
-                        readings
-                            .filter((r) => r.power_active_total != null)
-                            .map((r) => ({
-                                time: new Date(r.time).toLocaleTimeString("en-ZA", {
-                                    hour: "2-digit", minute: "2-digit",
-                                }),
-                                kw: Math.round((r.power_active_total ?? 0) * 10) / 10,
-                            }))
-                    );
-                }
-            } else {
-                setChartData([]);
-            }
+            // Default to first live meter if none selected
+            setSelectedChartMeter(prev => {
+                const activeMeter = metersData.find((m) => m.latest_reading?.time);
+                return prev ?? activeMeter?.id ?? null;
+            });
 
             setRefreshedAt(new Date());
         } catch (err) {
@@ -164,6 +177,11 @@ export default function DashboardPage() {
         const iv = setInterval(fetchDashboard, 15_000);
         return () => clearInterval(iv);
     }, [fetchDashboard]);
+
+    // Re-fetch chart when selected meter changes
+    useEffect(() => {
+        if (selectedChartMeter) fetchChartData(selectedChartMeter);
+    }, [selectedChartMeter, fetchChartData]);
 
     // ── Derived KPIs ──────────────────────────────────────────────────────────
     const totalPowerKw = meters.reduce(
@@ -443,14 +461,34 @@ export default function DashboardPage() {
 
                 {/* Power Trend Chart */}
                 <Card className="lg:col-span-7 flex flex-col">
-                    <CardHeader
-                        title="Power Consumption Trend"
-                        subtitle={
-                            chartData.length > 0
-                                ? `Active Power (kW) — last 24 h · ${chartData.length} readings`
-                                : "No readings yet"
-                        }
-                    />
+                    <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <CardHeader
+                            title="Power Consumption Trend"
+                            subtitle={
+                                chartData.length > 0
+                                    ? `Active Power (kW) — last 24 h · ${chartData.length} readings`
+                                    : "No readings yet"
+                            }
+                        />
+                        {/* Meter selector */}
+                        {meters.length > 1 && (
+                            <select
+                                value={selectedChartMeter ?? ""}
+                                onChange={e => setSelectedChartMeter(e.target.value)}
+                                className="text-xs bg-slate-800 border border-slate-700 text-slate-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/50 cursor-pointer"
+                            >
+                                {meters.map(m => (
+                                    <option key={m.id} value={m.id}>{m.name}</option>
+                                ))}
+                            </select>
+                        )}
+                        {meters.length === 1 && selectedChartMeter && (
+                            <span className="text-xs text-slate-500 px-2 py-1 bg-slate-800 rounded-lg border border-slate-700">
+                                {meters[0].name}
+                            </span>
+                        )}
+                        {chartLoading && <Loader2 className="w-4 h-4 animate-spin text-blue-400 mt-1" />}
+                    </div>
                     <div className="flex-1 min-h-[300px] w-full mt-4">
                         {chartData.length > 0 ? (
                             <ResponsiveContainer width="100%" height="100%">
