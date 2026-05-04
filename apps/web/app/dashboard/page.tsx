@@ -189,6 +189,8 @@ export default function DashboardPage() {
         ? Math.round(scores.reduce((s, r) => s + r.score, 0) / scores.length)
         : null;
 
+    const [expandedHint, setExpandedHint] = useState<string | null>(null);
+
     const avgComponents = scores.length > 0 ? {
         pf:      Math.round(scores.reduce((s, r) => s + r.pf_score,             0) / scores.length),
         thd:     Math.round(scores.reduce((s, r) => s + r.thd_score,            0) / scores.length),
@@ -281,28 +283,29 @@ export default function DashboardPage() {
                                 {
                                     label: "Power Factor",
                                     value: avgComponents?.pf,
-                                    hint: "Avg PF from meter. <0.85 = Eskom reactive penalty. Target ≥0.95.",
+                                    hint: "Measures how efficiently the site uses electrical power. Based on average PF from your meter over 30 days. A PF below 0.85 triggers Eskom reactive energy penalties on your bill. Target is ≥0.95.",
                                     noData: false,
                                 },
                                 {
                                     label: "Harmonics (THD)",
                                     value: avgComponents?.thd,
-                                    hint: "Voltage THD from meter. No THD sensor data — using neutral default (70/100). NRS 048 limit: 8%.",
+                                    hint: "Total Harmonic Distortion in the voltage waveform. High THD damages sensitive equipment and overheats cables. NRS 048-2 limit is 8%. Note: your AXM-WEB2 is not currently sending THD readings — this score uses a neutral default of 70/100.",
                                     noData: scores.some(s => s.thd_score === 70),
                                 },
                                 {
                                     label: "Load Factor",
                                     value: avgComponents?.load,
-                                    hint: "Avg demand ÷ peak demand over 30 days. Low LF means paying demand charges for capacity rarely used.",
+                                    hint: "Average demand divided by peak demand over 30 days. A low load factor (e.g. 0.35) means your contracted capacity is sized for a peak you rarely hit — you pay demand charges on that full capacity every month. Improving load factor reduces demand costs.",
                                     noData: false,
                                 },
                                 {
                                     label: "Voltage Quality",
                                     value: avgComponents?.voltage,
-                                    hint: "Deviation from 230V L-N nominal and min-max voltage spread. NRS 048: ±10% (207–253V).",
+                                    hint: "How close your voltage stays to the South African nominal of 230V L-N (phase to neutral). Also penalises large swings between minimum and maximum readings. NRS 048 allows ±10% (207–253V). Persistent deviation accelerates motor and transformer ageing.",
                                     noData: false,
                                 },
                             ].map(({ label, value, hint, noData }) => {
+                                const isOpen = expandedHint === label;
                                 const barColour = value == null ? "bg-slate-700"
                                     : value >= 75 ? "bg-emerald-500"
                                     : value >= 50 ? "bg-yellow-500"
@@ -312,11 +315,13 @@ export default function DashboardPage() {
                                         <div className="flex justify-between items-center mb-1.5">
                                             <span className="text-xs text-slate-500 flex items-center gap-1">
                                                 {label}
-                                                {noData && (
-                                                    <span title={hint} className="cursor-help">
-                                                        <Info className="w-3 h-3 text-slate-600" />
-                                                    </span>
-                                                )}
+                                                <button
+                                                    onClick={() => setExpandedHint(isOpen ? null : label)}
+                                                    className="cursor-pointer hover:text-blue-400 transition-colors"
+                                                    title="Click for explanation"
+                                                >
+                                                    <Info className={`w-3 h-3 ${isOpen ? "text-blue-400" : noData ? "text-yellow-600" : "text-slate-600"}`} />
+                                                </button>
                                             </span>
                                             <span className={`text-xs font-semibold ${noData ? "text-slate-500" : "text-slate-300"}`}>
                                                 {value != null ? value : "—"}
@@ -325,11 +330,15 @@ export default function DashboardPage() {
                                         </div>
                                         <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
                                             <div
-                                                className={`h-full rounded-full transition-all duration-700 ${noData ? "opacity-40" : ""} ${barColour}`}
+                                                className={`h-full rounded-full transition-all duration-700 ${noData ? "opacity-50" : ""} ${barColour}`}
                                                 style={{ width: value != null ? `${value}%` : "0%" }}
                                             />
                                         </div>
-                                        <p className="text-[10px] text-slate-600 mt-1 leading-tight line-clamp-2">{hint}</p>
+                                        {isOpen && (
+                                            <p className="text-[11px] text-slate-400 mt-2 leading-relaxed bg-slate-900/60 rounded-lg px-2.5 py-2 border border-slate-800">
+                                                {hint}
+                                            </p>
+                                        )}
                                     </div>
                                 );
                             })}
