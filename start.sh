@@ -10,7 +10,7 @@ pkill -f "next" 2>/dev/null || true
 sleep 2
 
 echo "🗄️  Making sure Docker services are running (TimescaleDB, Redis, Mosquitto)..."
-sudo docker-compose up -d
+sudo docker compose up -d 2>/dev/null || sudo docker-compose up -d
 sleep 5
 
 # echo "🌱 Seeding the database with demo data..."
