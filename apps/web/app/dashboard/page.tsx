@@ -570,7 +570,7 @@ export default function DashboardPage() {
                     </div>
                     <div className="mt-3 pt-3 border-t border-slate-800">
                         <Link
-                            href="/dashboard/analytics"
+                            href="/dashboard/alerts"
                             className="block w-full py-2 text-sm text-center text-blue-400 hover:text-blue-300 transition-colors border border-dashed border-slate-700 rounded-lg"
                         >
                             View All Alerts
