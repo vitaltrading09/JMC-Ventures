@@ -8,7 +8,6 @@ import {
     Zap,
     PieChart,
     Settings,
-    ShoppingCart,
     LineChart,
     Building2,
     Lightbulb,
@@ -67,7 +66,6 @@ export function Sidebar() {
         { name: "Analytics",       href: "/dashboard/analytics",        icon: LineChart },
         { name: "Savings",         href: "/dashboard/savings",          icon: PieChart },
         { name: "Reports",         href: "/dashboard/reports",          icon: FileText },
-        { name: "Marketplace",     href: "/dashboard/marketplace",      icon: ShoppingCart },
         { name: "Settings",        href: "/dashboard/settings",         icon: Settings },
     ];
 

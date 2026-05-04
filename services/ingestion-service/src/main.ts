@@ -267,62 +267,116 @@ cron.schedule('*/5 * * * *', async () => {
 });
 
 // -----------------------------------------------------------------------------
-// PREDICTIVE MAINTENANCE AI ENGINE (Heuristic Scanner)
+// PREDICTIVE MAINTENANCE SCANNER
+// Runs every 30 minutes — analyses last 24h per meter for:
+//   1. High voltage variance (StdDev > 5V on ~230V L-N system)
+//      → potential motor insulation breakdown, loose connections, capacitor aging
+//   2. Phase current imbalance > 20%
+//      → unbalanced loads, failing motor windings, neutral fault
+// One alert per meter per 24 hours to prevent spam.
 // -----------------------------------------------------------------------------
-// Runs every 5 minutes in Dev (Hourly in Prod)
-cron.schedule('*/5 * * * *', async () => {
-    console.log('[PREDICTIVE AI] Analyzing historical equipment signatures for anomalies...');
+cron.schedule('*/30 * * * *', async () => {
     const client = await pool.connect();
     try {
-        const query = `
-            WITH rolling_stats AS (
-                SELECT 
-                    m.id as meter_id,
+        const anomalies = await client.query(`
+            WITH stats AS (
+                SELECT
+                    m.id                        AS meter_id,
                     s.tenant_id,
-                    m.name as meter_name,
-                    AVG(r.voltage_a) as avg_voltage,
-                    STDDEV(r.voltage_a) as voltage_stddev,
-                    MIN(r.voltage_a) as min_voltage
+                    m.name                      AS meter_name,
+                    ROUND(AVG(r.voltage_a)::numeric, 2)   AS avg_v,
+                    ROUND(STDDEV(r.voltage_a)::numeric, 2) AS stddev_v,
+                    ROUND(MIN(r.voltage_a)::numeric, 2)   AS min_v,
+                    ROUND(MAX(r.voltage_a)::numeric, 2)   AS max_v,
+                    -- Phase imbalance: highest deviation from avg current across phases
+                    ROUND(AVG(r.current_a)::numeric, 1)   AS avg_i1,
+                    ROUND(AVG(r.current_b)::numeric, 1)   AS avg_i2,
+                    ROUND(AVG(r.current_c)::numeric, 1)   AS avg_i3,
+                    COUNT(*) AS reading_count
                 FROM meters m
                 JOIN sites s ON m.site_id = s.id
                 JOIN meter_readings r ON m.id = r.meter_id
-                -- Analyze the last 24 hours of data
                 WHERE r.time >= NOW() - INTERVAL '24 hours'
+                  AND r.voltage_a IS NOT NULL
                 GROUP BY m.id, s.tenant_id, m.name
+                HAVING COUNT(*) >= 10
             )
-            SELECT * FROM rolling_stats 
-            -- A machine whose voltage variance is extremely high might indicate a failing capacitor bank or winding short
-            WHERE voltage_stddev > 15 
-            OR min_voltage < 370; 
-        `;
+            SELECT *,
+                -- Current imbalance % = max deviation / avg * 100
+                CASE
+                    WHEN (avg_i1 + avg_i2 + avg_i3) > 0 THEN
+                        ROUND((
+                            GREATEST(
+                                ABS(avg_i1 - (avg_i1 + avg_i2 + avg_i3) / 3.0),
+                                ABS(avg_i2 - (avg_i1 + avg_i2 + avg_i3) / 3.0),
+                                ABS(avg_i3 - (avg_i1 + avg_i2 + avg_i3) / 3.0)
+                            ) / NULLIF((avg_i1 + avg_i2 + avg_i3) / 3.0, 0) * 100
+                        )::numeric, 1)
+                    ELSE 0
+                END AS current_imbalance_pct
+            FROM stats
+            WHERE stddev_v > 5              -- >5V stddev on 230V L-N = >2.2% variation (NRS 048 limit is ±5%)
+               OR min_v < 207              -- Below NRS 048 lower limit (230V - 10%)
+               OR min_v > 253              -- Above NRS 048 upper limit (230V + 10%)
+        `);
 
-        const anomalies = await client.query(query);
+        for (const m of anomalies.rows) {
+            // Deduplicate — one predictive alert per meter per 24h
+            const recent = await client.query(`
+                SELECT id FROM alerts
+                WHERE meter_id = $1
+                  AND type = 'PREDICTIVE_WARNING'
+                  AND created_at >= NOW() - INTERVAL '24 hours'
+                LIMIT 1
+            `, [m.meter_id]);
+            if (recent.rows.length > 0) continue;
 
-        if (anomalies.rows.length > 0) {
-            for (const machine of anomalies.rows) {
-                // Check if we already alerted them in the last 24h to prevent spam
-                const recentAlert = await client.query(`
-                    SELECT id FROM alerts 
-                    WHERE meter_id = $1 AND type = 'PREDICTIVE_WARNING' 
-                    AND created_at >= NOW() - INTERVAL '24 hours'
-                `, [machine.meter_id]);
+            // Build a specific, actionable message
+            const parts: string[] = [];
 
-                if (recentAlert.rows.length === 0) {
-                    const message = `[AI PREDICTION]: High probability of equipment degradation on ${machine.meter_name}. ` +
-                        `Voltage variance is abnormally high (StdDev: ${Number(machine.voltage_stddev).toFixed(2)}). ` +
-                        `Recommend immediate inspection of motor windings or capacitor banks to prevent catastrophic failure.`;
-
-                    await client.query(`
-                        INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
-                        VALUES ($1, $2, 'PREDICTIVE_WARNING', 'CRITICAL', $3)
-                    `, [machine.tenant_id, machine.meter_id, message]);
-
-                    console.log(`[PREDICTIVE AI] Warning issued for meter: ${machine.meter_name}`);
-                }
+            if (m.stddev_v > 5) {
+                parts.push(
+                    `Voltage instability detected: StdDev ${m.stddev_v} V over 24h ` +
+                    `(avg ${m.avg_v} V, range ${m.min_v}–${m.max_v} V). ` +
+                    `This level of variance (>${((m.stddev_v / 230) * 100).toFixed(1)}%) suggests loose connections, ` +
+                    `failing capacitor banks, or intermittent load switching.`
+                );
             }
+            if (m.min_v < 207) {
+                parts.push(
+                    `Sustained undervoltage: minimum ${m.min_v} V L-N recorded ` +
+                    `(NRS 048 lower limit: 207 V). ` +
+                    `Check upstream transformer tap settings and cable sizing.`
+                );
+            }
+            if (m.min_v > 253) {
+                parts.push(
+                    `Sustained overvoltage: minimum ${m.max_v} V L-N recorded ` +
+                    `(NRS 048 upper limit: 253 V). ` +
+                    `Check transformer tap settings — equipment insulation at risk.`
+                );
+            }
+            if (Number(m.current_imbalance_pct) > 20) {
+                parts.push(
+                    `Phase current imbalance: ${m.current_imbalance_pct}% ` +
+                    `(L1 ${m.avg_i1} A / L2 ${m.avg_i2} A / L3 ${m.avg_i3} A avg). ` +
+                    `Imbalance >20% accelerates motor winding heating — check load distribution and neutral continuity.`
+                );
+            }
+
+            if (parts.length === 0) continue;
+
+            const message = `Predictive anomaly on ${m.meter_name}: ${parts.join(' | ')} — Recommendation: inspect within 72 hours.`;
+
+            await client.query(`
+                INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
+                VALUES ($1, $2, 'PREDICTIVE_WARNING', 'WARNING', $3)
+            `, [m.tenant_id, m.meter_id, message]);
+
+            console.log(`[PREDICTIVE] Warning: ${m.meter_name} — ${parts.length} anomaly(ies) flagged`);
         }
     } catch (err) {
-        console.error('[PREDICTIVE AI] Error running anomaly scan:', err);
+        console.error('[PREDICTIVE] Scan error:', err);
     } finally {
         client.release();
     }

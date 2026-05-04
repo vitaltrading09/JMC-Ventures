@@ -7,7 +7,7 @@ import {
 } from "recharts";
 import {
     Activity, Zap, AlertTriangle, Loader2, RefreshCw, Server, Gauge, Plus,
-    TrendingUp, ChevronRight,
+    TrendingUp, ChevronRight, Info, ShieldAlert, XCircle,
 } from "lucide-react";
 import Link from "next/link";
 import { Card, CardHeader } from "@/components/ui/Card";
@@ -278,11 +278,31 @@ export default function DashboardPage() {
                         </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                             {[
-                                { label: "Power Factor",    value: avgComponents?.pf },
-                                { label: "Harmonics",       value: avgComponents?.thd },
-                                { label: "Load Factor",     value: avgComponents?.load },
-                                { label: "Voltage Quality", value: avgComponents?.voltage },
-                            ].map(({ label, value }) => {
+                                {
+                                    label: "Power Factor",
+                                    value: avgComponents?.pf,
+                                    hint: "Avg PF from meter. <0.85 = Eskom reactive penalty. Target ≥0.95.",
+                                    noData: false,
+                                },
+                                {
+                                    label: "Harmonics (THD)",
+                                    value: avgComponents?.thd,
+                                    hint: "Voltage THD from meter. No THD sensor data — using neutral default (70/100). NRS 048 limit: 8%.",
+                                    noData: scores.some(s => s.thd_score === 70),
+                                },
+                                {
+                                    label: "Load Factor",
+                                    value: avgComponents?.load,
+                                    hint: "Avg demand ÷ peak demand over 30 days. Low LF means paying demand charges for capacity rarely used.",
+                                    noData: false,
+                                },
+                                {
+                                    label: "Voltage Quality",
+                                    value: avgComponents?.voltage,
+                                    hint: "Deviation from 230V L-N nominal and min-max voltage spread. NRS 048: ±10% (207–253V).",
+                                    noData: false,
+                                },
+                            ].map(({ label, value, hint, noData }) => {
                                 const barColour = value == null ? "bg-slate-700"
                                     : value >= 75 ? "bg-emerald-500"
                                     : value >= 50 ? "bg-yellow-500"
@@ -290,24 +310,33 @@ export default function DashboardPage() {
                                 return (
                                     <div key={label}>
                                         <div className="flex justify-between items-center mb-1.5">
-                                            <span className="text-xs text-slate-500">{label}</span>
-                                            <span className="text-xs font-semibold text-slate-300">
+                                            <span className="text-xs text-slate-500 flex items-center gap-1">
+                                                {label}
+                                                {noData && (
+                                                    <span title={hint} className="cursor-help">
+                                                        <Info className="w-3 h-3 text-slate-600" />
+                                                    </span>
+                                                )}
+                                            </span>
+                                            <span className={`text-xs font-semibold ${noData ? "text-slate-500" : "text-slate-300"}`}>
                                                 {value != null ? value : "—"}
+                                                {noData && <span className="text-[9px] text-slate-600 ml-1">est.</span>}
                                             </span>
                                         </div>
                                         <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
                                             <div
-                                                className={`h-full rounded-full transition-all duration-700 ${barColour}`}
+                                                className={`h-full rounded-full transition-all duration-700 ${noData ? "opacity-40" : ""} ${barColour}`}
                                                 style={{ width: value != null ? `${value}%` : "0%" }}
                                             />
                                         </div>
+                                        <p className="text-[10px] text-slate-600 mt-1 leading-tight line-clamp-2">{hint}</p>
                                     </div>
                                 );
                             })}
                         </div>
                         {avgScore === null && (
                             <p className="mt-4 text-xs text-slate-500">
-                                Energy score is calculated after 30 days of meter readings.{" "}
+                                Energy score calculates automatically from meter readings (needs ≥10 readings).{" "}
                                 <Link href="/dashboard/recommendations" className="text-blue-400 hover:underline">
                                     Run AI analysis →
                                 </Link>
@@ -481,8 +510,11 @@ export default function DashboardPage() {
 
                 {/* Live Alerts Feed */}
                 <Card className="lg:col-span-3 flex flex-col">
-                    <CardHeader title="Live Alerts" subtitle="Unacknowledged events" />
-                    <div className="flex-1 space-y-2.5 mt-4 overflow-y-auto max-h-80">
+                    <CardHeader
+                        title="Live Alerts"
+                        subtitle={unreadAlerts.length > 0 ? `${unreadAlerts.length} unacknowledged` : "All clear"}
+                    />
+                    <div className="flex-1 space-y-2 mt-4 overflow-y-auto max-h-80">
                         {unreadAlerts.length === 0 ? (
                             <div className="flex flex-col items-center justify-center py-10 gap-2">
                                 <AlertTriangle className="w-8 h-8 text-slate-700 opacity-50" />
@@ -490,26 +522,44 @@ export default function DashboardPage() {
                                 <p className="text-xs text-slate-600">All systems nominal</p>
                             </div>
                         ) : (
-                            unreadAlerts.slice(0, 10).map((alert) => (
-                                <div
-                                    key={alert.id}
-                                    className={`flex items-start gap-3 p-3 rounded-lg border transition-colors ${severityClasses(alert.severity)}`}
-                                >
-                                    <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                                    <div className="min-w-0">
-                                        <p className="text-xs font-medium text-slate-200 truncate">
-                                            {alert.type.replace(/_/g, " ")}
-                                        </p>
-                                        <p className="text-xs text-slate-500 truncate">{alert.meter_name}</p>
-                                        <p className="text-[10px] text-slate-600 mt-0.5">
-                                            {timeAgo(alert.created_at)}
-                                        </p>
+                            unreadAlerts.slice(0, 10).map((alert) => {
+                                const Icon = alert.severity === "CRITICAL" ? XCircle
+                                           : alert.severity === "WARNING"  ? ShieldAlert
+                                           : Info;
+                                // Human-readable type label
+                                const typeLabel = alert.type
+                                    .replace("PREDICTIVE_WARNING", "Predictive")
+                                    .replace("MDI_EXCEEDED", "MDI Exceeded")
+                                    .replace("MDI_WARNING", "MDI Warning")
+                                    .replace("VOLTAGE_SAG", "Voltage Sag")
+                                    .replace("OVERVOLTAGE", "Overvoltage")
+                                    .replace("HIGH_THD", "High THD")
+                                    .replace("FREQUENCY_DEVIATION", "Freq Deviation")
+                                    .replace("PEAK_DEMAND", "Peak Demand")
+                                    .replace(/_/g, " ");
+
+                                return (
+                                    <div
+                                        key={alert.id}
+                                        className={`flex items-start gap-2.5 p-3 rounded-lg border ${severityClasses(alert.severity)}`}
+                                    >
+                                        <Icon className="h-4 w-4 shrink-0 mt-0.5" />
+                                        <div className="min-w-0">
+                                            <div className="flex items-center gap-2">
+                                                <p className="text-xs font-semibold text-slate-200">{typeLabel}</p>
+                                                <span className="text-[10px] text-slate-600 shrink-0">{timeAgo(alert.created_at)}</span>
+                                            </div>
+                                            <p className="text-[11px] text-slate-400 mt-0.5 leading-snug line-clamp-3">
+                                                {alert.message}
+                                            </p>
+                                            <p className="text-[10px] text-slate-600 mt-0.5">{alert.meter_name}</p>
+                                        </div>
                                     </div>
-                                </div>
-                            ))
+                                );
+                            })
                         )}
                     </div>
-                    <div className="mt-4 pt-3 border-t border-slate-800">
+                    <div className="mt-3 pt-3 border-t border-slate-800">
                         <Link
                             href="/dashboard/analytics"
                             className="block w-full py-2 text-sm text-center text-blue-400 hover:text-blue-300 transition-colors border border-dashed border-slate-700 rounded-lg"
