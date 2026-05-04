@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import path from 'path';
 import { Pool } from 'pg';
 import cron from 'node-cron';
 import { Queue, Worker } from 'bullmq';
@@ -11,7 +12,8 @@ import {
     getTenantRecommendations,
 } from './ai-recommendations';
 
-dotenv.config();
+// Load .env from the service directory regardless of CWD
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 // Redis Connection
 const redisConnection = new IORedis({
