@@ -8,7 +8,7 @@ import {
     Plus, Search, MapPin, X, Loader2, Server,
     ChevronDown, ChevronRight, Trash2, BarChart2,
     Activity, Clock, ArrowRight, AlertTriangle,
-    Copy, Check, Wifi
+    Copy, Check, Wifi, PauseCircle, PlayCircle
 } from "lucide-react";
 
 interface Site {
@@ -25,6 +25,7 @@ interface Meter {
     serial_number: string;
     model: string;
     site_id: string;
+    is_active: boolean;
     latest_reading?: {
         power_active_total?: number;
         voltage_a?: number;
@@ -51,6 +52,7 @@ export default function SitesPage() {
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState("");
     const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [togglingId, setTogglingId] = useState<string | null>(null);
     const [copied, setCopied] = useState<string | null>(null);
 
     const copyToClipboard = (text: string, label: string) => {
@@ -140,6 +142,20 @@ export default function SitesPage() {
             fetchData();
         } catch (err: any) { alert(`Delete failed: ${err.message}`); }
         finally { setDeletingId(null); }
+    };
+
+    const handleToggleMeter = async (e: React.MouseEvent, meter: Meter) => {
+        e.stopPropagation();
+        setTogglingId(meter.id);
+        try {
+            const res = await fetch(
+                `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${meter.id}/active`,
+                { method: 'PATCH', headers: { Authorization: `Bearer ${token()}` } }
+            );
+            if (!res.ok) throw new Error(await res.text());
+            fetchData();
+        } catch (err: any) { alert(`Toggle failed: ${err.message}`); }
+        finally { setTogglingId(null); }
     };
 
     const handleDeleteSite = async (siteId: string, siteName: string) => {
@@ -277,12 +293,17 @@ export default function SitesPage() {
                                                 return (
                                                     <div key={meter.id}
                                                         onClick={() => router.push(`/dashboard/sites/${meter.id}`)}
-                                                        className="flex items-center gap-4 px-8 py-3.5 hover:bg-slate-800/30 transition-colors group cursor-pointer">
+                                                        className={`flex items-center gap-4 px-8 py-3.5 hover:bg-slate-800/30 transition-colors group cursor-pointer ${!meter.is_active ? 'opacity-50' : ''}`}>
                                                         <div className="p-1.5 rounded-md bg-slate-800 text-slate-400">
                                                             <Activity className="w-4 h-4" />
                                                         </div>
                                                         <div className="flex-1 min-w-0">
-                                                            <p className="text-sm font-medium text-white truncate">{meter.name}</p>
+                                                            <div className="flex items-center gap-2">
+                                                                <p className="text-sm font-medium text-white truncate">{meter.name}</p>
+                                                                {!meter.is_active && (
+                                                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide bg-amber-500/15 text-amber-400 border border-amber-500/20">Paused</span>
+                                                                )}
+                                                            </div>
                                                             <p className="text-xs text-slate-500">{meter.model} · SN: {meter.serial_number}</p>
                                                         </div>
 
@@ -315,20 +336,35 @@ export default function SitesPage() {
                                                                 </div>
                                                             )}
                                                             {/* Status badge */}
-                                                            <span className={`px - 2 py - 0.5 rounded - full text - [10px] font - medium border ${hasLive
-                                                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                                                                : r ? 'bg-slate-700 text-slate-400 border-slate-600' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                                                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${
+                                                                !meter.is_active
+                                                                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                                                    : hasLive
+                                                                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                                                        : r ? 'bg-slate-700 text-slate-400 border-slate-600' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
                                                                 }`}>
-                                                                {hasLive ? '● Live' : r ? 'Imported' : 'No data'}
+                                                                {!meter.is_active ? '⏸ Paused' : hasLive ? '● Live' : r ? 'Imported' : 'No data'}
                                                             </span>
                                                         </div>
 
                                                         {/* Actions */}
                                                         <div className="flex items-center gap-1 ml-2">
                                                             <Link href={`/dashboard/sites/${meter.id}`}
+                                                                onClick={e => e.stopPropagation()}
                                                                 className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors">
                                                                 <BarChart2 className="w-3.5 h-3.5" /> Chart
                                                             </Link>
+                                                            <button
+                                                                onClick={(e) => handleToggleMeter(e, meter)}
+                                                                disabled={togglingId === meter.id}
+                                                                title={meter.is_active ? 'Pause meter (exclude from AI/scoring)' : 'Resume meter'}
+                                                                className={`p-1.5 rounded-lg transition-colors ${meter.is_active ? 'text-slate-500 hover:text-amber-400 hover:bg-amber-500/10' : 'text-amber-400 hover:text-emerald-400 hover:bg-emerald-500/10'}`}>
+                                                                {togglingId === meter.id
+                                                                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                    : meter.is_active
+                                                                        ? <PauseCircle className="w-3.5 h-3.5" />
+                                                                        : <PlayCircle className="w-3.5 h-3.5" />}
+                                                            </button>
                                                             <button
                                                                 onClick={(e) => { e.stopPropagation(); handleDeleteMeter(meter.id, meter.name); }}
                                                                 disabled={deletingId === meter.id}

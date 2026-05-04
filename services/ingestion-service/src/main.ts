@@ -33,6 +33,12 @@ const pool = new Pool({
 (async () => {
     const client = await pool.connect();
     try {
+        // Meter active/pause flag
+        await client.query(`
+            ALTER TABLE meters
+            ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+        `);
+
         // Energy score weight columns (added to existing site_settings)
         await client.query(`
             ALTER TABLE site_settings
@@ -964,6 +970,33 @@ app.delete('/meters/:id', authenticateToken, async (req: any, res) => {
     } catch (err) {
         console.error('Delete meter error:', err);
         res.status(500).json({ error: 'Failed to delete meter' });
+    } finally {
+        client.release();
+    }
+});
+
+// Toggle meter active/paused state
+app.patch('/meters/:id/active', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const check = await client.query(
+                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id WHERE m.id = $1 AND s.tenant_id = $2`,
+                [id, tenantId]
+            );
+            if (check.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
+        }
+        const result = await client.query(
+            `UPDATE meters SET is_active = NOT is_active WHERE id = $1 RETURNING id, name, is_active`,
+            [id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Meter not found' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('Toggle meter error:', err);
+        res.status(500).json({ error: 'Failed to toggle meter state' });
     } finally {
         client.release();
     }

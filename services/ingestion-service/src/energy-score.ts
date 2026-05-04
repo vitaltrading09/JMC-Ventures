@@ -174,6 +174,7 @@ export async function computeAndStoreSiteScore(
             JOIN meters m ON mr.meter_id = m.id
             WHERE m.site_id = $1
               AND mr.time >= NOW() - INTERVAL '30 days'
+              AND m.is_active = true
         `, [siteId]);
 
         const row = metricsRes.rows[0];
