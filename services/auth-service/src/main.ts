@@ -5,7 +5,7 @@ import path from 'path';
 import { Pool } from 'pg';
 
 // Load .env from the service directory regardless of CWD
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 const app = express();
 const port = process.env.PORT || 3001;

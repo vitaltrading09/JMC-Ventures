@@ -13,7 +13,7 @@ import {
 } from './ai-recommendations';
 
 // Load .env from the service directory regardless of CWD
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 // Redis Connection
 const redisConnection = new IORedis({
