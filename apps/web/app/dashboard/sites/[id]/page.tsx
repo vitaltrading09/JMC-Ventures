@@ -20,7 +20,8 @@ const MEASUREMENTS = [
     { key: 'power_factor_total',   label: 'PF',          unit: '',     color: '#10b981' },
     { key: 'voltage_a',            label: 'Voltage (V)', unit: 'V',    color: '#eab308' },
     { key: 'current_a',            label: 'Current (A)', unit: 'A',    color: '#f97316' },
-    { key: 'thd_voltage_a',        label: 'THD (%)',     unit: '%',    color: '#ef4444' },
+    { key: 'thd_voltage_a',        label: 'THD-V (%)',   unit: '%',    color: '#ef4444' },
+    { key: 'thd_current_a',        label: 'THD-I (%)',   unit: '%',    color: '#f97316' },
     { key: 'frequency',            label: 'Freq (Hz)',   unit: 'Hz',   color: '#22d3ee' },
     { key: 'energy_import_total',  label: 'Energy (kWh)', unit: 'kWh', color: '#06b6d4' },
 ];
@@ -286,7 +287,8 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
 
                                         {/* Reference lines — NRS 048-2 limits */}
                                         {measurement.key === 'power_factor_total' && <ReferenceLine y={0.85} stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'Min PF 0.85', fontSize: 10, fill: '#ef4444', position: 'insideBottomRight' }} />}
-                                        {measurement.key === 'thd_voltage_a'      && <ReferenceLine y={8}    stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'NRS048 8%',  fontSize: 10, fill: '#ef4444', position: 'insideTopRight' }} />}
+                                        {measurement.key === 'thd_voltage_a'      && <ReferenceLine y={8}    stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'NRS048 8%',   fontSize: 10, fill: '#ef4444', position: 'insideTopRight' }} />}
+                                        {measurement.key === 'thd_current_a'      && <ReferenceLine y={25}   stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 25%',  fontSize: 10, fill: '#f97316', position: 'insideTopRight' }} />}
                                         {measurement.key === 'voltage_a'          && <ReferenceLine y={207}  stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 min', fontSize: 10, fill: '#f97316', position: 'insideBottomRight' }} />}
                                         {measurement.key === 'voltage_a'          && <ReferenceLine y={253}  stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 max', fontSize: 10, fill: '#f97316', position: 'insideTopRight' }} />}
                                         {measurement.key === 'frequency'          && <ReferenceLine y={49}   stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 49Hz', fontSize: 10, fill: '#f97316', position: 'insideBottomRight' }} />}
