@@ -17,6 +17,7 @@ export default function TariffsPage() {
             peak: 0,
             standard: 0,
             offPeak: 0,
+            demand: 0,
         },
         times: {
             peak: "",
@@ -60,14 +61,15 @@ export default function TariffsPage() {
                 const data = await res.json();
                 setTariff({
                     rates: {
-                        peak: Number(data.tariff_peak) || 0,
+                        peak:     Number(data.tariff_peak)     || 0,
                         standard: Number(data.tariff_standard) || 0,
-                        offPeak: Number(data.tariff_offpeak) || 0,
+                        offPeak:  Number(data.tariff_offpeak)  || 0,
+                        demand:   Number(data.tariff_demand)   || 0,
                     },
                     times: {
-                        peak: data.peak_times || "",
+                        peak:     data.peak_times     || "",
                         standard: data.standard_times || "",
-                        offPeak: data.offpeak_times || "",
+                        offPeak:  data.offpeak_times  || "",
                     }
                 });
             } catch (err) {
@@ -92,12 +94,13 @@ export default function TariffsPage() {
                     Authorization: `Bearer ${token()}`
                 },
                 body: JSON.stringify({
-                    tariff_peak: tariff.rates.peak,
-                    tariff_standard: tariff.rates.standard,
-                    tariff_offpeak: tariff.rates.offPeak,
-                    peak_times: tariff.times.peak,
-                    standard_times: tariff.times.standard,
-                    offpeak_times: tariff.times.offPeak
+                    tariff_peak:     tariff.rates.peak     || null,
+                    tariff_standard: tariff.rates.standard || null,
+                    tariff_offpeak:  tariff.rates.offPeak  || null,
+                    tariff_demand:   tariff.rates.demand   || null,
+                    peak_times:      tariff.times.peak     || null,
+                    standard_times:  tariff.times.standard || null,
+                    offpeak_times:   tariff.times.offPeak  || null,
                 })
             });
             setSuccess(true);
@@ -149,7 +152,7 @@ export default function TariffsPage() {
                             <Zap className="h-5 w-5 text-yellow-500" />
                             Energy Rates (R/kWh)
                         </h3>
-                        <div className="grid gap-6 md:grid-cols-3">
+                        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
                             <div>
                                 <label className="block text-sm font-medium text-red-400 mb-1">Peak Rate</label>
                                 <div className="relative">
@@ -157,11 +160,13 @@ export default function TariffsPage() {
                                     <input
                                         type="number"
                                         step="0.01"
-                                        value={tariff.rates.peak}
+                                        placeholder="5.00"
+                                        value={tariff.rates.peak || ""}
                                         onChange={e => setTariff(t => ({ ...t, rates: { ...t.rates, peak: Number(e.target.value) } }))}
                                         className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-red-500/50"
                                     />
                                 </div>
+                                <p className="text-xs text-slate-500 mt-1">R/kWh during peak hours</p>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-yellow-400 mb-1">Standard Rate</label>
@@ -170,11 +175,13 @@ export default function TariffsPage() {
                                     <input
                                         type="number"
                                         step="0.01"
-                                        value={tariff.rates.standard}
+                                        placeholder="2.00"
+                                        value={tariff.rates.standard || ""}
                                         onChange={e => setTariff(t => ({ ...t, rates: { ...t.rates, standard: Number(e.target.value) } }))}
                                         className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-yellow-500/50"
                                     />
                                 </div>
+                                <p className="text-xs text-slate-500 mt-1">R/kWh during standard hours</p>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-emerald-400 mb-1">Off-Peak Rate</label>
@@ -183,11 +190,28 @@ export default function TariffsPage() {
                                     <input
                                         type="number"
                                         step="0.01"
-                                        value={tariff.rates.offPeak}
+                                        placeholder="1.20"
+                                        value={tariff.rates.offPeak || ""}
                                         onChange={e => setTariff(t => ({ ...t, rates: { ...t.rates, offPeak: Number(e.target.value) } }))}
                                         className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
                                     />
                                 </div>
+                                <p className="text-xs text-slate-500 mt-1">R/kWh during off-peak hours</p>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-blue-400 mb-1">Demand Charge</label>
+                                <div className="relative">
+                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">R</span>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        placeholder="e.g. 80.00"
+                                        value={tariff.rates.demand || ""}
+                                        onChange={e => setTariff(t => ({ ...t, rates: { ...t.rates, demand: Number(e.target.value) } }))}
+                                        className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                                    />
+                                </div>
+                                <p className="text-xs text-slate-500 mt-1">R/kVA monthly MDI charge</p>
                             </div>
                         </div>
 

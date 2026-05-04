@@ -7,7 +7,7 @@ import {
     XAxis, YAxis, CartesianGrid, Tooltip,
     ResponsiveContainer, Legend,
 } from "recharts";
-import { Zap, TrendingDown, RefreshCw, Loader2 } from "lucide-react";
+import { Zap, TrendingDown, RefreshCw, Loader2, DollarSign } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
 
@@ -22,21 +22,89 @@ interface Reading {
     current_c?: number | null;
 }
 
+interface SiteSettings {
+    tariff_peak?: number | null;
+    tariff_standard?: number | null;
+    tariff_offpeak?: number | null;
+    tariff_demand?: number | null;
+    peak_times?: string | null;
+    standard_times?: string | null;
+    offpeak_times?: string | null;
+    alert_max_kw?: number | null;
+    contracted_mdi_kva?: number | null;
+}
+
+interface TariffCost {
+    peakKwh: number;
+    standardKwh: number;
+    offpeakKwh: number;
+    peakCost: number;
+    standardCost: number;
+    offpeakCost: number;
+    totalCost: number;
+    avgRate: number;
+}
+
+/** Returns the TOU time-of-use band for a given hour (0-23), using SA commercial defaults */
+function getTouBand(hour: number, settings: SiteSettings): "peak" | "standard" | "offpeak" {
+    // Default SA peak: 07:00-10:00 and 18:00-20:00 weekdays
+    // We simplify to hour-of-day only (no weekday check without date)
+    if (hour >= 7 && hour < 10) return "peak";
+    if (hour >= 18 && hour < 20) return "peak";
+    if (hour >= 6 && hour < 22) return "standard";
+    return "offpeak";
+}
+
+/** Calculate TOU cost breakdown from readings array */
+function calcTariffCost(readings: Reading[], settings: SiteSettings): TariffCost {
+    const rPeak     = Number(settings.tariff_peak)     || 5.00;
+    const rStd      = Number(settings.tariff_standard) || 2.00;
+    const rOffpeak  = Number(settings.tariff_offpeak)  || 1.20;
+
+    // Each reading represents ~5 minutes of energy (5/60 hours)
+    const interval_h = 5 / 60;
+
+    let peakKwh = 0, standardKwh = 0, offpeakKwh = 0;
+
+    for (const r of readings) {
+        if (r.power_active_total == null) continue;
+        const kwh = r.power_active_total * interval_h;
+        const hour = new Date(r.time).getHours();
+        const band = getTouBand(hour, settings);
+        if (band === "peak")     peakKwh     += kwh;
+        else if (band === "standard") standardKwh += kwh;
+        else                    offpeakKwh  += kwh;
+    }
+
+    const peakCost    = peakKwh    * rPeak;
+    const standardCost = standardKwh * rStd;
+    const offpeakCost = offpeakKwh * rOffpeak;
+    const totalCost   = peakCost + standardCost + offpeakCost;
+    const totalKwh    = peakKwh + standardKwh + offpeakKwh;
+    const avgRate     = totalKwh > 0 ? totalCost / totalKwh : 0;
+
+    return { peakKwh, standardKwh, offpeakKwh, peakCost, standardCost, offpeakCost, totalCost, avgRate };
+}
+
 export default function AnalyticsPage() {
     const [readings,    setReadings]    = useState<Reading[]>([]);
     const [loading,     setLoading]     = useState(true);
     const [aiInsight,   setAiInsight]   = useState<string>("");
     const [aiLoading,   setAiLoading]   = useState(false);
     const [meterId,     setMeterId]     = useState<string | null>(null);
+    const [siteId,      setSiteId]      = useState<string | null>(null);
     const [meterName,   setMeterName]   = useState<string>("");
+    const [settings,    setSettings]    = useState<SiteSettings>({});
 
     const token = () => (typeof window !== "undefined" ? localStorage.getItem("token") ?? "" : "");
 
-    // Load meter + last 7 days of readings
+    // Load meter + settings + last 7 days of readings
     const fetchData = useCallback(async () => {
         setLoading(true);
         try {
             const headers = { Authorization: `Bearer ${token()}` };
+
+            // 1 — get first active meter
             const metersRes = await fetch(`${API}/ingestion/meters`, { headers });
             if (!metersRes.ok) return;
             const meters = await metersRes.json();
@@ -44,8 +112,20 @@ export default function AnalyticsPage() {
             if (!activeMeter) return;
 
             setMeterId(activeMeter.id);
+            setSiteId(activeMeter.site_id);
             setMeterName(activeMeter.name);
 
+            // 2 — fetch site settings (tariffs + thresholds)
+            let fetchedSettings: SiteSettings = {};
+            if (activeMeter.site_id) {
+                const settRes = await fetch(`${API}/ingestion/sites/${activeMeter.site_id}/settings`, { headers });
+                if (settRes.ok) {
+                    fetchedSettings = await settRes.json();
+                    setSettings(fetchedSettings);
+                }
+            }
+
+            // 3 — fetch 7 days of readings
             const from = new Date(Date.now() - 7 * 86400000).toISOString();
             const readRes = await fetch(
                 `${API}/ingestion/meters/${activeMeter.id}/readings?from=${from}&limit=2000`,
@@ -72,11 +152,20 @@ export default function AnalyticsPage() {
             const latPF   = latest.power_factor_total?.toFixed(3) ?? "N/A";
             const latTHD  = latest.thd_voltage_a != null ? `${latest.thd_voltage_a.toFixed(2)}%` : "N/A";
             const latVolt = latest.voltage_a?.toFixed(1) ?? "N/A";
+            const latI1   = latest.current_a?.toFixed(1) ?? "N/A";
+            const latI2   = latest.current_b?.toFixed(1) ?? "N/A";
+            const latI3   = latest.current_c?.toFixed(1) ?? "N/A";
 
-            // Phase imbalance
-            const latI1 = latest.current_a?.toFixed(1) ?? "N/A";
-            const latI2 = latest.current_b?.toFixed(1) ?? "N/A";
-            const latI3 = latest.current_c?.toFixed(1) ?? "N/A";
+            // Tariff rates (real or SA defaults)
+            const rPeak    = Number(settings.tariff_peak)     || 5.00;
+            const rStd     = Number(settings.tariff_standard) || 2.00;
+            const rOffpk   = Number(settings.tariff_offpeak)  || 1.20;
+            const rDemand  = settings.tariff_demand ? `R${Number(settings.tariff_demand).toFixed(2)}/kVA` : "not configured";
+            const mdi      = settings.contracted_mdi_kva ? `${settings.contracted_mdi_kva} kVA` : "not set";
+
+            // 7-day cost estimate
+            const cost7d = calcTariffCost(readings, settings);
+            const projMonthly = (cost7d.totalCost / 7 * 30).toFixed(0);
 
             const context = `
 Site meter: ${meterName}
@@ -87,7 +176,21 @@ Latest power factor: ${latPF}
 Latest voltage THD: ${latTHD}
 Latest voltage L1: ${latVolt} V
 Latest current L1/L2/L3: ${latI1} / ${latI2} / ${latI3} A
-Tariff: South African commercial (R2.50/kWh avg, demand charges apply above contracted MDI)
+
+TARIFF RATES (actual configured):
+  Peak (07:00-10:00, 18:00-20:00): R${rPeak.toFixed(2)}/kWh
+  Standard: R${rStd.toFixed(2)}/kWh
+  Off-peak: R${rOffpk.toFixed(2)}/kWh
+  Demand charge: ${rDemand}
+  Contracted MDI: ${mdi}
+
+7-DAY ENERGY COST BREAKDOWN:
+  Peak energy: ${cost7d.peakKwh.toFixed(0)} kWh → R${cost7d.peakCost.toFixed(0)}
+  Standard energy: ${cost7d.standardKwh.toFixed(0)} kWh → R${cost7d.standardCost.toFixed(0)}
+  Off-peak energy: ${cost7d.offpeakKwh.toFixed(0)} kWh → R${cost7d.offpeakCost.toFixed(0)}
+  Total 7-day cost: R${cost7d.totalCost.toFixed(0)}
+  Effective average rate: R${cost7d.avgRate.toFixed(3)}/kWh
+  Projected monthly cost: R${projMonthly}
 `;
 
             const res = await fetch("/api/chat", {
@@ -97,18 +200,18 @@ Tariff: South African commercial (R2.50/kWh avg, demand charges apply above cont
                     context,
                     messages: [{
                         role: "user",
-                        content: "Analyse this site's energy data from the last 7 days. Identify the top 2-3 specific insights or anomalies, flag any risks, and give one concrete cost-saving recommendation with an estimated rand value. Be specific and use the actual numbers.",
+                        content: "Analyse this site's energy data from the last 7 days. Use the actual tariff rates provided. Identify the top 2-3 specific insights or anomalies, flag any risks, and give one concrete cost-saving recommendation with an estimated rand saving using the real tariff rates. Be specific and use the actual numbers.",
                     }],
                 }),
             });
             const data = await res.json();
             setAiInsight(data.text || data.error || "No insight generated.");
-        } catch (e: any) {
+        } catch {
             setAiInsight("Failed to generate insight. Check your API key.");
         } finally {
             setAiLoading(false);
         }
-    }, [readings, meterName]);
+    }, [readings, meterName, settings]);
 
     // Auto-generate when data loads
     useEffect(() => {
@@ -134,7 +237,7 @@ Tariff: South African commercial (R2.50/kWh avg, demand charges apply above cont
             avg:  Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10,
         }));
 
-    // 3-phase current balance (last 24 readings for visibility)
+    // 3-phase current balance (last 48 readings for visibility)
     const phaseData = readings
         .filter(r => r.current_a != null)
         .slice(-48)
@@ -146,12 +249,34 @@ Tariff: South African commercial (R2.50/kWh avg, demand charges apply above cont
         }));
 
     // Latest values for quality cards
-    const latest     = readings.length ? readings[readings.length - 1] : null;
-    const avgPF      = readings.filter(r => r.power_factor_total != null).reduce((a, r, _, arr) => a + (r.power_factor_total! / arr.length), 0);
-    const avgTHD     = readings.filter(r => r.thd_voltage_a != null).reduce((a, r, _, arr) => a + (r.thd_voltage_a! / arr.length), 0);
+    const latest       = readings.length ? readings[readings.length - 1] : null;
+    const avgPF        = readings.filter(r => r.power_factor_total != null).reduce((a, r, _, arr) => a + (r.power_factor_total! / arr.length), 0);
+    const avgTHD       = readings.filter(r => r.thd_voltage_a != null).reduce((a, r, _, arr) => a + (r.thd_voltage_a! / arr.length), 0);
     const voltReadings = readings.filter(r => r.voltage_a != null);
-    const voltMin    = voltReadings.length ? Math.min(...voltReadings.map(r => r.voltage_a!)) : null;
-    const voltMax    = voltReadings.length ? Math.max(...voltReadings.map(r => r.voltage_a!)) : null;
+    const voltMin      = voltReadings.length ? Math.min(...voltReadings.map(r => r.voltage_a!)) : null;
+    const voltMax      = voltReadings.length ? Math.max(...voltReadings.map(r => r.voltage_a!)) : null;
+
+    // Tariff cost breakdown (7 days)
+    const cost = calcTariffCost(readings, settings);
+    const projMonthly = cost.totalCost / 7 * 30;
+
+    // Daily cost chart data (cost per day by band)
+    const costByDay = Object.entries(demandByDay)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([day]) => {
+            const dayReadings = readings.filter(r => r.time?.slice(0, 10) === day);
+            const c = calcTariffCost(dayReadings, settings);
+            return {
+                day: new Date(day).toLocaleDateString("en-ZA", { month: "short", day: "numeric" }),
+                Peak: Math.round(c.peakCost),
+                Standard: Math.round(c.standardCost),
+                "Off-peak": Math.round(c.offpeakCost),
+            };
+        });
+
+    const rPeak   = Number(settings.tariff_peak)     || 5.00;
+    const rStd    = Number(settings.tariff_standard) || 2.00;
+    const rOffpk  = Number(settings.tariff_offpeak)  || 1.20;
 
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
@@ -217,14 +342,14 @@ Tariff: South African commercial (R2.50/kWh avg, demand charges apply above cont
                         {
                             label: "Avg THD Voltage",
                             value: avgTHD > 0 ? `${avgTHD.toFixed(2)}%` : "—",
-                            sub: avgTHD === 0 ? "No data" : avgTHD < 5 ? "✓ Within limits" : "✗ Above 5% limit",
-                            cls: avgTHD === 0 ? "text-slate-500" : avgTHD < 5 ? "text-emerald-400" : "text-red-400",
+                            sub: avgTHD === 0 ? "No data" : avgTHD < 8 ? "✓ Within NRS 048" : "✗ Above 8% (NRS 048)",
+                            cls: avgTHD === 0 ? "text-slate-500" : avgTHD < 8 ? "text-emerald-400" : "text-red-400",
                         },
                         {
                             label: "Voltage Range L1",
                             value: voltMin != null ? `${voltMin.toFixed(0)}–${voltMax?.toFixed(0)} V` : "—",
-                            sub: voltMin != null && voltMin >= 380 && voltMax! <= 420 ? "✓ Within 380–420 V" : voltMin != null ? "⚠ Outside range" : "No data",
-                            cls: voltMin != null && voltMin >= 380 && voltMax! <= 420 ? "text-emerald-400" : "text-yellow-400",
+                            sub: voltMin != null && voltMin >= 207 && voltMax! <= 253 ? "✓ NRS 048 (207–253 V)" : voltMin != null ? "⚠ Outside NRS 048" : "No data",
+                            cls: voltMin != null && voltMin >= 207 && voltMax! <= 253 ? "text-emerald-400" : "text-yellow-400",
                         },
                         {
                             label: "Peak Demand (7d)",
@@ -242,7 +367,105 @@ Tariff: South African commercial (R2.50/kWh avg, demand charges apply above cont
                 </div>
             )}
 
+            {/* Tariff Cost Summary */}
+            {readings.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* 7-day cost breakdown */}
+                    <div className="md:col-span-2 p-5 rounded-xl bg-slate-800/60 border border-slate-700">
+                        <div className="flex items-center gap-2 mb-4">
+                            <DollarSign className="h-5 w-5 text-emerald-400" />
+                            <h3 className="text-base font-semibold text-white">7-Day Cost Breakdown</h3>
+                            <span className="ml-auto text-xs text-slate-500">
+                                Peak R{rPeak.toFixed(2)} · Std R{rStd.toFixed(2)} · Off-peak R{rOffpk.toFixed(2)}/kWh
+                            </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3 mb-4">
+                            {[
+                                { label: "Peak", kwh: cost.peakKwh, cost: cost.peakCost, color: "text-red-400" },
+                                { label: "Standard", kwh: cost.standardKwh, cost: cost.standardCost, color: "text-yellow-400" },
+                                { label: "Off-peak", kwh: cost.offpeakKwh, cost: cost.offpeakCost, color: "text-emerald-400" },
+                            ].map(b => (
+                                <div key={b.label} className="text-center p-3 rounded-lg bg-slate-900/50">
+                                    <p className={`text-xs font-medium uppercase tracking-wide ${b.color}`}>{b.label}</p>
+                                    <p className="text-lg font-bold text-white mt-1">R{b.cost.toFixed(0)}</p>
+                                    <p className="text-xs text-slate-500 mt-0.5">{b.kwh.toFixed(0)} kWh</p>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="flex items-center justify-between pt-3 border-t border-slate-700">
+                            <div>
+                                <p className="text-xs text-slate-500">7-day total</p>
+                                <p className="text-2xl font-bold text-white">R{cost.totalCost.toFixed(0)}</p>
+                                <p className="text-xs text-slate-500 mt-0.5">Avg rate R{cost.avgRate.toFixed(3)}/kWh</p>
+                            </div>
+                            <div className="text-right">
+                                <p className="text-xs text-slate-500">Projected monthly</p>
+                                <p className="text-2xl font-bold text-emerald-400">R{projMonthly.toFixed(0)}</p>
+                                <p className="text-xs text-slate-500 mt-0.5">Based on 7-day trend</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Tariff config info */}
+                    <div className="p-5 rounded-xl bg-slate-800/60 border border-slate-700 flex flex-col justify-between">
+                        <div>
+                            <h3 className="text-sm font-semibold text-white mb-3">Tariff Config</h3>
+                            {[
+                                { label: "Peak", value: `R${rPeak.toFixed(2)}/kWh`, sub: settings.peak_times || "07:00–10:00, 18:00–20:00", color: "bg-red-500/20 text-red-400" },
+                                { label: "Standard", value: `R${rStd.toFixed(2)}/kWh`, sub: settings.standard_times || "06:00–22:00 excl. peak", color: "bg-yellow-500/20 text-yellow-400" },
+                                { label: "Off-peak", value: `R${rOffpk.toFixed(2)}/kWh`, sub: settings.offpeak_times || "22:00–06:00", color: "bg-emerald-500/20 text-emerald-400" },
+                            ].map(t => (
+                                <div key={t.label} className={`flex items-center justify-between px-3 py-2 rounded-lg mb-2 ${t.color}`}>
+                                    <div>
+                                        <p className="text-xs font-semibold">{t.label}</p>
+                                        <p className="text-xs opacity-70">{t.sub}</p>
+                                    </div>
+                                    <p className="text-sm font-bold">{t.value}</p>
+                                </div>
+                            ))}
+                        </div>
+                        {settings.contracted_mdi_kva && (
+                            <div className="mt-3 pt-3 border-t border-slate-700">
+                                <p className="text-xs text-slate-500">Contracted MDI</p>
+                                <p className="text-base font-bold text-white">{settings.contracted_mdi_kva} kVA</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
             <div className="grid gap-6 md:grid-cols-2">
+                {/* Daily Cost by Band */}
+                <Card>
+                    <CardHeader title="Daily Energy Cost (R)" subtitle="Peak / Standard / Off-peak — last 7 days" />
+                    <div className="h-[300px] w-full mt-4">
+                        {loading ? (
+                            <div className="flex h-full items-center justify-center">
+                                <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
+                            </div>
+                        ) : costByDay.length === 0 ? (
+                            <div className="flex h-full items-center justify-center text-slate-500 text-sm">No readings yet</div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={costByDay}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                                    <XAxis dataKey="day" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                                    <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} tickFormatter={v => `R${v}`} />
+                                    <Tooltip
+                                        contentStyle={{ backgroundColor: "#0f172a", borderColor: "#1e293b", color: "#f8fafc" }}
+                                        cursor={{ fill: "#1e293b" }}
+                                        formatter={(v: any, name: string) => [`R${v}`, name]}
+                                    />
+                                    <Legend />
+                                    <Bar dataKey="Peak"     stackId="a" fill="#ef4444" radius={[0, 0, 0, 0]} />
+                                    <Bar dataKey="Standard" stackId="a" fill="#eab308" radius={[0, 0, 0, 0]} />
+                                    <Bar dataKey="Off-peak" stackId="a" fill="#10b981" radius={[4, 4, 0, 0]} />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        )}
+                    </div>
+                </Card>
+
                 {/* Daily Peak vs Average Demand */}
                 <Card>
                     <CardHeader title="Daily Demand (kW)" subtitle="Peak vs average — last 7 days · live data" />
@@ -274,7 +497,7 @@ Tariff: South African commercial (R2.50/kWh avg, demand charges apply above cont
                 </Card>
 
                 {/* 3-Phase Current Balance */}
-                <Card>
+                <Card className="md:col-span-2">
                     <CardHeader title="3-Phase Current Balance" subtitle="L1 / L2 / L3 (A) — last 48 readings · live data" />
                     <div className="h-[300px] w-full mt-4">
                         {loading ? (

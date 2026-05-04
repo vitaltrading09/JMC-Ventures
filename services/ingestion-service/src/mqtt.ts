@@ -174,16 +174,24 @@ export async function initMqtt(pool: Pool) {
             const lookupRes = await dbClient.query<{
                 id: string;
                 tenant_id: string;
-                alert_max_kw: number | null;
-                alert_min_v: number | null;
-                alert_max_thd: number | null;
+                alert_max_kw:       number | null;
+                alert_min_v:        number | null;
+                alert_max_v:        number | null;
+                alert_max_thd:      number | null;
+                alert_min_freq:     number | null;
+                alert_max_freq:     number | null;
+                contracted_mdi_kva: number | null;
             }>(`
                 SELECT
                     m.id,
                     s.tenant_id,
                     ss.alert_max_kw,
                     ss.alert_min_v,
-                    ss.alert_max_thd
+                    ss.alert_max_v,
+                    ss.alert_max_thd,
+                    ss.alert_min_freq,
+                    ss.alert_max_freq,
+                    ss.contracted_mdi_kva
                 FROM meters m
                 JOIN sites s ON m.site_id = s.id
                 LEFT JOIN site_settings ss ON s.id = ss.site_id
@@ -240,15 +248,23 @@ export async function initMqtt(pool: Pool) {
             );
 
             // ── Alert threshold evaluation ─────────────────────────────────
+            // NRS 048-2 South African grid voltage quality standards (used as
+            // defaults when site_settings thresholds are not configured).
             await evaluateAlerts(dbClient, {
-                meterId:  actualId,
-                tenantId: meter.tenant_id,
-                power:    p_total as number | null,
-                voltage:  v_a    as number | null,
-                thd:      thd_v  as number | null,
-                maxKw:    meter.alert_max_kw,
-                minV:     meter.alert_min_v,
-                maxThd:   meter.alert_max_thd,
+                meterId:        actualId,
+                tenantId:       meter.tenant_id,
+                power:          p_total as number | null,
+                apparent:       s_total as number | null,
+                voltage:        v_a     as number | null,
+                thd:            thd_v   as number | null,
+                freq:           freq    as number | null,
+                maxKw:          meter.alert_max_kw,
+                minV:           meter.alert_min_v        ?? 207,   // NRS 048: 230V − 10%
+                maxV:           meter.alert_max_v        ?? 253,   // NRS 048: 230V + 10%
+                maxThd:         meter.alert_max_thd      ?? 8.0,   // NRS 048-2 THD limit
+                minFreq:        meter.alert_min_freq     ?? 49.0,  // NRS 048: 50Hz − 2%
+                maxFreq:        meter.alert_max_freq     ?? 51.0,  // NRS 048: 50Hz + 2%
+                contractedMdi:  meter.contracted_mdi_kva ?? null,
             });
 
         } catch (dbErr) {
@@ -265,38 +281,83 @@ export async function initMqtt(pool: Pool) {
 // Deduplicates: at most 1 alert of the same type per meter per hour.
 // ─────────────────────────────────────────────────────────────────────────────
 interface AlertParams {
-    meterId:  string;
-    tenantId: string;
-    power:    number | null;
-    voltage:  number | null;
-    thd:      number | null;
-    maxKw:    number | null;
-    minV:     number | null;
-    maxThd:   number | null;
+    meterId:       string;
+    tenantId:      string;
+    power:         number | null;
+    apparent:      number | null;
+    voltage:       number | null;
+    thd:           number | null;
+    freq:          number | null;
+    maxKw:         number | null;
+    minV:          number;        // NRS 048 default applied before call
+    maxV:          number;        // NRS 048 default applied before call
+    maxThd:        number;        // NRS 048 default applied before call
+    minFreq:       number;        // NRS 048 default applied before call
+    maxFreq:       number;        // NRS 048 default applied before call
+    contractedMdi: number | null;
 }
 
 async function evaluateAlerts(client: any, p: AlertParams): Promise<void> {
+    // ── Max demand (kW) ────────────────────────────────────────────────────────
     if (p.maxKw !== null && p.power !== null && p.power > Number(p.maxKw)) {
         await maybeInsertAlert(
             client, p.tenantId, p.meterId,
             'PEAK_DEMAND', 'WARNING',
-            `Peak demand threshold exceeded: ${p.power.toFixed(2)} kW (limit: ${p.maxKw} kW)`
+            `Peak demand exceeded: ${p.power.toFixed(1)} kW (limit: ${p.maxKw} kW) — demand charge risk`
         );
     }
 
-    if (p.minV !== null && p.voltage !== null && p.voltage < Number(p.minV)) {
+    // ── Contracted MDI (kVA) ───────────────────────────────────────────────────
+    if (p.contractedMdi !== null && p.apparent !== null) {
+        const pct = (p.apparent / Number(p.contractedMdi)) * 100;
+        if (pct >= 100) {
+            await maybeInsertAlert(
+                client, p.tenantId, p.meterId,
+                'MDI_EXCEEDED', 'CRITICAL',
+                `Contracted MDI exceeded: ${p.apparent.toFixed(1)} kVA (contracted: ${p.contractedMdi} kVA / ${pct.toFixed(0)}%) — tariff penalty will apply`
+            );
+        } else if (pct >= 90) {
+            await maybeInsertAlert(
+                client, p.tenantId, p.meterId,
+                'MDI_WARNING', 'WARNING',
+                `Approaching contracted MDI: ${p.apparent.toFixed(1)} kVA = ${pct.toFixed(0)}% of ${p.contractedMdi} kVA limit`
+            );
+        }
+    }
+
+    // ── Voltage sag — NRS 048-2 Category A lower limit ────────────────────────
+    if (p.voltage !== null && p.voltage < p.minV) {
         await maybeInsertAlert(
             client, p.tenantId, p.meterId,
             'VOLTAGE_SAG', 'CRITICAL',
-            `Voltage sag detected: ${p.voltage.toFixed(1)} V (minimum: ${p.minV} V) — machinery at risk`
+            `Voltage sag: ${p.voltage.toFixed(1)} V L1 (NRS 048 min: ${p.minV} V) — equipment damage risk`
         );
     }
 
-    if (p.maxThd !== null && p.thd !== null && p.thd > Number(p.maxThd)) {
+    // ── Overvoltage — NRS 048-2 Category A upper limit ────────────────────────
+    if (p.voltage !== null && p.voltage > p.maxV) {
+        await maybeInsertAlert(
+            client, p.tenantId, p.meterId,
+            'OVERVOLTAGE', 'CRITICAL',
+            `Overvoltage: ${p.voltage.toFixed(1)} V L1 (NRS 048 max: ${p.maxV} V) — insulation and equipment risk`
+        );
+    }
+
+    // ── Voltage THD — NRS 048-2 limit ─────────────────────────────────────────
+    if (p.thd !== null && p.thd > p.maxThd) {
         await maybeInsertAlert(
             client, p.tenantId, p.meterId,
             'HIGH_THD', 'WARNING',
-            `Voltage THD exceeded: ${p.thd.toFixed(2)}% (limit: ${p.maxThd}%) — check for harmonic sources`
+            `Voltage THD: ${p.thd.toFixed(2)}% (NRS 048 limit: ${p.maxThd}%) — harmonic distortion affecting equipment`
+        );
+    }
+
+    // ── Frequency out of range — NRS 048 statutory limits ─────────────────────
+    if (p.freq !== null && (p.freq < p.minFreq || p.freq > p.maxFreq)) {
+        await maybeInsertAlert(
+            client, p.tenantId, p.meterId,
+            'FREQUENCY_DEVIATION', 'WARNING',
+            `Frequency deviation: ${p.freq.toFixed(2)} Hz (NRS 048 range: ${p.minFreq}–${p.maxFreq} Hz)`
         );
     }
 }

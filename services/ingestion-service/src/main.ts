@@ -41,6 +41,16 @@ const pool = new Pool({
             ADD COLUMN IF NOT EXISTS weight_voltage_quality DECIMAL(4,3);
         `);
 
+        // NRS 048 alert thresholds + MDI + demand tariff
+        await client.query(`
+            ALTER TABLE site_settings
+            ADD COLUMN IF NOT EXISTS alert_max_v DECIMAL(10,2),
+            ADD COLUMN IF NOT EXISTS alert_min_freq DECIMAL(6,2),
+            ADD COLUMN IF NOT EXISTS alert_max_freq DECIMAL(6,2),
+            ADD COLUMN IF NOT EXISTS contracted_mdi_kva DECIMAL(10,2),
+            ADD COLUMN IF NOT EXISTS tariff_demand DECIMAL(10,2);
+        `);
+
         // Energy scores table
         await client.query(`
             CREATE TABLE IF NOT EXISTS energy_scores (
@@ -553,7 +563,13 @@ app.post('/sites/:id/settings', authenticateToken, async (req: any, res) => {
     const client = await pool.connect();
     const { id } = req.params;
     const { tenantId, role } = req.user;
-    const { tariff_peak, tariff_standard, tariff_offpeak, alert_max_kw, alert_min_v, alert_max_thd, peak_times, standard_times, offpeak_times } = req.body;
+    const {
+        tariff_peak, tariff_standard, tariff_offpeak,
+        peak_times, standard_times, offpeak_times,
+        alert_max_kw, alert_min_v, alert_max_thd,
+        alert_max_v, alert_min_freq, alert_max_freq,
+        contracted_mdi_kva, tariff_demand,
+    } = req.body;
 
     try {
         // Validate site ownership
@@ -561,23 +577,43 @@ app.post('/sites/:id/settings', authenticateToken, async (req: any, res) => {
         if (siteCheck.rows.length === 0) return res.status(403).json({ error: 'Site not found or access denied' });
 
         const query = `
-            INSERT INTO site_settings (site_id, tariff_peak, tariff_standard, tariff_offpeak, peak_times, standard_times, offpeak_times, alert_max_kw, alert_min_v, alert_max_thd, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
-            ON CONFLICT (site_id) 
-            DO UPDATE SET 
-                tariff_peak = COALESCE(EXCLUDED.tariff_peak, site_settings.tariff_peak),
-                peak_times = COALESCE(EXCLUDED.peak_times, site_settings.peak_times),
-                tariff_standard = COALESCE(EXCLUDED.tariff_standard, site_settings.tariff_standard),
-                standard_times = COALESCE(EXCLUDED.standard_times, site_settings.standard_times),
-                tariff_offpeak = COALESCE(EXCLUDED.tariff_offpeak, site_settings.tariff_offpeak),
-                offpeak_times = COALESCE(EXCLUDED.offpeak_times, site_settings.offpeak_times),
-                alert_max_kw = COALESCE(EXCLUDED.alert_max_kw, site_settings.alert_max_kw),
-                alert_min_v = COALESCE(EXCLUDED.alert_min_v, site_settings.alert_min_v),
-                alert_max_thd = COALESCE(EXCLUDED.alert_max_thd, site_settings.alert_max_thd),
+            INSERT INTO site_settings (
+                site_id,
+                tariff_peak, tariff_standard, tariff_offpeak,
+                peak_times, standard_times, offpeak_times,
+                alert_max_kw, alert_min_v, alert_max_thd,
+                alert_max_v, alert_min_freq, alert_max_freq,
+                contracted_mdi_kva, tariff_demand,
+                updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, CURRENT_TIMESTAMP)
+            ON CONFLICT (site_id)
+            DO UPDATE SET
+                tariff_peak         = COALESCE(EXCLUDED.tariff_peak,         site_settings.tariff_peak),
+                tariff_standard     = COALESCE(EXCLUDED.tariff_standard,     site_settings.tariff_standard),
+                tariff_offpeak      = COALESCE(EXCLUDED.tariff_offpeak,      site_settings.tariff_offpeak),
+                peak_times          = COALESCE(EXCLUDED.peak_times,          site_settings.peak_times),
+                standard_times      = COALESCE(EXCLUDED.standard_times,      site_settings.standard_times),
+                offpeak_times       = COALESCE(EXCLUDED.offpeak_times,       site_settings.offpeak_times),
+                alert_max_kw        = COALESCE(EXCLUDED.alert_max_kw,        site_settings.alert_max_kw),
+                alert_min_v         = COALESCE(EXCLUDED.alert_min_v,         site_settings.alert_min_v),
+                alert_max_thd       = COALESCE(EXCLUDED.alert_max_thd,       site_settings.alert_max_thd),
+                alert_max_v         = COALESCE(EXCLUDED.alert_max_v,         site_settings.alert_max_v),
+                alert_min_freq      = COALESCE(EXCLUDED.alert_min_freq,      site_settings.alert_min_freq),
+                alert_max_freq      = COALESCE(EXCLUDED.alert_max_freq,      site_settings.alert_max_freq),
+                contracted_mdi_kva  = COALESCE(EXCLUDED.contracted_mdi_kva,  site_settings.contracted_mdi_kva),
+                tariff_demand       = COALESCE(EXCLUDED.tariff_demand,       site_settings.tariff_demand),
                 updated_at = CURRENT_TIMESTAMP
             RETURNING *;
         `;
-        const result = await client.query(query, [id, tariff_peak, tariff_standard, tariff_offpeak, peak_times, standard_times, offpeak_times, alert_max_kw, alert_min_v, alert_max_thd]);
+        const result = await client.query(query, [
+            id,
+            tariff_peak ?? null, tariff_standard ?? null, tariff_offpeak ?? null,
+            peak_times ?? null, standard_times ?? null, offpeak_times ?? null,
+            alert_max_kw ?? null, alert_min_v ?? null, alert_max_thd ?? null,
+            alert_max_v ?? null, alert_min_freq ?? null, alert_max_freq ?? null,
+            contracted_mdi_kva ?? null, tariff_demand ?? null,
+        ]);
         res.status(200).json(result.rows[0]);
     } catch (err) {
         console.error("Error upserting site settings:", err);

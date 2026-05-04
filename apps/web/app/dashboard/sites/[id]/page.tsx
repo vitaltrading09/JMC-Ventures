@@ -283,11 +283,11 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
                                         />
                                         {isMultiPhase && <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />}
 
-                                        {/* Reference lines */}
-                                        {measurement.key === 'power_factor_total' && <ReferenceLine y={0.85} stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'Min PF', fontSize: 10, fill: '#ef4444' }} />}
-                                        {measurement.key === 'thd_voltage_a'      && <ReferenceLine y={5}    stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'Max THD', fontSize: 10, fill: '#ef4444' }} />}
-                                        {measurement.key === 'voltage_a'          && <ReferenceLine y={380}  stroke="#f97316" strokeDasharray="4 4" />}
-                                        {measurement.key === 'voltage_a'          && <ReferenceLine y={420}  stroke="#f97316" strokeDasharray="4 4" />}
+                                        {/* Reference lines — NRS 048-2 limits */}
+                                        {measurement.key === 'power_factor_total' && <ReferenceLine y={0.85} stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'Min PF 0.85', fontSize: 10, fill: '#ef4444', position: 'insideBottomRight' }} />}
+                                        {measurement.key === 'thd_voltage_a'      && <ReferenceLine y={8}    stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'NRS048 8%', fontSize: 10, fill: '#ef4444', position: 'insideTopRight' }} />}
+                                        {measurement.key === 'voltage_a'          && <ReferenceLine y={207}  stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 min', fontSize: 10, fill: '#f97316', position: 'insideBottomRight' }} />}
+                                        {measurement.key === 'voltage_a'          && <ReferenceLine y={253}  stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 max', fontSize: 10, fill: '#f97316', position: 'insideTopRight' }} />}
 
                                         {/* Single line (non-phase measurements) */}
                                         {!isMultiPhase && (

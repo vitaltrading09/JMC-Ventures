@@ -4,84 +4,77 @@ import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/Card";
 import { Save, AlertCircle, Loader2, Building2 } from "lucide-react";
 
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+
 export default function AlertsPage() {
     const [sites, setSites] = useState<any[]>([]);
     const [selectedSiteId, setSelectedSiteId] = useState<string>("");
-
     const [saving, setSaving] = useState(false);
     const [success, setSuccess] = useState(false);
     const [loading, setLoading] = useState(true);
 
     const [alerts, setAlerts] = useState({
-        maxPeak: 0,
-        minVoltage: 0,
-        maxThd: 0,
+        maxPeak:        "",
+        minVoltage:     "",
+        maxVoltage:     "",
+        maxThd:         "",
+        minFreq:        "",
+        maxFreq:        "",
+        contractedMdi:  "",
     });
 
-    const token = () => localStorage.getItem('token') || '';
+    const token = () => localStorage.getItem("token") || "";
 
-    // Fetch sites on mount
     useEffect(() => {
-        const fetchSites = async () => {
-            try {
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, {
-                    headers: { Authorization: `Bearer ${token()}` }
-                });
-                const data = await res.json();
+        fetch(`${API}/ingestion/sites`, { headers: { Authorization: `Bearer ${token()}` } })
+            .then(r => r.json())
+            .then((data: any[]) => {
                 if (Array.isArray(data) && data.length > 0) {
                     setSites(data);
                     setSelectedSiteId(data[0].id);
                 }
-            } catch (err) {
-                console.error("Failed to load sites", err);
-            } finally {
-                setLoading(false);
-            }
-        };
-        fetchSites();
+            })
+            .catch(console.error)
+            .finally(() => setLoading(false));
     }, []);
 
-    // Fetch settings when site changes
     useEffect(() => {
         if (!selectedSiteId) return;
-
-        const fetchSettings = async () => {
-            try {
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${selectedSiteId}/settings`, {
-                    headers: { Authorization: `Bearer ${token()}` }
-                });
-                const data = await res.json();
+        fetch(`${API}/ingestion/sites/${selectedSiteId}/settings`, { headers: { Authorization: `Bearer ${token()}` } })
+            .then(r => r.json())
+            .then(data => {
                 setAlerts({
-                    maxPeak: Number(data.alert_max_kw) || 0,
-                    minVoltage: Number(data.alert_min_v) || 0,
-                    maxThd: Number(data.alert_max_thd) || 0,
+                    maxPeak:       data.alert_max_kw        != null ? String(data.alert_max_kw)        : "",
+                    minVoltage:    data.alert_min_v         != null ? String(data.alert_min_v)         : "",
+                    maxVoltage:    data.alert_max_v         != null ? String(data.alert_max_v)         : "",
+                    maxThd:        data.alert_max_thd       != null ? String(data.alert_max_thd)       : "",
+                    minFreq:       data.alert_min_freq      != null ? String(data.alert_min_freq)      : "",
+                    maxFreq:       data.alert_max_freq      != null ? String(data.alert_max_freq)      : "",
+                    contractedMdi: data.contracted_mdi_kva  != null ? String(data.contracted_mdi_kva)  : "",
                 });
-            } catch (err) {
-                console.error("Failed to load alert settings", err);
-            }
-        };
-
-        fetchSettings();
+            })
+            .catch(console.error);
     }, [selectedSiteId]);
 
     const handleSave = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!selectedSiteId) return;
-
         setSaving(true);
         setSuccess(false);
         try {
-            await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${selectedSiteId}/settings`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token()}`
-                },
+            const toNum = (v: string) => v !== "" ? Number(v) : null;
+            await fetch(`${API}/ingestion/sites/${selectedSiteId}/settings`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
                 body: JSON.stringify({
-                    alert_max_kw: alerts.maxPeak,
-                    alert_min_v: alerts.minVoltage,
-                    alert_max_thd: alerts.maxThd
-                })
+                    alert_max_kw:       toNum(alerts.maxPeak),
+                    alert_min_v:        toNum(alerts.minVoltage),
+                    alert_max_v:        toNum(alerts.maxVoltage),
+                    alert_max_thd:      toNum(alerts.maxThd),
+                    alert_min_freq:     toNum(alerts.minFreq),
+                    alert_max_freq:     toNum(alerts.maxFreq),
+                    contracted_mdi_kva: toNum(alerts.contractedMdi),
+                }),
             });
             setSuccess(true);
             setTimeout(() => setSuccess(false), 3000);
@@ -92,16 +85,41 @@ export default function AlertsPage() {
         }
     };
 
-    if (loading) {
-        return <div className="flex h-[50vh] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-red-500" /></div>;
-    }
+    const field = (
+        label: string,
+        key: keyof typeof alerts,
+        unit: string,
+        placeholder: string,
+        hint: string,
+        color: string,
+        step = "1"
+    ) => (
+        <div>
+            <label className={`block text-sm font-medium mb-1 ${color}`}>{label}</label>
+            <div className="relative">
+                <input
+                    type="number"
+                    step={step}
+                    placeholder={placeholder}
+                    value={alerts[key]}
+                    onChange={e => setAlerts(a => ({ ...a, [key]: e.target.value }))}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-red-500/50 pr-12"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs">{unit}</span>
+            </div>
+            <p className="text-xs text-slate-500 mt-1.5">{hint}</p>
+        </div>
+    );
+
+    if (loading) return <div className="flex h-[50vh] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-red-500" /></div>;
 
     return (
         <div className="space-y-6 animate-in fade-in duration-500 max-w-4xl">
             <div>
                 <h1 className="text-3xl font-bold tracking-tight text-white">Alert Thresholds</h1>
                 <p className="text-slate-400 mt-2">
-                    Set up custom threshold limits for each site to trigger predictive maintenance alerts.
+                    NRS 048-2 compliant thresholds for voltage quality, demand, and power quality alerts.
+                    Leave a field blank to use the NRS 048 default.
                 </p>
             </div>
 
@@ -111,6 +129,7 @@ export default function AlertsPage() {
                 </Card>
             ) : (
                 <form onSubmit={handleSave} className="space-y-6">
+                    {/* Site selector */}
                     <Card className="p-6 border-red-500/20 bg-red-500/5">
                         <label className="block text-sm font-medium text-slate-300 mb-2 flex items-center gap-2">
                             <Building2 className="h-4 w-4 text-red-400" />
@@ -118,54 +137,55 @@ export default function AlertsPage() {
                         </label>
                         <select
                             value={selectedSiteId}
-                            onChange={(e) => setSelectedSiteId(e.target.value)}
+                            onChange={e => setSelectedSiteId(e.target.value)}
                             className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-red-500 transition-colors"
                         >
-                            {sites.map(site => (
-                                <option key={site.id} value={site.id}>{site.name}</option>
-                            ))}
+                            {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                         </select>
                     </Card>
 
+                    {/* Demand / MDI */}
                     <Card className="p-6">
                         <h3 className="text-lg font-medium text-white mb-4 flex items-center gap-2">
-                            <AlertCircle className="h-5 w-5 text-red-500" />
-                            Threshold Limits
+                            <AlertCircle className="h-5 w-5 text-orange-400" />
+                            Demand Limits
                         </h3>
-                        <div className="grid gap-6 md:grid-cols-3">
-                            <div>
-                                <label className="block text-sm font-medium text-orange-400 mb-1 flex items-center gap-2">Max Peak Demand (kW)</label>
-                                <input
-                                    type="number"
-                                    step="1"
-                                    value={alerts.maxPeak}
-                                    onChange={e => setAlerts(t => ({ ...t, maxPeak: Number(e.target.value) }))}
-                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-orange-500/50"
-                                />
-                                <p className="text-xs text-slate-500 mt-2">Triggers if site total power exceeds limit.</p>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-purple-400 mb-1">Min Voltage Sag (V)</label>
-                                <input
-                                    type="number"
-                                    step="1"
-                                    value={alerts.minVoltage}
-                                    onChange={e => setAlerts(t => ({ ...t, minVoltage: Number(e.target.value) }))}
-                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50"
-                                />
-                                <p className="text-xs text-slate-500 mt-2">Triggers grid instability warnings.</p>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-rose-400 mb-1">Max THD (%)</label>
-                                <input
-                                    type="number"
-                                    step="0.1"
-                                    value={alerts.maxThd}
-                                    onChange={e => setAlerts(t => ({ ...t, maxThd: Number(e.target.value) }))}
-                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-rose-500/50"
-                                />
-                                <p className="text-xs text-slate-500 mt-2">Total Harmonic Distortion alerts.</p>
-                            </div>
+                        <div className="grid gap-6 md:grid-cols-2">
+                            {field("Max Peak Demand", "maxPeak", "kW", "e.g. 500",
+                                "Alert if active power exceeds this threshold — demand charge risk.", "text-orange-400")}
+                            {field("Contracted MDI", "contractedMdi", "kVA", "e.g. 630",
+                                "Warning at 90%, CRITICAL at 100% of contracted maximum demand indicator.", "text-red-400")}
+                        </div>
+                    </Card>
+
+                    {/* Voltage */}
+                    <Card className="p-6">
+                        <h3 className="text-lg font-medium text-white mb-1 flex items-center gap-2">
+                            <AlertCircle className="h-5 w-5 text-purple-400" />
+                            Voltage Limits <span className="text-xs font-normal text-slate-500 ml-2">NRS 048-2 defaults: 207 V / 253 V (230 V ± 10%)</span>
+                        </h3>
+                        <p className="text-xs text-slate-500 mb-4">These are L-N (phase-to-neutral) voltages. AXM-WEB2 reports V1 as L-N.</p>
+                        <div className="grid gap-6 md:grid-cols-2">
+                            {field("Min Voltage (Sag)", "minVoltage", "V", "207 (NRS 048 default)",
+                                "CRITICAL alert when L1 voltage drops below this.", "text-purple-400")}
+                            {field("Max Voltage (Swell)", "maxVoltage", "V", "253 (NRS 048 default)",
+                                "CRITICAL alert when L1 voltage rises above this.", "text-violet-400")}
+                        </div>
+                    </Card>
+
+                    {/* Power quality */}
+                    <Card className="p-6">
+                        <h3 className="text-lg font-medium text-white mb-1 flex items-center gap-2">
+                            <AlertCircle className="h-5 w-5 text-rose-400" />
+                            Power Quality <span className="text-xs font-normal text-slate-500 ml-2">NRS 048-2 defaults: THD 8%, Freq 49–51 Hz</span>
+                        </h3>
+                        <div className="grid gap-6 md:grid-cols-3 mt-4">
+                            {field("Max THD Voltage", "maxThd", "%", "8 (NRS 048 default)",
+                                "Harmonic distortion alert. NRS 048-2 limit is 8%.", "text-rose-400", "0.1")}
+                            {field("Min Frequency", "minFreq", "Hz", "49 (NRS 048 default)",
+                                "Alert on under-frequency (grid instability).", "text-sky-400", "0.1")}
+                            {field("Max Frequency", "maxFreq", "Hz", "51 (NRS 048 default)",
+                                "Alert on over-frequency (generator runaway).", "text-cyan-400", "0.1")}
                         </div>
                     </Card>
 
@@ -179,7 +199,7 @@ export default function AlertsPage() {
                             Save Thresholds
                         </button>
                         {success && (
-                            <span className="text-emerald-400 text-sm font-medium animate-in fade-in flex items-center gap-2">
+                            <span className="text-emerald-400 text-sm font-medium animate-in fade-in">
                                 Settings saved successfully!
                             </span>
                         )}
