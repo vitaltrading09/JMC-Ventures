@@ -26,7 +26,7 @@ PowerGuard is a **multi-tenant power quality monitoring and AI advisory SaaS pla
 | Database | PostgreSQL + TimescaleDB (hypertable for `meter_readings`) |
 | Cache / Queues | Redis + BullMQ |
 | MQTT Broker | Eclipse Mosquitto, ports **1883** (TCP) / **9001** (WS) |
-| AI | Anthropic Claude (recommendations), previously Gemini (chatbot — to be migrated) |
+| AI | Anthropic Claude (recommendations) + OpenAI (chat) |
 
 ---
 
@@ -58,29 +58,37 @@ Browser (Next.js :3000)
 |---|---|---|
 | `/` | Landing page | ✅ Done |
 | `/login` | Auth login | ✅ Done |
-| `/dashboard` | Main dashboard with energy score, KPIs, alerts | ✅ Done |
-| `/dashboard/sites` | Site + meter management | ✅ Done |
+| `/dashboard` | Main dashboard with energy score, KPIs, alerts, frequency chart | ✅ Done |
+| `/dashboard/sites` | Site + meter management. **Add Meter shows full MQTT config** after creation | ✅ Done |
+| `/dashboard/sites/[id]` | Per-meter chart page: 3-phase V/I, P/Q/S, PF, THD, freq, energy. NRS 048 reference lines. Solar/battery simulation tab | ✅ Done |
+| `/dashboard/alerts` | Alerts log page with severity filter | ✅ Done |
+| `/dashboard/analytics` | Tariff-aware analytics: MDI tracking, NRS 048 compliance, demand charges | ✅ Done |
 | `/dashboard/savings` | Savings breakdown with Recharts bar chart | ✅ Done |
-| `/dashboard/recommendations` | AI recommendation cards | ✅ Done |
+| `/dashboard/recommendations` | AI recommendation cards (Claude-powered) | ✅ Done |
 | `/dashboard/reports` | Monthly report card (light theme, PDF/print ready) | ✅ Done |
-| `/dashboard/marketplace` | PV sizer / marketplace | ✅ Done |
+| `/dashboard/settings/alerts` | Alert threshold config per site | ✅ Done |
+| `/dashboard/settings/tariffs` | Tariff config | ✅ Done |
+| `/dashboard/settings/data` | CSV data import | ✅ Done |
+| `/dashboard/tools/pv-sizer` | PV sizer tool | ✅ Done |
 | `/admin` | Admin overview | ✅ Done |
 | `/admin/clients` | Client portfolio deep-dive (scores, sites, meters, leads) | ✅ Done |
 | `/admin/leads` | Leads management | ✅ Done |
+| `/api/chat` | AI chat route (OpenAI — pending migration to Claude) | ✅ Done |
 
 ### Backend Services
 
 | Service | Key Features | Status |
 |---|---|---|
 | `auth-service` | Register, login, tenant management, JWT | ✅ Done |
-| `ingestion-service` | MQTT listener, meter readings, energy scoring, AI recommendations, alerts | ✅ Done |
+| `ingestion-service` | MQTT listener, meter readings, energy scoring, AI recommendations, NRS 048 alerts, MDI tracking | ✅ Done |
 | `api-gateway` | Proxy, CORS, rate limiting, helmet | ✅ Done |
 
 ### Key Backend Files
 
-- `services/ingestion-service/src/mqtt.ts` — Full Acuvim II MQTT pipeline. Topic: `acuvim/{meter_id}/telemetry`. Supports both native dict and AXM-WEB2 store-and-forward formats. Writes to TimescaleDB, fires alerts, dead-letter queue for bad payloads.
+- `services/ingestion-service/src/mqtt.ts` — Full Acuvim II MQTT pipeline. Topic: `acuvim/{meter_id}/telemetry`. Supports both native dict and AXM-WEB2 store-and-forward formats. Writes to TimescaleDB, fires alerts, dead-letter queue for bad payloads. Smart serial number mapping.
 - `services/ingestion-service/src/energy-score.ts` — Calculates energy score (0–100) from PF, THD, load factor, voltage quality. Stores in `site_scores` table.
 - `services/ingestion-service/src/ai-recommendations.ts` — Claude-powered recommendation engine. Generates contextual recommendations per site based on score components.
+- `services/ingestion-service/src/main.ts` — NRS 048-2 alert logic, MDI (Max Demand Indicator) tracking, tariff-aware analytics endpoints.
 
 ### Report Page Architecture (`/dashboard/reports`)
 
@@ -91,26 +99,40 @@ Browser (Next.js :3000)
 - Consumption bar chart uses `MOCK_CONSUMPTION` placeholder — **needs wiring to live data** (see Pending Tasks)
 - Recharts `PieChart` donut: `innerRadius={58} outerRadius={84}`, centre label via absolute overlay
 
+### Site Detail Page (`/dashboard/sites/[id]`)
+
+- Measurement tabs: P, Q, S, PF, Voltage, Current, THD, Frequency, Energy
+- Voltage + Current support **3-phase toggle** (L1/L2/L3 individual lines)
+- NRS 048-2 reference lines on charts (PF min 0.85, THD max 8%, voltage 207–253V, freq 49–51Hz)
+- Date range picker + quick presets (24h / 7d / 30d / 90d)
+- Summary stats strip (latest / avg / max / min)
+- **Simulation tab** — solar + battery sizing with 24h chart and auto-size from data
+
+### Add Meter Flow (`/dashboard/sites`)
+
+After clicking **Add Meter** and saving, a confirmation modal appears showing the exact values to enter into the Acuvim II dashboard:
+- Broker host / port (1883)
+- MQTT username + password
+- **MQTT topic** (unique per meter: `acuvim/{meter_uuid}/telemetry`)
+- Each field has a copy-to-clipboard button
+
 ---
 
 ## Local Development Setup
 
 ### Prerequisites
-- Docker Desktop installed and running
+- Docker Desktop installed and running (`docker compose` — V2 syntax, space not hyphen)
 - Node.js 18+
-- `mosquitto-clients` for MQTT testing (optional)
+- `mosquitto-clients` for MQTT testing (optional — on Windows use WSL)
 
 ### First-time setup
 
 **1. Create `.env` files** (not in git — copy from `.env.example`):
 
 ```bash
-# Auth service
 cp services/auth-service/.env.example services/auth-service/.env
-
-# Ingestion service
 cp services/ingestion-service/.env.example services/ingestion-service/.env
-# Then add your ANTHROPIC_API_KEY to services/ingestion-service/.env
+# Add your ANTHROPIC_API_KEY to services/ingestion-service/.env
 ```
 
 Create `services/api-gateway/.env`:
@@ -152,7 +174,7 @@ npm run dev
 # Starts: Next.js :3000, auth-service :3001, ingestion-service :3002, api-gateway :8081
 ```
 
-**6. Open the app:** `http://localhost:3000`
+**6. Open the app:** `http://localhost:3000`  
 Check `scripts/seed.ts` for demo login credentials.
 
 ### Test a meter reading via MQTT
@@ -161,7 +183,15 @@ mosquitto_pub -h localhost -u acuvim_meter -P change_me_in_production \
   -t "acuvim/YOUR_METER_UUID/telemetry" \
   -m '{"V1": 230, "I1": 50, "Psum_kW": 11.5, "PF": 0.95, "Freq_Hz": 50}'
 ```
-Replace `YOUR_METER_UUID` with a meter UUID from the Sites page.
+Replace `YOUR_METER_UUID` with a meter UUID from the Sites page (shown in the MQTT config modal after adding a meter).
+
+### Adding a real Acuvim II meter
+
+1. Go to **Sites → Add Site** → fill in name/address
+2. Modal auto-opens **Add Meter** — fill in the meter name, serial number, model
+3. After saving, a **MQTT Config modal** appears with all values pre-filled — copy each into the Acuvim II web interface under `Communication → MQTT`
+4. Set telemetry interval to 60s on the device
+5. Within 60s the meter will appear live (green "Live" badge) in the Sites page
 
 ---
 
@@ -184,10 +214,10 @@ Target: **AWS Lightsail** (af-south-1, Cape Town)
 - Search for `MOCK_CONSUMPTION` — replace with real fetch from `/ingestion/meters/{id}/readings`
 - The endpoint already exists in ingestion-service
 
-### 2. Wire AI chatbot context
-- Update `/api/chat` endpoint to include energy score + top recommendations per site
-- Chatbot currently has no site context — it answers generically
-- Also: migrate chatbot from Gemini to Claude Sonnet
+### 2. Migrate AI chat from OpenAI to Claude
+- File: `apps/web/app/api/chat/route.ts`
+- Currently uses OpenAI — migrate to Anthropic Claude Sonnet
+- Also inject energy score + top recommendations as context so chat is site-aware
 
 ### 3. AWS Lightsail deployment
 - Provision af-south-1 instance
@@ -198,7 +228,6 @@ Target: **AWS Lightsail** (af-south-1, Cape Town)
 ### 4. Security hardening
 - Replace localStorage JWT storage with HTTPOnly cookies
 - Ensure all ingestion-service endpoints validate JWT tenant scope
-- Move all remaining hardcoded secrets to env vars
 
 ### 5. Stripe / billing integration
 - Monthly subscription per site
@@ -212,9 +241,10 @@ Target: **AWS Lightsail** (af-south-1, Cape Town)
 - **Auth:** JWT stored in localStorage (to be migrated to HTTPOnly cookies). Sent as `Authorization: Bearer <token>`.
 - **Tenant isolation:** Every API query is scoped by `tenant_id` decoded from JWT.
 - **Energy score colour thresholds:** `≥80` green, `≥60` amber/yellow, `<60` red.
-- **Recharts:** Used for all charts. PieChart for donuts, BarChart for consumption. Always use `<Cell>` per bar for colour control.
+- **NRS 048-2 limits:** PF min 0.85, THD max 8%, voltage 207–253V (±10% of 230V), frequency 49–51Hz.
+- **Recharts:** Used for all charts. PieChart for donuts, BarChart for consumption, LineChart for time-series. Always use `<Cell>` per bar for colour control.
 - **Print/PDF:** Use `data-noprint="true"` on controls, `print:hidden` on sidebar. Print CSS injected via `useEffect`.
-- **Tailwind dark mode:** Dashboard uses dark sidebar (`bg-slate-900`). Report page uses full light theme.
+- **Tailwind dark mode:** Dashboard uses dark sidebar (`bg-slate-950`). Report page uses full light theme.
 - **Type convention:** Derive complex display types (e.g. `TenantPortfolio`) locally in the page file — don't add them to shared packages unless reused 3+ places.
 
 ---
@@ -222,12 +252,16 @@ Target: **AWS Lightsail** (af-south-1, Cape Town)
 ## Key Constants
 
 ```
-MQTT topic:     acuvim/{meter_id}/telemetry
-MQTT user:      acuvim_meter
-DB name:        powerguard_db
-DB user:        powerguard_user
-SA grid factor: 0.92 kg CO₂/kWh
-Avg SA tariff:  R2.50/kWh (used for savings estimates)
+MQTT topic:        acuvim/{meter_id}/telemetry
+MQTT user:         acuvim_meter
+MQTT password:     change_me_in_production  (dev default)
+MQTT port:         1883 (TCP) / 9001 (WS)
+DB name:           powerguard_db
+DB user:           powerguard_user
+SA grid factor:    0.92 kg CO₂/kWh
+Avg SA tariff:     R2.50/kWh (used for savings estimates)
+Peak tariff:       R5.80/kWh (07:00–10:00, 18:00–20:00)
+Off-peak tariff:   R1.40/kWh (22:00–06:00)
 ```
 
 ---

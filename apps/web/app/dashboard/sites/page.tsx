@@ -7,7 +7,8 @@ import { useRouter } from "next/navigation";
 import {
     Plus, Search, MapPin, X, Loader2, Server,
     ChevronDown, ChevronRight, Trash2, BarChart2,
-    Activity, Clock, ArrowRight, AlertTriangle
+    Activity, Clock, ArrowRight, AlertTriangle,
+    Copy, Check, Wifi
 } from "lucide-react";
 
 interface Site {
@@ -45,10 +46,19 @@ export default function SitesPage() {
     // Modal states
     const [isSiteModalOpen, setIsSiteModalOpen] = useState(false);
     const [isMeterModalOpen, setIsMeterModalOpen] = useState(false);
+    const [mqttConfig, setMqttConfig] = useState<{ meterId: string; meterName: string } | null>(null);
     const [selectedSiteId, setSelectedSiteId] = useState<string | null>(null);
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState("");
     const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [copied, setCopied] = useState<string | null>(null);
+
+    const copyToClipboard = (text: string, label: string) => {
+        navigator.clipboard.writeText(text).then(() => {
+            setCopied(label);
+            setTimeout(() => setCopied(null), 2000);
+        });
+    };
 
     const [siteForm, setSiteForm] = useState({ name: "", address: "", timezone: "Africa/Johannesburg" });
     const [meterForm, setMeterForm] = useState({ name: "", serial_number: "", model: "" });
@@ -109,8 +119,10 @@ export default function SitesPage() {
                 body: JSON.stringify({ ...meterForm, site_id: selectedSiteId }),
             });
             if (!res.ok) throw new Error(await res.text());
+            const newMeter = await res.json();
             setIsMeterModalOpen(false);
             setMeterForm({ name: "", serial_number: "", model: "" });
+            setMqttConfig({ meterId: newMeter.id, meterName: newMeter.name });
             fetchData();
         } catch (err: any) { setError(err.message || "Failed to create meter"); }
         finally { setSubmitting(false); }
@@ -369,6 +381,64 @@ export default function SitesPage() {
                                 </button>
                             </div>
                         </form>
+                    </Card>
+                </div>
+            )}
+
+            {/* MQTT Config Modal — shown after meter creation */}
+            {mqttConfig && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+                    <Card className="w-full max-w-lg p-6 bg-slate-900 border-slate-800 animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 rounded-lg bg-emerald-500/10">
+                                    <Wifi className="w-5 h-5 text-emerald-400" />
+                                </div>
+                                <div>
+                                    <h2 className="text-xl font-semibold text-white">Meter Created ✓</h2>
+                                    <p className="text-xs text-slate-400 mt-0.5">Configure your Acuvim II with these MQTT settings</p>
+                                </div>
+                            </div>
+                            <button onClick={() => setMqttConfig(null)} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
+                        </div>
+
+                        <div className="mt-5 space-y-3">
+                            {[
+                                { label: "Broker IP / Host",  value: window.location.hostname === 'localhost' ? '(your PC IP on local network)' : window.location.hostname, note: "Your PowerGuard server IP — use ifconfig/ipconfig to find it on local network" },
+                                { label: "Port",              value: "1883",                        note: "Plain TCP — no TLS for local setup" },
+                                { label: "Username",          value: "acuvim_meter",                note: "MQTT client username" },
+                                { label: "Password",          value: "change_me_in_production",     note: "From mosquitto passwd file — update before going live" },
+                                { label: "Topic",             value: `acuvim/${mqttConfig.meterId}/telemetry`, note: "This is unique to this meter — copy exactly" },
+                            ].map(({ label, value, note }) => (
+                                <div key={label} className="rounded-lg bg-slate-950 border border-slate-800 p-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">{label}</p>
+                                            <p className="text-sm font-mono text-white break-all">{value}</p>
+                                            <p className="text-xs text-slate-600 mt-1">{note}</p>
+                                        </div>
+                                        <button
+                                            onClick={() => copyToClipboard(value, label)}
+                                            className="flex-shrink-0 p-2 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
+                                            {copied === label ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="mt-4 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                            <p className="text-xs text-blue-300">
+                                <span className="font-semibold">On the Acuvim II:</span> Go to <span className="font-mono">Communication → MQTT</span>, enter these values, then set the telemetry interval to 60s. Once connected, this meter will appear live in your dashboard.
+                            </p>
+                        </div>
+
+                        <div className="mt-4 flex justify-end">
+                            <button onClick={() => setMqttConfig(null)}
+                                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium">
+                                Done
+                            </button>
+                        </div>
                     </Card>
                 </div>
             )}
