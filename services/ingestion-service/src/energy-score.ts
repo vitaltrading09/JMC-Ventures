@@ -178,7 +178,7 @@ export async function computeAndStoreSiteScore(
         `, [siteId]);
 
         const row = metricsRes.rows[0];
-        if (!row || Number(row.reading_count) < 10) {
+        if (!row || Number(row.reading_count) < 3) {
             return null; // Not enough data to produce a meaningful score
         }
 

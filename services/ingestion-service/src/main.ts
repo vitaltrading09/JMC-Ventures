@@ -1048,6 +1048,45 @@ app.get('/meters/:id/readings', authenticateToken, async (req: any, res) => {
     }
 });
 
+// ── Aggregate readings across ALL active meters for the tenant (overview chart) ─
+// GET /readings/aggregate?from=ISO&limit=500
+app.get('/readings/aggregate', authenticateToken, async (req: any, res) => {
+    const { tenantId, role } = req.user;
+    const from = req.query.from as string | undefined;
+    const limit = Math.min(parseInt(String(req.query.limit || '500')), 2000);
+    const client = await pool.connect();
+    try {
+        const fromDate = from ? new Date(from) : new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const params: any[] = [fromDate];
+        let tenantFilter = '';
+        if (role !== 'super_admin') {
+            params.push(tenantId);
+            tenantFilter = `AND s.tenant_id = $${params.length}`;
+        }
+        const result = await client.query(`
+            SELECT
+                DATE_TRUNC('minute', mr.time)               AS time,
+                ROUND(SUM(mr.power_active_total)::numeric, 2) AS power_active_total
+            FROM meter_readings mr
+            JOIN meters m ON mr.meter_id = m.id
+            JOIN sites  s ON m.site_id  = s.id
+            WHERE mr.time >= $1
+              AND m.is_active = true
+              ${tenantFilter}
+              AND mr.power_active_total IS NOT NULL
+            GROUP BY DATE_TRUNC('minute', mr.time)
+            ORDER BY time ASC
+            LIMIT ${limit}
+        `, params);
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Aggregate readings error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
 // Monthly consumption aggregation endpoint
 app.get('/meters/:id/monthly', authenticateToken, async (req: any, res) => {
     const { id } = req.params;
@@ -1337,7 +1376,7 @@ app.post('/sites/:id/recommendations/generate', authenticateToken, async (req: a
 
         // Compute fresh score first
         const score = await computeAndStoreSiteScore(pool, id);
-        if (!score) return res.status(400).json({ error: 'Insufficient meter data to generate recommendations (need ≥10 readings in last 30 days)' });
+        if (!score) return res.status(400).json({ error: 'Insufficient meter data — need at least 3 readings. Check that the meter is connected and sending data.' });
 
         const recs = await generateAndStoreSiteRecommendations(
             pool, id, site.tenant_id, score, site.name, site.address || ''

@@ -103,21 +103,21 @@ export default function DashboardPage() {
     const [loading,             setLoading]             = useState(true);
     const [chartLoading,        setChartLoading]        = useState(false);
     const [refreshedAt,         setRefreshedAt]         = useState<Date>(new Date());
-    const [selectedChartMeter,  setSelectedChartMeter]  = useState<string | null>(null);
+    const [selectedChartMeter,  setSelectedChartMeter]  = useState<string | null>("all");
 
     const getToken = () =>
         typeof window !== "undefined" ? (localStorage.getItem("token") ?? "") : "";
 
-    // Fetch chart data for a specific meter
+    // Fetch chart data — "all" fetches site-wide aggregate, otherwise per-meter
     const fetchChartData = useCallback(async (meterId: string) => {
         setChartLoading(true);
         try {
             const headers = { Authorization: `Bearer ${getToken()}` };
             const from = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
-            const res = await fetch(
-                `${API}/ingestion/meters/${meterId}/readings?from=${from}&limit=288`,
-                { headers }
-            );
+            const url = meterId === "all"
+                ? `${API}/ingestion/readings/aggregate?from=${from}&limit=500`
+                : `${API}/ingestion/meters/${meterId}/readings?from=${from}&limit=500`;
+            const res = await fetch(url, { headers });
             if (res.ok) {
                 const readings: Reading[] = await res.json();
                 setChartData(
@@ -158,11 +158,8 @@ export default function DashboardPage() {
             setAlerts(Array.isArray(alertsData) ? alertsData : []);
             setScores(Array.isArray(scoresData) ? scoresData : []);
 
-            // Default to first live meter if none selected
-            setSelectedChartMeter(prev => {
-                const activeMeter = metersData.find((m) => m.latest_reading?.time);
-                return prev ?? activeMeter?.id ?? null;
-            });
+            // Default to site-wide aggregate view; preserve user's manual selection
+            setSelectedChartMeter(prev => prev ?? "all");
 
             setRefreshedAt(new Date());
         } catch (err) {
@@ -466,26 +463,22 @@ export default function DashboardPage() {
                             title="Power Consumption Trend"
                             subtitle={
                                 chartData.length > 0
-                                    ? `Active Power (kW) — last 24 h · ${chartData.length} readings`
+                                    ? `${selectedChartMeter === "all" ? "All meters combined" : (meters.find(m => m.id === selectedChartMeter)?.name ?? "Meter")} · Active Power (kW) · last 24 h · ${chartData.length} points`
                                     : "No readings yet"
                             }
                         />
-                        {/* Meter selector */}
-                        {meters.length > 1 && (
+                        {/* Site total + per-meter selector */}
+                        {meters.length > 0 && (
                             <select
-                                value={selectedChartMeter ?? ""}
+                                value={selectedChartMeter ?? "all"}
                                 onChange={e => setSelectedChartMeter(e.target.value)}
                                 className="text-xs bg-slate-800 border border-slate-700 text-slate-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/50 cursor-pointer"
                             >
+                                <option value="all">All Meters (Site Total)</option>
                                 {meters.map(m => (
                                     <option key={m.id} value={m.id}>{m.name}</option>
                                 ))}
                             </select>
-                        )}
-                        {meters.length === 1 && selectedChartMeter && (
-                            <span className="text-xs text-slate-500 px-2 py-1 bg-slate-800 rounded-lg border border-slate-700">
-                                {meters[0].name}
-                            </span>
                         )}
                         {chartLoading && <Loader2 className="w-4 h-4 animate-spin text-blue-400 mt-1" />}
                     </div>
@@ -591,15 +584,17 @@ export default function DashboardPage() {
                                         className={`flex items-start gap-2.5 p-3 rounded-lg border ${severityClasses(alert.severity)}`}
                                     >
                                         <Icon className="h-4 w-4 shrink-0 mt-0.5" />
-                                        <div className="min-w-0">
-                                            <div className="flex items-center gap-2">
-                                                <p className="text-xs font-semibold text-slate-200">{typeLabel}</p>
+                                        <div className="min-w-0 flex-1">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <div className="flex items-center gap-1.5 min-w-0 truncate">
+                                                    <p className="text-xs font-semibold text-slate-200 shrink-0">{typeLabel}</p>
+                                                    <span className="text-[11px] text-blue-300 font-medium truncate">· {alert.meter_name}</span>
+                                                </div>
                                                 <span className="text-[10px] text-slate-600 shrink-0">{timeAgo(alert.created_at)}</span>
                                             </div>
                                             <p className="text-[11px] text-slate-400 mt-0.5 leading-snug line-clamp-3">
                                                 {alert.message}
                                             </p>
-                                            <p className="text-[10px] text-slate-600 mt-0.5">{alert.meter_name}</p>
                                         </div>
                                     </div>
                                 );
