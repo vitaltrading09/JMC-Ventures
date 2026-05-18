@@ -1009,12 +1009,15 @@ import fs from 'fs';
 
 const upload = multer({ dest: 'uploads/' });
 
-// Secure endpoint: Get Readings for a specific Meter (verified access)
+// Secure endpoint: Get Readings for a specific Meter (verified access).
+// When a date range is provided, server-side time_bucket aggregation keeps
+// chart payloads to ~300-700 points regardless of how long the window is.
 app.get('/meters/:id/readings', authenticateToken, async (req: any, res) => {
     const { id } = req.params;
     const limit = parseInt(String(req.query.limit || '500'));
     const from = req.query.from as string | undefined;
     const to = req.query.to as string | undefined;
+    const raw = req.query.raw === '1' || req.query.raw === 'true';
     const { tenantId, role } = req.user;
 
     const client = await pool.connect();
@@ -1031,12 +1034,41 @@ app.get('/meters/:id/readings', authenticateToken, async (req: any, res) => {
             }
         }
 
+        // Bucketed path: only when both from & to provided (typical chart use)
+        // and the caller hasn't explicitly asked for raw rows.
+        if (from && !raw) {
+            const fromDate = new Date(from);
+            const toDate   = to ? new Date(to) : new Date();
+            const bucket   = pickBucketInterval(fromDate, toDate);
+            const params: any[] = [bucket, id, fromDate, toDate];
+            const result = await client.query(`
+                SELECT
+                    time_bucket($1::interval, time)        AS time,
+                    AVG(power_active_total)                AS power_active_total,
+                    AVG(power_reactive_total)              AS power_reactive_total,
+                    AVG(power_apparent_total)              AS power_apparent_total,
+                    AVG(power_factor_total)                AS power_factor_total,
+                    AVG(voltage_a) AS voltage_a, AVG(voltage_b) AS voltage_b, AVG(voltage_c) AS voltage_c,
+                    AVG(current_a) AS current_a, AVG(current_b) AS current_b, AVG(current_c) AS current_c,
+                    AVG(thd_voltage_a) AS thd_voltage_a, AVG(thd_current_a) AS thd_current_a,
+                    AVG(frequency) AS frequency,
+                    MAX(energy_import_total) AS energy_import_total
+                FROM meter_readings
+                WHERE meter_id = $2
+                  AND time >= $3
+                  AND time <= $4
+                GROUP BY 1
+                ORDER BY 1 ASC
+            `, params);
+            return res.json(result.rows);
+        }
+
+        // Raw rows path — preserved for backwards compat and explicit ?raw=1
         const params: any[] = [id];
         let query = 'SELECT * FROM meter_readings WHERE meter_id = $1';
         if (from) { params.push(new Date(from)); query += ` AND time >= $${params.length}`; }
-        if (to) { params.push(new Date(to)); query += ` AND time <= $${params.length}`; }
-        query += ' ORDER BY time ASC';
-        if (!from && !to) query += ` LIMIT ${limit}`;
+        if (to)   { params.push(new Date(to));   query += ` AND time <= $${params.length}`; }
+        query += ` ORDER BY time ASC LIMIT ${limit}`;
 
         const result = await client.query(query, params);
         res.json(result.rows);
@@ -1048,35 +1080,58 @@ app.get('/meters/:id/readings', authenticateToken, async (req: any, res) => {
     }
 });
 
+// Pick a sensible time_bucket interval so chart payloads stay ~300-700 points.
+// Recharts gets sluggish above ~1500 points and a 30-day raw query can return
+// 40k+ rows — bucketing on the server keeps both DB and browser snappy.
+function pickBucketInterval(fromDate: Date, toDate: Date): string {
+    const hours = Math.max(0.1, (toDate.getTime() - fromDate.getTime()) / 3_600_000);
+    if (hours <= 6)        return '1 minute';   // ≤360 pts
+    if (hours <= 48)       return '5 minutes';  // ≤576 pts
+    if (hours <= 14 * 24)  return '30 minutes'; // ≤672 pts
+    if (hours <= 60 * 24)  return '2 hours';    // ≤720 pts
+    return '6 hours';                            // long-range / yearly views
+}
+
 // ── Aggregate readings across ALL active meters for the tenant (overview chart) ─
-// GET /readings/aggregate?from=ISO&limit=500
+// GET /readings/aggregate?from=ISO  → returns per-bucket SITE TOTAL power
 app.get('/readings/aggregate', authenticateToken, async (req: any, res) => {
     const { tenantId, role } = req.user;
     const from = req.query.from as string | undefined;
-    const limit = Math.min(parseInt(String(req.query.limit || '500')), 2000);
     const client = await pool.connect();
     try {
         const fromDate = from ? new Date(from) : new Date(Date.now() - 24 * 60 * 60 * 1000);
-        const params: any[] = [fromDate];
+        const toDate   = new Date();
+        const bucket   = pickBucketInterval(fromDate, toDate);
+
+        const params: any[] = [bucket, fromDate];
         let tenantFilter = '';
         if (role !== 'super_admin') {
             params.push(tenantId);
             tenantFilter = `AND s.tenant_id = $${params.length}`;
         }
+        // Per-meter average within each bucket, then SUM across meters →
+        // gives true site-total power even if meters report at different rates.
         const result = await client.query(`
+            WITH per_meter AS (
+                SELECT
+                    time_bucket($1::interval, mr.time) AS bucket,
+                    mr.meter_id,
+                    AVG(mr.power_active_total)         AS avg_kw
+                FROM meter_readings mr
+                JOIN meters m ON mr.meter_id = m.id
+                JOIN sites  s ON m.site_id  = s.id
+                WHERE mr.time >= $2
+                  AND m.is_active = true
+                  AND mr.power_active_total IS NOT NULL
+                  ${tenantFilter}
+                GROUP BY bucket, mr.meter_id
+            )
             SELECT
-                DATE_TRUNC('minute', mr.time)               AS time,
-                ROUND(SUM(mr.power_active_total)::numeric, 2) AS power_active_total
-            FROM meter_readings mr
-            JOIN meters m ON mr.meter_id = m.id
-            JOIN sites  s ON m.site_id  = s.id
-            WHERE mr.time >= $1
-              AND m.is_active = true
-              ${tenantFilter}
-              AND mr.power_active_total IS NOT NULL
-            GROUP BY DATE_TRUNC('minute', mr.time)
-            ORDER BY time ASC
-            LIMIT ${limit}
+                bucket                                AS time,
+                ROUND(SUM(avg_kw)::numeric, 2)        AS power_active_total
+            FROM per_meter
+            GROUP BY bucket
+            ORDER BY bucket ASC
         `, params);
         res.json(result.rows);
     } catch (err) {
