@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { Pool } from 'pg';
 import { EnergyScoreResult } from './energy-score';
 
@@ -43,8 +43,8 @@ export async function generateAndStoreSiteRecommendations(
     siteName:    string,
     siteAddress: string,
 ): Promise<Recommendation[]> {
-    if (!process.env.ANTHROPIC_API_KEY) {
-        console.warn('[AI] ANTHROPIC_API_KEY not set — skipping recommendation generation');
+    if (!process.env.OPENAI_API_KEY) {
+        console.warn('[AI] OPENAI_API_KEY not set — skipping recommendation generation');
         return [];
     }
 
@@ -111,7 +111,9 @@ export async function generateAndStoreSiteRecommendations(
     const lf = metrics.loadFactor !== null ? metrics.loadFactor.toFixed(2) : 'N/A';
 
     const prompt = `You are PowerGuard's energy analysis engine for South African industrial and commercial sites.
-Analyse the data below and return ONLY a valid JSON array — no prose, no markdown fences, just raw JSON.
+Analyse the data below and return ONLY a valid JSON object of the form:
+{ "recommendations": [ ... 2 to 5 items matching the schema below ... ] }
+No prose, no markdown fences — just raw parseable JSON.
 
 SITE: ${siteName} | ${siteAddress}
 SITE TYPE: ${declaredSiteType || 'Not declared'}
@@ -166,27 +168,38 @@ JSON schema for each item:
   "standard_reference": "e.g. NRS 048-2 clause 4.3 (optional)"
 }`;
 
-    // ── Call Claude ────────────────────────────────────────────────────────
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    // ── Call OpenAI ────────────────────────────────────────────────────────
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     let recommendations: Recommendation[] = [];
 
     try {
-        const message = await anthropic.messages.create({
-            model:      'claude-sonnet-4-5',
+        const completion = await openai.chat.completions.create({
+            model:    'gpt-5.4-nano',
+            messages: [
+                { role: 'system', content: 'You are PowerGuard\'s energy analysis engine. Reply with ONLY a valid JSON array of recommendations — no prose, no markdown fences, just raw JSON parseable by JSON.parse().' },
+                { role: 'user',   content: prompt },
+            ],
+            // Force JSON output so we never have to strip prose/markdown from the reply.
+            response_format: { type: 'json_object' },
             max_tokens: 2048,
-            messages:   [{ role: 'user', content: prompt }],
+            temperature: 0.4,
         });
 
-        const raw = message.content[0].type === 'text' ? message.content[0].text : '';
+        const raw = completion.choices[0]?.message?.content ?? '';
 
-        // Strip accidental markdown fences
+        // Strip accidental markdown fences (defensive — response_format usually prevents this)
         const cleaned = raw
             .replace(/^```(?:json)?\n?/gm, '')
             .replace(/\n?```$/gm, '')
             .trim();
 
-        const parsed = JSON.parse(cleaned);
-        if (!Array.isArray(parsed)) throw new Error('Claude response is not a JSON array');
+        // response_format: 'json_object' returns an object — we asked for an array,
+        // so accept either { recommendations: [...] } or a top-level array.
+        const parsedRaw = JSON.parse(cleaned);
+        const parsed = Array.isArray(parsedRaw)
+            ? parsedRaw
+            : (Array.isArray(parsedRaw?.recommendations) ? parsedRaw.recommendations : null);
+        if (!parsed) throw new Error('OpenAI response is not a JSON array or { recommendations: [...] } object');
 
         // Validate and sanitise each recommendation
         recommendations = parsed
@@ -205,9 +218,9 @@ JSON schema for each item:
             }))
             .slice(0, 5); // max 5 per run
 
-        console.log(`[AI] Claude generated ${recommendations.length} recommendations for site ${siteId}`);
+        console.log(`[AI] OpenAI generated ${recommendations.length} recommendations for site ${siteId}`);
     } catch (err: any) {
-        console.error('[AI] Claude generation failed:', err.message || err);
+        console.error('[AI] OpenAI generation failed:', err.message || err);
         return [];
     }
 
