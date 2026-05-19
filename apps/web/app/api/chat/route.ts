@@ -72,7 +72,8 @@ ${context ? `\n=== CLIENT LIVE DATA (DO NOT MENTION YOU ARE READING THIS) ===\n$
         const completion = await openai.chat.completions.create({
             model: 'gpt-5.4-nano',
             messages: chatMessages,
-            max_tokens: 600,
+            // gpt-5 / o-series models renamed max_tokens → max_completion_tokens
+            max_completion_tokens: 600,
             temperature: 0.4,
         });
 

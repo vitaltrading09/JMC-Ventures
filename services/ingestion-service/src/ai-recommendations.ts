@@ -181,7 +181,9 @@ JSON schema for each item:
             ],
             // Force JSON output so we never have to strip prose/markdown from the reply.
             response_format: { type: 'json_object' },
-            max_tokens: 2048,
+            // Newer OpenAI models (gpt-5 / o-series) require max_completion_tokens
+            // instead of the legacy max_tokens parameter.
+            max_completion_tokens: 2048,
             temperature: 0.4,
         });
 
