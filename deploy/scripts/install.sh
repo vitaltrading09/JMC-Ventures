@@ -1,0 +1,150 @@
+#!/bin/bash
+# PowerGuard production setup — switches services from `nohup &` to systemd.
+# Idempotent: safe to run multiple times.
+#
+# Run from anywhere on the server:  sudo bash /home/ubuntu/PowerGuard/deploy/scripts/install.sh
+
+set -euo pipefail
+
+if [ "$EUID" -ne 0 ]; then
+    echo "Run with sudo: sudo bash $0"
+    exit 1
+fi
+
+# Resolve repo root (script lives at deploy/scripts/install.sh)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SYSTEMD_SRC="$REPO_ROOT/deploy/systemd"
+HEALTHCHECK="$REPO_ROOT/deploy/scripts/healthcheck.sh"
+HEALTHCHECK_LOG="/var/log/powerguard-healthcheck.log"
+
+echo "════════════════════════════════════════════════════"
+echo "  PowerGuard systemd setup"
+echo "════════════════════════════════════════════════════"
+echo "  Repo:          $REPO_ROOT"
+echo "  systemd src:   $SYSTEMD_SRC"
+echo "  Healthcheck:   $HEALTHCHECK"
+echo ""
+
+# ── 1. Sanity checks ───────────────────────────────────────────────────────
+echo "▶ Sanity checks…"
+
+for envfile in \
+    "$REPO_ROOT/services/auth-service/.env" \
+    "$REPO_ROOT/services/ingestion-service/.env" \
+    "$REPO_ROOT/services/api-gateway/.env"; do
+    if [ ! -f "$envfile" ]; then
+        echo "  ✗ Missing: $envfile"
+        echo ""
+        echo "    Create it before continuing — see CLAUDE.md for required vars."
+        echo "    JWT_SECRET MUST be identical across all three .env files."
+        exit 1
+    fi
+done
+echo "  ✓ All .env files present"
+
+if ! command -v docker >/dev/null; then
+    echo "  ✗ Docker not installed"; exit 1
+fi
+echo "  ✓ Docker available"
+
+if ! command -v node >/dev/null; then
+    echo "  ✗ Node.js not installed"; exit 1
+fi
+echo "  ✓ Node $(node -v) available"
+
+# ── 2. Stop legacy nohup processes ─────────────────────────────────────────
+echo ""
+echo "▶ Stopping any legacy nohup processes…"
+pkill -f "npx tsx services/" 2>/dev/null || true
+pkill -f "next-server"       2>/dev/null || true
+pkill -f "next start"        2>/dev/null || true
+sleep 2
+echo "  ✓ Legacy processes stopped"
+
+# ── 3. Ensure Docker infrastructure is up ──────────────────────────────────
+echo ""
+echo "▶ Bringing up Docker infrastructure (TimescaleDB, Redis, Mosquitto)…"
+cd "$REPO_ROOT"
+docker compose up -d
+sleep 3
+echo "  ✓ Docker services running"
+
+# ── 4. Build Next.js frontend (must exist for systemd web service) ─────────
+echo ""
+echo "▶ Building Next.js frontend (this can take a minute)…"
+sudo -u ubuntu bash -lc "cd '$REPO_ROOT/apps/web' && npm run build"
+echo "  ✓ Frontend built (.next/ ready)"
+
+# ── 5. Install systemd unit files ──────────────────────────────────────────
+echo ""
+echo "▶ Installing systemd unit files…"
+for unit in "$SYSTEMD_SRC"/*.service; do
+    name="$(basename "$unit")"
+    cp "$unit" "/etc/systemd/system/$name"
+    echo "  ✓ $name"
+done
+
+systemctl daemon-reload
+echo "  ✓ systemd daemon reloaded"
+
+# ── 6. Enable + (re)start all services ─────────────────────────────────────
+echo ""
+echo "▶ Enabling and starting services…"
+for svc in powerguard-auth powerguard-ingestion powerguard-gateway powerguard-web; do
+    systemctl enable "$svc" >/dev/null 2>&1
+    systemctl restart "$svc"
+    echo "  ✓ $svc"
+done
+
+# ── 7. Install healthcheck cron (under root so it can systemctl restart) ──
+echo ""
+echo "▶ Installing healthcheck cron…"
+chmod +x "$HEALTHCHECK"
+touch "$HEALTHCHECK_LOG"
+chmod 644 "$HEALTHCHECK_LOG"
+
+# Add line to root's crontab if not already present
+CRON_LINE="* * * * * $HEALTHCHECK >> $HEALTHCHECK_LOG 2>&1"
+(crontab -l 2>/dev/null | grep -vF "$HEALTHCHECK"; echo "$CRON_LINE") | crontab -
+echo "  ✓ Cron installed: runs every minute, logs to $HEALTHCHECK_LOG"
+
+# ── 8. Logrotate for the healthcheck log ──────────────────────────────────
+cat > /etc/logrotate.d/powerguard-healthcheck <<EOF
+$HEALTHCHECK_LOG {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    create 644 root root
+}
+EOF
+echo "  ✓ Logrotate configured (14-day retention)"
+
+# ── 9. Status summary ──────────────────────────────────────────────────────
+echo ""
+echo "▶ Waiting 8s for services to come up…"
+sleep 8
+
+echo ""
+echo "════════════════════════════════════════════════════"
+echo "  Service Status"
+echo "════════════════════════════════════════════════════"
+bash "$REPO_ROOT/deploy/scripts/status.sh"
+
+echo ""
+echo "════════════════════════════════════════════════════"
+echo "  ✅ Setup complete"
+echo "════════════════════════════════════════════════════"
+cat <<EOF
+
+Useful commands:
+  bash $REPO_ROOT/deploy/scripts/status.sh          # one-glance health
+  bash $REPO_ROOT/deploy/scripts/logs.sh ingestion  # tail any service
+  sudo systemctl restart powerguard-ingestion      # manual restart
+  sudo tail -f $HEALTHCHECK_LOG                    # see healthcheck activity
+
+After a git pull:
+  bash $REPO_ROOT/deploy/scripts/redeploy.sh       # rebuild web + restart services
+EOF

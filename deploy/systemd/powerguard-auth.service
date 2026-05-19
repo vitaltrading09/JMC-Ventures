@@ -1,0 +1,39 @@
+[Unit]
+Description=PowerGuard Auth Service (Node.js, port 3001)
+Documentation=https://github.com/vitaltrading09/JMC-Ventures
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/PowerGuard
+EnvironmentFile=/home/ubuntu/PowerGuard/services/auth-service/.env
+
+# Login shell picks up nvm / system PATH so npx resolves on any Node setup.
+# `exec` hands the PID to npx so systemd tracks the right process.
+ExecStart=/bin/bash -lc 'exec npx tsx services/auth-service/src/main.ts'
+
+# Auto-restart on crash, with a 60s window of max 5 retries to prevent tight loops.
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Resource limits — auth-service is tiny, 256MB is plenty.
+MemoryMax=256M
+TasksMax=200
+
+# Log to journalctl (free log aggregation, automatic rotation).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=powerguard-auth
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
