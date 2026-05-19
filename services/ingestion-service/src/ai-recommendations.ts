@@ -42,6 +42,8 @@ export async function generateAndStoreSiteRecommendations(
     score:       EnergyScoreResult,
     siteName:    string,
     siteAddress: string,
+    meterId?:    string,         // when set, recs are scoped to one meter
+    meterName?:  string,         // human-readable for the prompt
 ): Promise<Recommendation[]> {
     if (!process.env.OPENAI_API_KEY) {
         console.warn('[AI] OPENAI_API_KEY not set — skipping recommendation generation');
@@ -50,22 +52,47 @@ export async function generateAndStoreSiteRecommendations(
 
     // ── Fetch supporting data ──────────────────────────────────────────────
     const client = await pool.connect();
-    let tariffContext = 'No tariff data configured.';
+    // Standard SA Megaflex / TOU times — used as defaults when the user hasn't
+    // entered their own schedule. Keep the AI from telling them "set the times"
+    // every single run.
+    const DEFAULT_PEAK_TIMES    = '07:00-10:00 & 18:00-20:00 (weekdays)';
+    const DEFAULT_STANDARD_TIMES = '06:00-07:00, 10:00-18:00, 20:00-22:00 (weekdays)';
+    const DEFAULT_OFFPEAK_TIMES = '22:00-06:00 (all days) + all weekend';
+
+    let tariffContext = 'NOT CONFIGURED — recommend the user enter tariff rates on the Settings → Tariffs page.';
+    let tariffsConfigured = false;
     let activeAlerts: { type: string; message: string }[] = [];
     let loadProfile  = 'No load profile declared by site owner.';
     let declaredSiteType: string | null = null;
     try {
         const settingsRes = await client.query(
-            `SELECT tariff_peak, tariff_standard, tariff_offpeak, peak_times, offpeak_times
+            `SELECT tariff_peak, tariff_standard, tariff_offpeak, tariff_demand,
+                    peak_times, standard_times, offpeak_times,
+                    contracted_mdi_kva, alert_max_kw
              FROM site_settings WHERE site_id = $1`,
             [siteId]
         );
         const s = settingsRes.rows[0];
         if (s?.tariff_peak) {
+            tariffsConfigured = true;
+            const peakTimes   = s.peak_times    || DEFAULT_PEAK_TIMES    + ' (SA default, user hasn\'t overridden)';
+            const stdTimes    = s.standard_times || DEFAULT_STANDARD_TIMES + ' (SA default, user hasn\'t overridden)';
+            const offTimes    = s.offpeak_times || DEFAULT_OFFPEAK_TIMES + ' (SA default, user hasn\'t overridden)';
+            const demandLine  = s.tariff_demand
+                ? `\n  Demand (MDI) charge: R${Number(s.tariff_demand).toFixed(2)}/kVA/month`
+                : '';
+            const mdiLine     = s.contracted_mdi_kva
+                ? `\n  Contracted MDI capacity: ${s.contracted_mdi_kva} kVA`
+                : '';
+            const peakAlert   = s.alert_max_kw
+                ? `\n  Configured peak-demand alert threshold: ${s.alert_max_kw} kW`
+                : '';
             tariffContext =
-                `Peak R${s.tariff_peak}/kWh (${s.peak_times || 'times not set'}), ` +
-                `Standard R${s.tariff_standard}/kWh, ` +
-                `Off-peak R${s.tariff_offpeak}/kWh (${s.offpeak_times || 'times not set'})`;
+                `CONFIGURED — use these exact rates in all saving calculations:\n` +
+                `  Peak rate:     R${Number(s.tariff_peak).toFixed(2)}/kWh   during ${peakTimes}\n` +
+                `  Standard rate: R${Number(s.tariff_standard ?? 0).toFixed(2)}/kWh   during ${stdTimes}\n` +
+                `  Off-peak rate: R${Number(s.tariff_offpeak ?? 0).toFixed(2)}/kWh   during ${offTimes}` +
+                demandLine + mdiLine + peakAlert;
         }
 
         const alertRes = await client.query(
@@ -79,14 +106,11 @@ export async function generateAndStoreSiteRecommendations(
         activeAlerts = alertRes.rows;
 
         // Load profile — what each active meter on this site actually measures.
-        // This stops Claude from inventing/guessing about motors, VFDs, lighting type, etc.
-        const profileRes = await client.query(
-            `SELECT name, load_types, load_description, site_type
-             FROM meters
-             WHERE site_id = $1 AND is_active = true
-             ORDER BY name ASC`,
-            [siteId]
-        );
+        // When scoped to a single meter, we only include THAT meter's profile.
+        const profileQuery = meterId
+            ? `SELECT name, load_types, load_description, site_type FROM meters WHERE id = $1`
+            : `SELECT name, load_types, load_description, site_type FROM meters WHERE site_id = $1 AND is_active = true ORDER BY name ASC`;
+        const profileRes = await client.query(profileQuery, [meterId ?? siteId]);
         if (profileRes.rows.length > 0) {
             const declaredTypes = profileRes.rows
                 .map(m => m.site_type)
@@ -116,10 +140,11 @@ Analyse the data below and return ONLY a valid JSON object of the form:
 No prose, no markdown fences — just raw parseable JSON.
 
 SITE: ${siteName} | ${siteAddress}
+${meterId ? `SCOPE: Single meter analysis — "${meterName}". Treat the loads and metrics below as belonging to this meter only.` : 'SCOPE: Site-wide — aggregate of all active meters.'}
 SITE TYPE: ${declaredSiteType || 'Not declared'}
 TARIFF TYPE: ${tariffType} (SA context: Megaflex = large demand tariff, TOU = time-of-use, FLAT = single rate)
 
-DECLARED LOADS PER METER (this is what's physically connected — do NOT invent loads that aren't listed):
+DECLARED LOADS${meterId ? ' (this meter)' : ' PER METER'} (this is what's physically connected — do NOT invent loads that aren't listed):
 ${loadProfile}
 
 ENERGY SCORE: ${totalScore}/100
@@ -139,7 +164,9 @@ PERFORMANCE METRICS (last 7 days of available data):
   Max Voltage:       ${metrics.maxV?.toFixed(1) ?? 'N/A'} V
   Monthly Energy:    ${metrics.energyKwh?.toFixed(0) ?? 'N/A'} kWh
 
-TARIFF: ${tariffContext}
+TARIFF CONFIGURATION:
+${tariffContext}
+
 RECENT ALERTS: ${activeAlerts.length > 0
     ? activeAlerts.map(a => `${a.type}: ${a.message}`).join('; ')
     : 'None'}
@@ -153,6 +180,9 @@ INSTRUCTIONS:
 - Priority 1 = highest urgency / best ROI.
 - ONLY recommend retrofits/upgrades for loads that appear in DECLARED LOADS. Do not suggest VFD installation if no DOL motors are listed, do not suggest LED retrofits if lighting is already LED, etc. If a load type is not declared, do not assume it exists.
 - If load profile is incomplete or "not specified" for the main meter, flag this as an ENERGY_AUDIT recommendation so the site owner declares loads — better data → better recommendations.
+- Tariff handling: ${tariffsConfigured
+    ? 'rates ARE configured (see TARIFF CONFIGURATION above). Use those exact rand values in every saving estimate. Do NOT recommend that the user "enter their tariffs" or "configure TOU rates" — that has already been done. You may recommend optimising tariff structure with their utility if the data supports it.'
+    : 'rates are NOT yet configured. Include exactly ONE recommendation of type ENERGY_AUDIT asking the user to enter tariff rates on Settings → Tariffs so future analyses can quantify rand savings.'}
 
 JSON schema for each item:
 {
@@ -229,22 +259,31 @@ JSON schema for each item:
     // ── Persist to DB ──────────────────────────────────────────────────────
     const dbClient = await pool.connect();
     try {
-        // Mark previous active recommendations as superseded
-        await dbClient.query(`
-            UPDATE recommendations
-            SET status = 'SUPERSEDED'
-            WHERE site_id = $1 AND status = 'ACTIVE'
-        `, [siteId]);
+        // Supersede only recs in the same scope (per-meter OR site-wide).
+        // Re-running a site analysis must NOT wipe per-meter recs and vice versa.
+        if (meterId) {
+            await dbClient.query(
+                `UPDATE recommendations SET status = 'SUPERSEDED'
+                 WHERE meter_id = $1 AND status = 'ACTIVE'`,
+                [meterId]
+            );
+        } else {
+            await dbClient.query(
+                `UPDATE recommendations SET status = 'SUPERSEDED'
+                 WHERE site_id = $1 AND meter_id IS NULL AND status = 'ACTIVE'`,
+                [siteId]
+            );
+        }
 
         for (const rec of recommendations) {
             await dbClient.query(`
                 INSERT INTO recommendations (
-                    site_id, tenant_id, type, priority, title, problem, solution,
+                    site_id, meter_id, tenant_id, type, priority, title, problem, solution,
                     estimated_monthly_saving_zar, estimated_implementation_cost_zar,
                     payback_months, confidence, standard_reference, status
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'ACTIVE')
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'ACTIVE')
             `, [
-                siteId, tenantId,
+                siteId, meterId ?? null, tenantId,
                 rec.type, rec.priority, rec.title, rec.problem, rec.solution,
                 rec.estimated_monthly_saving_zar,
                 rec.estimated_implementation_cost_zar,
@@ -261,7 +300,7 @@ JSON schema for each item:
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Fetch stored active recommendations for a site
+// Fetch stored active recommendations for a site (all scopes — site + meters)
 // ─────────────────────────────────────────────────────────────────────────────
 export async function getSiteRecommendations(
     pool:   Pool,
@@ -270,13 +309,36 @@ export async function getSiteRecommendations(
     const client = await pool.connect();
     try {
         const res = await client.query(`
-            SELECT r.*, s.name as site_name
+            SELECT r.*, s.name as site_name, m.name as meter_name
             FROM recommendations r
             JOIN sites s ON r.site_id = s.id
+            LEFT JOIN meters m ON r.meter_id = m.id
             WHERE r.site_id = $1
               AND r.status = 'ACTIVE'
             ORDER BY r.priority ASC, r.estimated_monthly_saving_zar DESC
         `, [siteId]);
+        return res.rows;
+    } finally {
+        client.release();
+    }
+}
+
+// Per-meter recommendations (active only)
+export async function getMeterRecommendations(
+    pool:    Pool,
+    meterId: string,
+): Promise<any[]> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(`
+            SELECT r.*, s.name as site_name, m.name as meter_name
+            FROM recommendations r
+            JOIN sites s ON r.site_id = s.id
+            JOIN meters m ON r.meter_id = m.id
+            WHERE r.meter_id = $1
+              AND r.status = 'ACTIVE'
+            ORDER BY r.priority ASC, r.estimated_monthly_saving_zar DESC
+        `, [meterId]);
         return res.rows;
     } finally {
         client.release();
@@ -293,9 +355,10 @@ export async function getTenantRecommendations(
     const client = await pool.connect();
     try {
         let query = `
-            SELECT r.*, s.name as site_name, s.address as site_address
+            SELECT r.*, s.name as site_name, s.address as site_address, m.name as meter_name
             FROM recommendations r
             JOIN sites s ON r.site_id = s.id
+            LEFT JOIN meters m ON r.meter_id = m.id
             WHERE r.status = 'ACTIVE'
         `;
         const params: any[] = [];

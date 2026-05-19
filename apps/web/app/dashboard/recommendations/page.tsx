@@ -13,6 +13,8 @@ interface Recommendation {
     site_id: string;
     site_name: string;
     site_address: string;
+    meter_id?: string | null;
+    meter_name?: string | null;
     type: string;
     priority: number;
     title: string;
@@ -27,7 +29,8 @@ interface Recommendation {
     created_at: string;
 }
 
-interface Site { id: string; name: string; }
+interface Site  { id: string; name: string; }
+interface Meter { id: string; name: string; site_id: string; is_active?: boolean; }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
@@ -58,11 +61,14 @@ function fmt(n: number) {
 export default function RecommendationsPage() {
     const [recs,          setRecs]          = useState<Recommendation[]>([]);
     const [sites,         setSites]         = useState<Site[]>([]);
+    const [meters,        setMeters]        = useState<Meter[]>([]);
     const [loading,       setLoading]       = useState(true);
-    const [generating,    setGenerating]    = useState<string | null>(null); // siteId being generated
+    const [generating,    setGenerating]    = useState<string | null>(null); // site or meter id being generated
     const [notifying,     setNotifying]     = useState<string | null>(null); // recId being notified
     const [notified,      setNotified]      = useState<Set<string>>(new Set());
     const [filterSite,    setFilterSite]    = useState<string>("all");
+    const [filterScope,   setFilterScope]   = useState<"all" | "site" | "meter">("all"); // scope filter
+    const [analyseTargetMeter, setAnalyseTargetMeter] = useState<string>(""); // meter chosen for "Analyse This Meter"
     const [expanded,      setExpanded]      = useState<Set<string>>(new Set());
     const [toast,         setToast]         = useState<string | null>(null);
 
@@ -74,14 +80,18 @@ export default function RecommendationsPage() {
     const fetchData = useCallback(async () => {
         const headers = { Authorization: `Bearer ${getToken()}` };
         try {
-            const [recsRes, sitesRes] = await Promise.all([
+            const [recsRes, sitesRes, metersRes] = await Promise.all([
                 fetch(`${API}/ingestion/recommendations`, { headers }),
                 fetch(`${API}/ingestion/sites`, { headers }),
+                fetch(`${API}/ingestion/meters`, { headers }),
             ]);
             if (recsRes.status === 401) { window.location.href = "/login"; return; }
-            const [recsData, sitesData] = await Promise.all([recsRes.json(), sitesRes.json()]);
+            const [recsData, sitesData, metersData] = await Promise.all([
+                recsRes.json(), sitesRes.json(), metersRes.json()
+            ]);
             setRecs(Array.isArray(recsData) ? recsData : []);
             setSites(Array.isArray(sitesData) ? sitesData : []);
+            setMeters(Array.isArray(metersData) ? metersData : []);
         } catch (e) { console.error(e); }
         finally { setLoading(false); }
     }, []);
@@ -100,6 +110,21 @@ export default function RecommendationsPage() {
             showToast(`✓ Generated ${data.generated} recommendation${data.generated !== 1 ? "s" : ""}`);
             await fetchData();
         } catch { showToast("Failed to generate recommendations"); }
+        finally { setGenerating(null); }
+    };
+
+    const handleGenerateForMeter = async (meterId: string) => {
+        setGenerating(meterId);
+        try {
+            const res = await fetch(`${API}/ingestion/meters/${meterId}/recommendations/generate`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${getToken()}` },
+            });
+            const data = await res.json();
+            if (!res.ok) { showToast(`Error: ${data.error}`); return; }
+            showToast(`✓ Generated ${data.generated} per-meter recommendation${data.generated !== 1 ? "s" : ""}`);
+            await fetchData();
+        } catch { showToast("Failed to generate per-meter recommendations"); }
         finally { setGenerating(null); }
     };
 
@@ -125,7 +150,15 @@ export default function RecommendationsPage() {
     // Filter + sort
     const filtered = recs
         .filter(r => filterSite === "all" || r.site_id === filterSite)
+        .filter(r => filterScope === "all"
+            ? true
+            : filterScope === "meter" ? !!r.meter_id : !r.meter_id)
         .sort((a, b) => a.priority - b.priority || b.estimated_monthly_saving_zar - a.estimated_monthly_saving_zar);
+
+    // Meters scoped to the currently-filtered site
+    const visibleMeters = meters.filter(m =>
+        (filterSite === "all" || m.site_id === filterSite) && m.is_active !== false
+    );
 
     const totalSaving = filtered.reduce((s, r) => s + r.estimated_monthly_saving_zar, 0);
 
@@ -154,41 +187,94 @@ export default function RecommendationsPage() {
                         <span className="text-emerald-400 font-semibold">{fmt(totalSaving)}/month</span>
                     </p>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
                     {/* Site filter */}
                     <select
                         value={filterSite}
-                        onChange={e => setFilterSite(e.target.value)}
+                        onChange={e => { setFilterSite(e.target.value); setAnalyseTargetMeter(""); }}
                         className="bg-slate-900 border border-slate-800 text-slate-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                     >
                         <option value="all">All sites</option>
                         {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </select>
+
+                    {/* Scope filter — site-wide vs per-meter recs */}
+                    <select
+                        value={filterScope}
+                        onChange={e => setFilterScope(e.target.value as any)}
+                        className="bg-slate-900 border border-slate-800 text-slate-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    >
+                        <option value="all">All scopes</option>
+                        <option value="site">Site-wide only</option>
+                        <option value="meter">Per-meter only</option>
+                    </select>
+
                     <button onClick={fetchData} className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-medium transition-colors">
                         <RefreshCw className="h-4 w-4" /> Refresh
                     </button>
                 </div>
             </div>
 
-            {/* Generate AI Analysis per site */}
+            {/* Generate AI Analysis per SITE */}
             {sites.length > 0 && (
-                <div className="flex flex-wrap gap-3">
-                    {sites
-                        .filter(s => filterSite === "all" || s.id === filterSite)
-                        .map(site => (
-                            <button
-                                key={site.id}
-                                onClick={() => handleGenerate(site.id)}
-                                disabled={generating === site.id}
-                                className="flex items-center gap-2 px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-400 rounded-lg text-sm font-medium transition-all disabled:opacity-50"
-                            >
-                                {generating === site.id
-                                    ? <Loader2 className="h-4 w-4 animate-spin" />
-                                    : <Zap className="h-4 w-4" />}
-                                {generating === site.id ? "Analysing…" : `Run AI Analysis — ${site.name}`}
-                            </button>
-                        ))}
-                </div>
+                <Card className="p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
+                        Site-wide analysis  <span className="font-normal normal-case text-slate-600">— aggregates all active meters on the site</span>
+                    </p>
+                    <div className="flex flex-wrap gap-3">
+                        {sites
+                            .filter(s => filterSite === "all" || s.id === filterSite)
+                            .map(site => (
+                                <button
+                                    key={site.id}
+                                    onClick={() => handleGenerate(site.id)}
+                                    disabled={generating === site.id}
+                                    className="flex items-center gap-2 px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-400 rounded-lg text-sm font-medium transition-all disabled:opacity-50"
+                                >
+                                    {generating === site.id
+                                        ? <Loader2 className="h-4 w-4 animate-spin" />
+                                        : <Zap className="h-4 w-4" />}
+                                    {generating === site.id ? "Analysing…" : `Run for ${site.name}`}
+                                </button>
+                            ))}
+                    </div>
+                </Card>
+            )}
+
+            {/* Generate AI Analysis per METER */}
+            {visibleMeters.length > 0 && (
+                <Card className="p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-3">
+                        Per-meter analysis  <span className="font-normal normal-case text-slate-600">— scoped to one meter's 7-day data + its declared loads</span>
+                    </p>
+                    <div className="flex flex-wrap items-center gap-3">
+                        <select
+                            value={analyseTargetMeter}
+                            onChange={e => setAnalyseTargetMeter(e.target.value)}
+                            className="bg-slate-900 border border-slate-800 text-slate-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50 min-w-[260px]"
+                        >
+                            <option value="">— Pick a meter —</option>
+                            {visibleMeters.map(m => {
+                                const s = sites.find(s => s.id === m.site_id);
+                                return (
+                                    <option key={m.id} value={m.id}>
+                                        {m.name}{s ? ` — ${s.name}` : ""}
+                                    </option>
+                                );
+                            })}
+                        </select>
+                        <button
+                            onClick={() => analyseTargetMeter && handleGenerateForMeter(analyseTargetMeter)}
+                            disabled={!analyseTargetMeter || generating === analyseTargetMeter}
+                            className="flex items-center gap-2 px-4 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-400 rounded-lg text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                            {generating === analyseTargetMeter
+                                ? <Loader2 className="h-4 w-4 animate-spin" />
+                                : <Activity className="h-4 w-4" />}
+                            {generating === analyseTargetMeter ? "Analysing meter…" : "Run for selected meter"}
+                        </button>
+                    </div>
+                </Card>
             )}
 
             {/* Empty state */}
@@ -241,6 +327,15 @@ export default function RecommendationsPage() {
                                         <span className={`text-xs px-2 py-0.5 rounded-full ${CONFIDENCE_COLOUR[rec.confidence]}`}>
                                             {rec.confidence} confidence
                                         </span>
+                                        {rec.meter_id && rec.meter_name ? (
+                                            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1">
+                                                <Activity className="h-3 w-3" /> {rec.meter_name}
+                                            </span>
+                                        ) : (
+                                            <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                                                Site-wide
+                                            </span>
+                                        )}
                                         <span className="text-xs text-slate-500">{rec.site_name}</span>
                                         {rec.standard_reference && (
                                             <span className="text-xs text-slate-600 font-mono">{rec.standard_reference}</span>

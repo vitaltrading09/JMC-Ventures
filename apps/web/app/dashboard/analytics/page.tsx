@@ -7,7 +7,8 @@ import {
     XAxis, YAxis, CartesianGrid, Tooltip,
     ResponsiveContainer, Legend,
 } from "recharts";
-import { Zap, TrendingDown, RefreshCw, Loader2, DollarSign } from "lucide-react";
+import { Zap, TrendingDown, RefreshCw, Loader2, DollarSign, Lightbulb, ChevronRight, Activity } from "lucide-react";
+import Link from "next/link";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
 
@@ -86,58 +87,114 @@ function calcTariffCost(readings: Reading[], settings: SiteSettings): TariffCost
     return { peakKwh, standardKwh, offpeakKwh, peakCost, standardCost, offpeakCost, totalCost, avgRate };
 }
 
+interface MeterOption { id: string; name: string; site_id: string; is_active?: boolean; }
+interface Recommendation {
+    id: string; type: string; priority: number; title: string;
+    problem: string; solution: string; confidence: string;
+    estimated_monthly_saving_zar: number; payback_months: number;
+    standard_reference?: string;
+}
+
 export default function AnalyticsPage() {
-    const [readings,    setReadings]    = useState<Reading[]>([]);
-    const [loading,     setLoading]     = useState(true);
-    const [aiInsight,   setAiInsight]   = useState<string>("");
-    const [aiLoading,   setAiLoading]   = useState(false);
-    const [meterId,     setMeterId]     = useState<string | null>(null);
-    const [siteId,      setSiteId]      = useState<string | null>(null);
-    const [meterName,   setMeterName]   = useState<string>("");
-    const [settings,    setSettings]    = useState<SiteSettings>({});
+    const [readings,        setReadings]        = useState<Reading[]>([]);
+    const [loading,         setLoading]         = useState(true);
+    const [aiInsight,       setAiInsight]       = useState<string>("");
+    const [aiLoading,       setAiLoading]       = useState(false);
+    const [meterId,         setMeterId]         = useState<string | null>(null);
+    const [siteId,          setSiteId]          = useState<string | null>(null);
+    const [meterName,       setMeterName]       = useState<string>("");
+    const [settings,        setSettings]        = useState<SiteSettings>({});
+    const [availableMeters, setAvailableMeters] = useState<MeterOption[]>([]);
+    const [meterRecs,       setMeterRecs]       = useState<Recommendation[]>([]);
+    const [recsLoading,     setRecsLoading]     = useState(false);
+    const [generating,      setGenerating]      = useState(false);
 
     const token = () => (typeof window !== "undefined" ? localStorage.getItem("token") ?? "" : "");
 
-    // Load meter + settings + last 7 days of readings
+    // Load meter list once; selecting a meter triggers fetchMeterData below.
     const fetchData = useCallback(async () => {
         setLoading(true);
         try {
             const headers = { Authorization: `Bearer ${token()}` };
-
-            // 1 — get first active meter
             const metersRes = await fetch(`${API}/ingestion/meters`, { headers });
             if (!metersRes.ok) return;
             const meters = await metersRes.json();
-            const activeMeter = meters.find((m: any) => m.latest_reading?.time);
-            if (!activeMeter) return;
-
-            setMeterId(activeMeter.id);
-            setSiteId(activeMeter.site_id);
-            setMeterName(activeMeter.name);
-
-            // 2 — fetch site settings (tariffs + thresholds)
-            let fetchedSettings: SiteSettings = {};
-            if (activeMeter.site_id) {
-                const settRes = await fetch(`${API}/ingestion/sites/${activeMeter.site_id}/settings`, { headers });
-                if (settRes.ok) {
-                    fetchedSettings = await settRes.json();
-                    setSettings(fetchedSettings);
-                }
+            const active = meters.filter((m: any) => m.is_active !== false);
+            setAvailableMeters(active);
+            // Default to first meter that has live data, or just first active one.
+            const initial = active.find((m: any) => m.latest_reading?.time) ?? active[0];
+            if (initial && !meterId) {
+                setMeterId(initial.id);
+                setSiteId(initial.site_id);
+                setMeterName(initial.name);
             }
+        } finally {
+            setLoading(false);
+        }
+    }, [meterId]);
 
-            // 3 — fetch 7 days of readings
+    // Re-fetch readings + settings + recs whenever the selected meter changes
+    const fetchMeterData = useCallback(async (mid: string, sid: string) => {
+        setLoading(true);
+        try {
+            const headers = { Authorization: `Bearer ${token()}` };
+
+            // Settings
+            const settRes = await fetch(`${API}/ingestion/sites/${sid}/settings`, { headers });
+            if (settRes.ok) setSettings(await settRes.json());
+
+            // Readings (7d)
             const from = new Date(Date.now() - 7 * 86400000).toISOString();
             const readRes = await fetch(
-                `${API}/ingestion/meters/${activeMeter.id}/readings?from=${from}&limit=2000`,
+                `${API}/ingestion/meters/${mid}/readings?from=${from}&limit=2000`,
                 { headers }
             );
             if (readRes.ok) setReadings(await readRes.json());
+
+            // Per-meter recommendations
+            setRecsLoading(true);
+            const recsRes = await fetch(`${API}/ingestion/meters/${mid}/recommendations`, { headers });
+            if (recsRes.ok) setMeterRecs(await recsRes.json());
+            setRecsLoading(false);
         } finally {
             setLoading(false);
         }
     }, []);
 
     useEffect(() => { fetchData(); }, [fetchData]);
+    useEffect(() => {
+        if (meterId && siteId) fetchMeterData(meterId, siteId);
+    }, [meterId, siteId, fetchMeterData]);
+
+    // Switching meter via dropdown
+    const handleMeterChange = (newMeterId: string) => {
+        const m = availableMeters.find(x => x.id === newMeterId);
+        if (!m) return;
+        setMeterId(m.id);
+        setSiteId(m.site_id);
+        setMeterName(m.name);
+        setAiInsight(""); // force regen for new meter
+    };
+
+    const handleGenerateRecsForMeter = async () => {
+        if (!meterId) return;
+        setGenerating(true);
+        try {
+            const headers = { Authorization: `Bearer ${token()}` };
+            const res = await fetch(`${API}/ingestion/meters/${meterId}/recommendations/generate`, {
+                method: 'POST', headers,
+            });
+            if (res.ok) {
+                const recsRes = await fetch(`${API}/ingestion/meters/${meterId}/recommendations`, { headers });
+                if (recsRes.ok) setMeterRecs(await recsRes.json());
+            } else {
+                const err = await res.json();
+                alert(`Could not generate: ${err.error || res.status}`);
+            }
+        } finally {
+            setGenerating(false);
+        }
+    };
 
     // Trigger AI insight
     const generateInsight = useCallback(async () => {
@@ -288,10 +345,24 @@ TARIFF RATES (actual configured):
                         {meterName ? `Live data — ${meterName} · last 7 days` : "Loading meter data…"}
                     </p>
                 </div>
-                <button onClick={fetchData} className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-medium transition-colors">
-                    <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-                    Refresh
-                </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                    {availableMeters.length > 1 && (
+                        <select
+                            value={meterId ?? ""}
+                            onChange={e => handleMeterChange(e.target.value)}
+                            className="bg-slate-900 border border-slate-800 text-slate-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                        >
+                            {availableMeters.map(m => (
+                                <option key={m.id} value={m.id}>{m.name}</option>
+                            ))}
+                        </select>
+                    )}
+                    <button onClick={() => { fetchData(); if (meterId && siteId) fetchMeterData(meterId, siteId); }}
+                        className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-medium transition-colors">
+                        <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                        Refresh
+                    </button>
+                </div>
             </div>
 
             {/* AI Insight Card */}
@@ -314,7 +385,7 @@ TARIFF RATES (actual configured):
                         {aiLoading ? (
                             <div className="flex items-center gap-2 mt-3 text-slate-400 text-sm">
                                 <Loader2 className="w-4 h-4 animate-spin" />
-                                Analysing {readings.length} readings with GPT-4o-mini…
+                                Analysing {readings.length} readings…
                             </div>
                         ) : aiInsight ? (
                             <div className="mt-2 text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">
@@ -328,6 +399,76 @@ TARIFF RATES (actual configured):
                     </div>
                 </div>
             </div>
+
+            {/* Per-Meter Recommendations */}
+            <Card className="p-5">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2.5 rounded-lg bg-emerald-500/15 text-emerald-400">
+                            <Lightbulb className="h-5 w-5" />
+                        </div>
+                        <div>
+                            <h3 className="text-lg font-semibold text-white">Recommendations for {meterName || "this meter"}</h3>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                                {recsLoading ? "Loading…" : meterRecs.length > 0
+                                    ? `${meterRecs.length} active · sorted by priority`
+                                    : "No recommendations yet for this meter"}
+                            </p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={handleGenerateRecsForMeter}
+                            disabled={generating || !meterId}
+                            className="flex items-center gap-2 px-4 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-400 rounded-lg text-sm font-medium disabled:opacity-50"
+                        >
+                            {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+                            {generating ? "Analysing…" : "Run AI Analysis"}
+                        </button>
+                        <Link
+                            href="/dashboard/recommendations"
+                            className="flex items-center gap-1 px-3 py-2 text-slate-400 hover:text-white text-sm transition-colors"
+                        >
+                            View all <ChevronRight className="h-3.5 w-3.5" />
+                        </Link>
+                    </div>
+                </div>
+
+                {meterRecs.length > 0 && (
+                    <div className="mt-4 space-y-2">
+                        {meterRecs.slice(0, 3).map(rec => (
+                            <div key={rec.id} className="flex items-start gap-3 p-3 rounded-lg bg-slate-900/40 border border-slate-800">
+                                <div className="text-xs font-bold text-slate-500 mt-0.5 shrink-0 w-5">#{rec.priority}</div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <p className="text-sm font-medium text-white">{rec.title}</p>
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-700 text-slate-300 uppercase tracking-wide">
+                                            {rec.type.replace(/_/g, " ").toLowerCase()}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{rec.problem}</p>
+                                </div>
+                                {rec.estimated_monthly_saving_zar > 0 && (
+                                    <div className="text-right shrink-0">
+                                        <p className="text-sm font-bold text-emerald-400">
+                                            R{rec.estimated_monthly_saving_zar.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}
+                                        </p>
+                                        <p className="text-[10px] text-slate-500">per month</p>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                        {meterRecs.length > 3 && (
+                            <Link
+                                href="/dashboard/recommendations"
+                                className="block text-center py-2 text-xs text-slate-400 hover:text-blue-400 border border-dashed border-slate-700 rounded-lg"
+                            >
+                                + {meterRecs.length - 3} more — view full list
+                            </Link>
+                        )}
+                    </div>
+                )}
+            </Card>
 
             {/* Power Quality Scorecards */}
             {latest && (

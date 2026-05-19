@@ -9,6 +9,7 @@ import { computeAndStoreSiteScore, getLatestSiteScore } from './energy-score';
 import {
     generateAndStoreSiteRecommendations,
     getSiteRecommendations,
+    getMeterRecommendations,
     getTenantRecommendations,
 } from './ai-recommendations';
 
@@ -77,7 +78,8 @@ const pool = new Pool({
             CREATE INDEX IF NOT EXISTS idx_energy_scores_site ON energy_scores (site_id, calculated_at DESC);
         `);
 
-        // Recommendations table
+        // Recommendations table — meter_id is nullable so legacy site-wide
+        // recommendations still work; per-meter recs set meter_id.
         await client.query(`
             CREATE TABLE IF NOT EXISTS recommendations (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -94,6 +96,9 @@ const pool = new Pool({
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
             CREATE INDEX IF NOT EXISTS idx_recommendations_site ON recommendations (site_id, status, created_at DESC);
+            ALTER TABLE recommendations
+            ADD COLUMN IF NOT EXISTS meter_id UUID REFERENCES meters(id) ON DELETE CASCADE;
+            CREATE INDEX IF NOT EXISTS idx_recommendations_meter ON recommendations (meter_id, status, created_at DESC) WHERE meter_id IS NOT NULL;
         `);
 
         // Leads table
@@ -1465,7 +1470,7 @@ app.get('/recommendations', authenticateToken, async (req: any, res) => {
     }
 });
 
-// POST /sites/:id/recommendations/generate — trigger Claude analysis for a site
+// POST /sites/:id/recommendations/generate — site-wide AI analysis
 app.post('/sites/:id/recommendations/generate', authenticateToken, async (req: any, res) => {
     const { id } = req.params;
     const { tenantId, role } = req.user;
@@ -1490,6 +1495,61 @@ app.post('/sites/:id/recommendations/generate', authenticateToken, async (req: a
     } catch (err: any) {
         console.error('[API] Recommendation generation error:', err);
         res.status(500).json({ error: err.message || 'Failed to generate recommendations' });
+    }
+});
+
+// GET /meters/:id/recommendations — active recommendations for a single meter
+app.get('/meters/:id/recommendations', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const check = await client.query(
+                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
+                 WHERE m.id = $1 AND s.tenant_id = $2`,
+                [id, tenantId]
+            );
+            if (check.rows.length === 0) { client.release(); return res.status(403).json({ error: 'Forbidden' }); }
+        }
+        client.release();
+        const recs = await getMeterRecommendations(pool, id);
+        res.json(recs);
+    } catch (err) {
+        client.release();
+        res.status(500).json({ error: 'Error fetching meter recommendations' });
+    }
+});
+
+// POST /meters/:id/recommendations/generate — AI analysis scoped to one meter
+app.post('/meters/:id/recommendations/generate', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        const meterCheck = await client.query(
+            `SELECT m.id, m.name, m.site_id, s.tenant_id, s.name as site_name, s.address as site_address
+             FROM meters m JOIN sites s ON m.site_id = s.id
+             WHERE m.id = $1 ${role !== 'super_admin' ? 'AND s.tenant_id = $2' : ''}`,
+            role !== 'super_admin' ? [id, tenantId] : [id]
+        );
+        if (meterCheck.rows.length === 0) { client.release(); return res.status(403).json({ error: 'Forbidden' }); }
+        const meter = meterCheck.rows[0];
+        client.release();
+
+        // Compute fresh score for this meter only (not persisted to energy_scores).
+        const score = await computeAndStoreSiteScore(pool, meter.site_id, meter.id);
+        if (!score) return res.status(400).json({ error: 'Insufficient meter data — need at least 3 readings for this meter.' });
+
+        const recs = await generateAndStoreSiteRecommendations(
+            pool, meter.site_id, meter.tenant_id, score,
+            meter.site_name, meter.site_address || '',
+            meter.id, meter.name
+        );
+        res.json({ generated: recs.length, recommendations: recs, meter: { id: meter.id, name: meter.name } });
+    } catch (err: any) {
+        console.error('[API] Per-meter recommendation generation error:', err);
+        res.status(500).json({ error: err.message || 'Failed to generate per-meter recommendations' });
     }
 });
 

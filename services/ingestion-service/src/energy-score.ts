@@ -139,13 +139,22 @@ function scoreVoltageQuality(avgV: number | null, minV: number | null, maxV: num
 // (a new PFC bank installed last week should bump the score *this week*,
 // not get diluted in a 30-day rolling average).
 // ─────────────────────────────────────────────────────────────────────────────
+// When meterId is set the score is computed for that single meter only and
+// is NOT persisted to energy_scores (which is site-scoped). Per-meter scores
+// are used as ephemeral context for per-meter recommendations.
 export async function computeAndStoreSiteScore(
     pool: Pool,
-    siteId: string
+    siteId: string,
+    meterId?: string
 ): Promise<EnergyScoreResult | null> {
     const client = await pool.connect();
     try {
-        // Aggregate 7-day stats across all active meters on this site
+        // Aggregate 7-day stats — across all active meters on this site,
+        // or just one meter if meterId is set.
+        const metricFilter = meterId
+            ? `AND m.id = $2`
+            : `AND m.is_active = true`;
+        const metricParams: any[] = meterId ? [siteId, meterId] : [siteId];
         const metricsRes = await client.query(`
             SELECT
                 AVG(mr.power_factor_total)
@@ -179,8 +188,8 @@ export async function computeAndStoreSiteScore(
             JOIN meters m ON mr.meter_id = m.id
             WHERE m.site_id = $1
               AND mr.time >= NOW() - INTERVAL '7 days'
-              AND m.is_active = true
-        `, [siteId]);
+              ${metricFilter}
+        `, metricParams);
 
         const row = metricsRes.rows[0];
         if (!row || Number(row.reading_count) < 3) {
@@ -230,20 +239,23 @@ export async function computeAndStoreSiteScore(
             components.voltageQuality * weights.voltageQuality
         );
 
-        // Persist to energy_scores table
-        await client.query(`
-            INSERT INTO energy_scores (
-                site_id, score,
-                pf_score, thd_score, load_factor_score, voltage_quality_score,
-                weight_pf, weight_thd, weight_load_factor, weight_voltage_quality,
-                tariff_type
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        `, [
-            siteId, score,
-            components.pf, components.thd, components.loadFactor, components.voltageQuality,
-            weights.pf, weights.thd, weights.loadFactor, weights.voltageQuality,
-            tariffType,
-        ]);
+        // Persist to energy_scores table — only for site-wide computations.
+        // Per-meter scores are computed on demand and not stored.
+        if (!meterId) {
+            await client.query(`
+                INSERT INTO energy_scores (
+                    site_id, score,
+                    pf_score, thd_score, load_factor_score, voltage_quality_score,
+                    weight_pf, weight_thd, weight_load_factor, weight_voltage_quality,
+                    tariff_type
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            `, [
+                siteId, score,
+                components.pf, components.thd, components.loadFactor, components.voltageQuality,
+                weights.pf, weights.thd, weights.loadFactor, weights.voltageQuality,
+                tariffType,
+            ]);
+        }
 
         return {
             score,
