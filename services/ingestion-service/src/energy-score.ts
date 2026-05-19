@@ -130,9 +130,14 @@ function scoreVoltageQuality(avgV: number | null, minV: number | null, maxV: num
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main computation — queries last 30 days of data for a site, calculates
+// Main computation — queries last 7 days of data for a site, calculates
 // the composite energy score, and persists it to energy_scores.
-// Returns null if there is insufficient data (< 10 readings).
+// Returns null if there is insufficient data (< 3 readings).
+//
+// Why 7 days: long enough for a meaningful weekday/weekend pattern and
+// peak/off-peak average, short enough that the score reacts to real changes
+// (a new PFC bank installed last week should bump the score *this week*,
+// not get diluted in a 30-day rolling average).
 // ─────────────────────────────────────────────────────────────────────────────
 export async function computeAndStoreSiteScore(
     pool: Pool,
@@ -140,7 +145,7 @@ export async function computeAndStoreSiteScore(
 ): Promise<EnergyScoreResult | null> {
     const client = await pool.connect();
     try {
-        // Aggregate 30-day stats across all meters on this site
+        // Aggregate 7-day stats across all active meters on this site
         const metricsRes = await client.query(`
             SELECT
                 AVG(mr.power_factor_total)
@@ -173,7 +178,7 @@ export async function computeAndStoreSiteScore(
             FROM meter_readings mr
             JOIN meters m ON mr.meter_id = m.id
             WHERE m.site_id = $1
-              AND mr.time >= NOW() - INTERVAL '30 days'
+              AND mr.time >= NOW() - INTERVAL '7 days'
               AND m.is_active = true
         `, [siteId]);
 

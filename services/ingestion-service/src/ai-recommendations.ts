@@ -126,7 +126,7 @@ ENERGY SCORE: ${totalScore}/100
   Voltage Quality component: ${components.voltageQuality}/100
   THD component:             ${components.thd}/100
 
-PERFORMANCE METRICS (available data, up to 30 days):
+PERFORMANCE METRICS (last 7 days of available data):
   Avg Power Factor:  ${metrics.avgPf?.toFixed(3) ?? 'N/A'}   (SA target ≥0.95, penalty below 0.90)
   Avg THD (voltage): ${metrics.avgThd?.toFixed(2) ?? 'N/A'}% (NRS 048 limit 8%, EN 50160 planning level 5%)
   Peak Demand:       ${metrics.peakKw?.toFixed(1) ?? 'N/A'} kW

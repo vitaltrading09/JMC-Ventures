@@ -197,7 +197,7 @@ export default function RecommendationsPage() {
                     <Lightbulb className="w-12 h-12 text-slate-700 mx-auto mb-4" />
                     <p className="text-white font-medium text-lg">No recommendations yet</p>
                     <p className="text-slate-500 text-sm mt-2 max-w-sm mx-auto">
-                        Run an AI analysis on a site with at least 30 days of meter readings to generate energy recommendations.
+                        Run an AI analysis on a site that has live meter data. As little as a few hours of readings is enough — the engine uses up to the last 7 days for averages and peaks.
                     </p>
                     {sites.length > 0 && (
                         <button

@@ -298,7 +298,7 @@ export default function DashboardPage() {
                                 {
                                     label: "Power Factor",
                                     value: avgComponents?.pf,
-                                    hint: "Measures how efficiently the site uses electrical power. Based on average PF from your meter over 30 days. A PF below 0.85 triggers Eskom reactive energy penalties on your bill. Target is ≥0.95.",
+                                    hint: "Measures how efficiently the site uses electrical power. Based on average PF from your meter over the last 7 days. A PF below 0.85 triggers Eskom reactive energy penalties on your bill. Target is ≥0.95.",
                                     noData: false,
                                 },
                                 {
@@ -310,7 +310,7 @@ export default function DashboardPage() {
                                 {
                                     label: "Load Factor",
                                     value: avgComponents?.load,
-                                    hint: "Average demand divided by peak demand over 30 days. A low load factor (e.g. 0.35) means your contracted capacity is sized for a peak you rarely hit — you pay demand charges on that full capacity every month. Improving load factor reduces demand costs.",
+                                    hint: "Average demand divided by peak demand over the last 7 days. A low load factor (e.g. 0.35) means your contracted capacity is sized for a peak you rarely hit — you pay demand charges on that full capacity every month. Improving load factor reduces demand costs.",
                                     noData: false,
                                 },
                                 {
