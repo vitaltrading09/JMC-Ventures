@@ -12,6 +12,16 @@ export default function TariffsPage() {
     const [success, setSuccess] = useState(false);
     const [loading, setLoading] = useState(true);
 
+    // SA Megaflex default schedule — what the AI recommendations engine uses
+    // when peak_times is empty. Pre-fill the form so the user can either accept
+    // them by clicking Save, or edit them. Stops the form from showing only
+    // greyed-out placeholder text that looks identical to real values.
+    const DEFAULT_TIMES = {
+        peak:     "07:00 - 10:00, 18:00 - 20:00",
+        standard: "06:00 - 07:00, 10:00 - 18:00, 20:00 - 22:00",
+        offPeak:  "22:00 - 06:00",
+    };
+
     const [tariff, setTariff] = useState({
         rates: {
             peak: 0,
@@ -19,12 +29,11 @@ export default function TariffsPage() {
             offPeak: 0,
             demand: 0,
         },
-        times: {
-            peak: "",
-            standard: "",
-            offPeak: "",
-        }
+        times: { ...DEFAULT_TIMES },
     });
+    // Track whether the times in the form came from the DB or from defaults —
+    // surfaces a "using defaults" banner so the user knows to hit Save.
+    const [timesAreDefaults, setTimesAreDefaults] = useState(true);
 
     const token = () => localStorage.getItem('token') || '';
 
@@ -59,6 +68,9 @@ export default function TariffsPage() {
                     headers: { Authorization: `Bearer ${token()}` }
                 });
                 const data = await res.json();
+                // If any time field is filled in the DB, use the DB values verbatim.
+                // Otherwise pre-fill SA defaults and flag the form as "unsaved defaults".
+                const hasAnySavedTime = !!(data.peak_times || data.standard_times || data.offpeak_times);
                 setTariff({
                     rates: {
                         peak:     Number(data.tariff_peak)     || 0,
@@ -66,12 +78,13 @@ export default function TariffsPage() {
                         offPeak:  Number(data.tariff_offpeak)  || 0,
                         demand:   Number(data.tariff_demand)   || 0,
                     },
-                    times: {
-                        peak:     data.peak_times     || "",
-                        standard: data.standard_times || "",
-                        offPeak:  data.offpeak_times  || "",
-                    }
+                    times: hasAnySavedTime ? {
+                        peak:     data.peak_times     || DEFAULT_TIMES.peak,
+                        standard: data.standard_times || DEFAULT_TIMES.standard,
+                        offPeak:  data.offpeak_times  || DEFAULT_TIMES.offPeak,
+                    } : { ...DEFAULT_TIMES },
                 });
+                setTimesAreDefaults(!hasAnySavedTime);
             } catch (err) {
                 console.error("Failed to load tariff settings", err);
             }
@@ -98,12 +111,16 @@ export default function TariffsPage() {
                     tariff_standard: tariff.rates.standard || null,
                     tariff_offpeak:  tariff.rates.offPeak  || null,
                     tariff_demand:   tariff.rates.demand   || null,
-                    peak_times:      tariff.times.peak     || null,
-                    standard_times:  tariff.times.standard || null,
-                    offpeak_times:   tariff.times.offPeak  || null,
+                    // Times: always send what's in the form. They're guaranteed
+                    // to be populated (DB value or SA default), so the AI engine
+                    // always has a valid TOU schedule to reason about.
+                    peak_times:      tariff.times.peak     || DEFAULT_TIMES.peak,
+                    standard_times:  tariff.times.standard || DEFAULT_TIMES.standard,
+                    offpeak_times:   tariff.times.offPeak  || DEFAULT_TIMES.offPeak,
                 })
             });
             setSuccess(true);
+            setTimesAreDefaults(false); // user has explicitly persisted them now
             setTimeout(() => setSuccess(false), 3000);
         } catch (err) {
             console.error("Failed to save settings", err);
@@ -220,7 +237,16 @@ export default function TariffsPage() {
                                 <Zap className="h-5 w-5 text-blue-400" />
                                 Time Schedules
                             </h3>
-                            <p className="text-sm text-slate-400 mb-6">Define the active hours for each tariff period (e.g. &quot;Weekdays 07:00-10:00, 18:00-20:00&quot;).</p>
+                            <p className="text-sm text-slate-400 mb-3">Define the active hours for each tariff period (e.g. &quot;Weekdays 07:00-10:00, 18:00-20:00&quot;).</p>
+                            {timesAreDefaults && (
+                                <div className="mb-5 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-start gap-2">
+                                    <span className="font-semibold uppercase tracking-wide text-[10px] bg-amber-500/20 px-1.5 py-0.5 rounded text-amber-300 shrink-0 mt-0.5">UNSAVED</span>
+                                    <span>
+                                        These times are pre-filled with the standard SA Megaflex schedule but have <strong>not been saved</strong> for this site yet.
+                                        Edit them if your utility uses different hours, then click <strong>Save Configuration</strong> below so the AI recommendations engine uses them.
+                                    </span>
+                                </div>
+                            )}
                             <div className="grid gap-6 md:grid-cols-3">
                                 <div>
                                     <label className="block text-sm font-medium text-slate-300 mb-1">Peak Times</label>
