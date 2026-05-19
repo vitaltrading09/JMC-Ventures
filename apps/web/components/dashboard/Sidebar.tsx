@@ -20,6 +20,7 @@ import {
     LogOut,
     AlertCircle,
     Bell,
+    Network,
 } from "lucide-react";
 
 import { NotificationBell } from "./NotificationBell";
@@ -63,6 +64,7 @@ export function Sidebar() {
     const links = [
         { name: "Overview",        href: "/dashboard",                  icon: LayoutDashboard },
         { name: "Sites",           href: "/dashboard/sites",            icon: Building2 },
+        { name: "SLD",             href: "/dashboard/sld",              icon: Network },
         { name: "Alerts",          href: "/dashboard/alerts",           icon: Bell },
         { name: "Recommendations", href: "/dashboard/recommendations",  icon: Lightbulb },
         { name: "Analytics",       href: "/dashboard/analytics",        icon: LineChart },

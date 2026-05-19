@@ -21,6 +21,9 @@
         "react": "^18",
         "react-dom": "^18",
         "react-markdown": "^10.1.0",
+        "react-pdf": "^9.2.1",
+        "pdfjs-dist": "^4.8.69",
+        "reactflow": "^11.11.4",
         "recharts": "^2.12.0",
         "tailwind-merge": "^2.2.1"
     },

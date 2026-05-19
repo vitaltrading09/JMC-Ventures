@@ -101,6 +101,20 @@ const pool = new Pool({
             CREATE INDEX IF NOT EXISTS idx_recommendations_meter ON recommendations (meter_id, status, created_at DESC) WHERE meter_id IS NOT NULL;
         `);
 
+        // Single-line diagrams — one per site. Layout is a free-form JSONB
+        // shape: { nodes: [{id, type, position:{x,y}, data:{...}}], edges: [...] }.
+        // background_pdf_path points at a file on the ingestion-service uploads dir.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS site_diagrams (
+                site_id             UUID PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+                layout              JSONB NOT NULL DEFAULT '{"nodes":[],"edges":[]}'::jsonb,
+                background_pdf_path TEXT,
+                background_width    INTEGER,
+                background_height   INTEGER,
+                updated_at          TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+
         // Leads table
         await client.query(`
             CREATE TABLE IF NOT EXISTS leads (
@@ -1639,6 +1653,191 @@ app.patch('/leads/:id', authenticateToken, async (req: any, res) => {
         res.json(result.rows[0]);
     } catch (err) {
         res.status(500).json({ error: 'Error updating lead' });
+    } finally {
+        client.release();
+    }
+});
+
+// ── Single-Line Diagram (SLD) endpoints ──────────────────────────────────────
+// Layout JSONB stores nodes + edges. PDF backdrops are persisted to disk under
+// uploads/sld-pdfs/<site>.pdf and streamed via auth-protected endpoint.
+
+const SLD_PDF_DIR = path.join(__dirname, '..', 'uploads', 'sld-pdfs');
+fs.mkdirSync(SLD_PDF_DIR, { recursive: true });
+
+const sldUpload = multer({
+    storage: multer.diskStorage({
+        destination: (_req, _file, cb) => cb(null, SLD_PDF_DIR),
+        filename:    (req: any, _file, cb) => cb(null, `${req.params.id}.pdf`),
+    }),
+    fileFilter: (_req, file, cb) => {
+        if (file.mimetype !== 'application/pdf') {
+            return cb(new Error('Only PDF files accepted'));
+        }
+        cb(null, true);
+    },
+    limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB ceiling — SLDs are usually <5 MB
+});
+
+async function assertSiteAccess(client: any, siteId: string, tenantId: string, role: string) {
+    if (role === 'super_admin') return true;
+    const check = await client.query(
+        `SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`,
+        [siteId, tenantId]
+    );
+    return check.rows.length > 0;
+}
+
+// GET diagram (layout + has-PDF flag)
+app.get('/sites/:id/diagram', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        if (!await assertSiteAccess(client, id, tenantId, role)) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+        const result = await client.query(
+            `SELECT layout, background_pdf_path, background_width, background_height, updated_at
+             FROM site_diagrams WHERE site_id = $1`,
+            [id]
+        );
+        if (result.rows.length === 0) {
+            // Initialise empty diagram on first read so PUT doesn't need a separate create call
+            await client.query(
+                `INSERT INTO site_diagrams (site_id) VALUES ($1) ON CONFLICT DO NOTHING`,
+                [id]
+            );
+            return res.json({ layout: { nodes: [], edges: [] }, has_pdf: false, updated_at: null });
+        }
+        const row = result.rows[0];
+        res.json({
+            layout: row.layout,
+            has_pdf: !!row.background_pdf_path,
+            background_width:  row.background_width,
+            background_height: row.background_height,
+            updated_at: row.updated_at,
+        });
+    } catch (err) {
+        console.error('Get diagram error:', err);
+        res.status(500).json({ error: 'Failed to fetch diagram' });
+    } finally {
+        client.release();
+    }
+});
+
+// PUT diagram layout
+app.put('/sites/:id/diagram', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const { layout, background_width, background_height } = req.body;
+    if (!layout || typeof layout !== 'object' || !Array.isArray(layout.nodes)) {
+        return res.status(400).json({ error: 'layout must be { nodes: [], edges: [] }' });
+    }
+    const client = await pool.connect();
+    try {
+        if (!await assertSiteAccess(client, id, tenantId, role)) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+        await client.query(`
+            INSERT INTO site_diagrams (site_id, layout, background_width, background_height, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            ON CONFLICT (site_id) DO UPDATE SET
+                layout            = EXCLUDED.layout,
+                background_width  = COALESCE(EXCLUDED.background_width,  site_diagrams.background_width),
+                background_height = COALESCE(EXCLUDED.background_height, site_diagrams.background_height),
+                updated_at        = NOW()
+        `, [id, JSON.stringify(layout), background_width ?? null, background_height ?? null]);
+        res.json({ ok: true });
+    } catch (err) {
+        console.error('Save diagram error:', err);
+        res.status(500).json({ error: 'Failed to save diagram' });
+    } finally {
+        client.release();
+    }
+});
+
+// POST upload PDF backdrop
+app.post('/sites/:id/diagram/pdf', authenticateToken, sldUpload.single('pdf') as any, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    if (!req.file) return res.status(400).json({ error: 'No PDF file uploaded' });
+    const client = await pool.connect();
+    try {
+        if (!await assertSiteAccess(client, id, tenantId, role)) {
+            try { fs.unlinkSync(req.file.path); } catch {}
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+        const relPath = path.relative(path.join(__dirname, '..'), req.file.path);
+        await client.query(`
+            INSERT INTO site_diagrams (site_id, background_pdf_path, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (site_id) DO UPDATE SET
+                background_pdf_path = EXCLUDED.background_pdf_path,
+                updated_at = NOW()
+        `, [id, relPath]);
+        res.json({ ok: true, size: req.file.size });
+    } catch (err) {
+        console.error('Upload SLD PDF error:', err);
+        res.status(500).json({ error: 'Failed to save PDF' });
+    } finally {
+        client.release();
+    }
+});
+
+// GET PDF stream (auth-checked; PDFs contain client electrical info — never public)
+app.get('/sites/:id/diagram/pdf', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        if (!await assertSiteAccess(client, id, tenantId, role)) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+        const result = await client.query(
+            `SELECT background_pdf_path FROM site_diagrams WHERE site_id = $1`,
+            [id]
+        );
+        const relPath = result.rows[0]?.background_pdf_path;
+        if (!relPath) return res.status(404).json({ error: 'No PDF uploaded for this site' });
+        const absPath = path.join(__dirname, '..', relPath);
+        if (!fs.existsSync(absPath)) return res.status(404).json({ error: 'PDF file missing on disk' });
+        res.setHeader('Content-Type', 'application/pdf');
+        fs.createReadStream(absPath).pipe(res);
+    } catch (err) {
+        console.error('Serve SLD PDF error:', err);
+        res.status(500).json({ error: 'Failed to serve PDF' });
+    } finally {
+        client.release();
+    }
+});
+
+// DELETE PDF backdrop
+app.delete('/sites/:id/diagram/pdf', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        if (!await assertSiteAccess(client, id, tenantId, role)) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+        const result = await client.query(
+            `SELECT background_pdf_path FROM site_diagrams WHERE site_id = $1`,
+            [id]
+        );
+        const relPath = result.rows[0]?.background_pdf_path;
+        if (relPath) {
+            const absPath = path.join(__dirname, '..', relPath);
+            try { fs.unlinkSync(absPath); } catch {}
+        }
+        await client.query(
+            `UPDATE site_diagrams SET background_pdf_path = NULL, background_width = NULL, background_height = NULL, updated_at = NOW() WHERE site_id = $1`,
+            [id]
+        );
+        res.json({ ok: true });
+    } catch (err) {
+        console.error('Delete SLD PDF error:', err);
+        res.status(500).json({ error: 'Failed to delete PDF' });
     } finally {
         client.release();
     }
