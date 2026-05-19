@@ -24,9 +24,11 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // 3. CORS Configuration (Restrict to Frontend)
+// PATCH is required by meter pause toggle, meter load profile, and lead status updates.
+// Without it the browser blocks the request before it even hits the gateway ("Failed to fetch").
 const corsOptions = {
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
 };
