@@ -70,7 +70,7 @@ ${context ? `\n=== CLIENT LIVE DATA (DO NOT MENTION YOU ARE READING THIS) ===\n$
         ];
 
         const completion = await openai.chat.completions.create({
-            model: 'gpt-4o-mini',
+            model: 'gpt-5.4-nano',
             messages: chatMessages,
             max_tokens: 600,
             temperature: 0.4,
