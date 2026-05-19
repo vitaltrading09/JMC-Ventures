@@ -4,6 +4,10 @@ Documentation=https://github.com/vitaltrading09/JMC-Ventures
 After=network-online.target docker.service
 Wants=network-online.target
 Requires=docker.service
+# Rate-limit restarts: max 5 in 60s, otherwise stop trying (prevents tight loops).
+# Must live in [Unit] section — [Service] is ignored by systemd.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -16,11 +20,9 @@ EnvironmentFile=/home/ubuntu/PowerGuard/services/auth-service/.env
 # `exec` hands the PID to npx so systemd tracks the right process.
 ExecStart=/bin/bash -lc 'exec npx tsx services/auth-service/src/main.ts'
 
-# Auto-restart on crash, with a 60s window of max 5 retries to prevent tight loops.
+# Auto-restart on crash, with a 5s backoff.
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # Resource limits — auth-service is tiny, 256MB is plenty.
 MemoryMax=256M

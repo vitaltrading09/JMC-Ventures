@@ -53,10 +53,29 @@ if ! command -v node >/dev/null; then
 fi
 echo "  ✓ Node $(node -v) available"
 
-# ── 2. Stop legacy nohup processes ─────────────────────────────────────────
+# ── 2. Stop legacy supervisors (nohup, PM2) ────────────────────────────────
 echo ""
-echo "▶ Stopping any legacy nohup processes…"
+echo "▶ Stopping any legacy supervisors…"
+
+# PM2 — previously used to supervise these services. We're replacing it with
+# systemd, so stop everything PM2 was managing and disable its boot startup.
+if command -v pm2 >/dev/null 2>&1; then
+    if sudo -u ubuntu pm2 list 2>/dev/null | grep -qE "^│ *[0-9]+ *│"; then
+        echo "  → PM2 detected with active apps — stopping and removing…"
+        sudo -u ubuntu pm2 stop all 2>/dev/null || true
+        sudo -u ubuntu pm2 delete all 2>/dev/null || true
+    fi
+    # Remove pm2-ubuntu.service if PM2 had registered itself as a system supervisor
+    if systemctl list-unit-files 2>/dev/null | grep -q "^pm2-ubuntu.service"; then
+        pm2 unstartup systemd -u ubuntu --hp /home/ubuntu 2>/dev/null || true
+    fi
+    sudo -u ubuntu pm2 kill 2>/dev/null || true
+    echo "  ✓ PM2 retired"
+fi
+
+# Legacy nohup processes (compiled dist/ or tsx source)
 pkill -f "npx tsx services/" 2>/dev/null || true
+pkill -f "PowerGuard/services" 2>/dev/null || true
 pkill -f "next-server"       2>/dev/null || true
 pkill -f "next start"        2>/dev/null || true
 sleep 2
@@ -104,9 +123,16 @@ chmod +x "$HEALTHCHECK"
 touch "$HEALTHCHECK_LOG"
 chmod 644 "$HEALTHCHECK_LOG"
 
-# Add line to root's crontab if not already present
+# Add line to root's crontab if not already present.
+# Subshell + `|| true` is essential: grep returns 1 when nothing matches
+# (which trips `set -e`), and `crontab -l` returns 1 on an empty crontab.
 CRON_LINE="* * * * * $HEALTHCHECK >> $HEALTHCHECK_LOG 2>&1"
-(crontab -l 2>/dev/null | grep -vF "$HEALTHCHECK"; echo "$CRON_LINE") | crontab -
+EXISTING_CRON="$(crontab -l 2>/dev/null || true)"
+FILTERED="$(echo "$EXISTING_CRON" | grep -vF "powerguard" || true)"
+{
+    [ -n "$FILTERED" ] && echo "$FILTERED"
+    echo "$CRON_LINE"
+} | crontab -
 echo "  ✓ Cron installed: runs every minute, logs to $HEALTHCHECK_LOG"
 
 # ── 8. Logrotate for the healthcheck log ──────────────────────────────────

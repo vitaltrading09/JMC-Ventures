@@ -3,6 +3,8 @@ Description=PowerGuard API Gateway (reverse proxy, port 8081)
 Documentation=https://github.com/vitaltrading09/JMC-Ventures
 After=network-online.target powerguard-auth.service powerguard-ingestion.service
 Wants=network-online.target powerguard-auth.service powerguard-ingestion.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -15,8 +17,6 @@ ExecStart=/bin/bash -lc 'exec npx tsx services/api-gateway/src/main.ts'
 
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 MemoryMax=256M
 TasksMax=200
