@@ -33,10 +33,13 @@ const pool = new Pool({
 (async () => {
     const client = await pool.connect();
     try {
-        // Meter active/pause flag
+        // Meter active/pause flag + load profile (what the meter actually measures)
         await client.query(`
             ALTER TABLE meters
-            ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+            ADD COLUMN IF NOT EXISTS is_active        BOOLEAN NOT NULL DEFAULT true,
+            ADD COLUMN IF NOT EXISTS load_types       TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+            ADD COLUMN IF NOT EXISTS load_description TEXT,
+            ADD COLUMN IF NOT EXISTS site_type        VARCHAR(50);
         `);
 
         // Energy score weight columns (added to existing site_settings)
@@ -970,6 +973,53 @@ app.delete('/meters/:id', authenticateToken, async (req: any, res) => {
     } catch (err) {
         console.error('Delete meter error:', err);
         res.status(500).json({ error: 'Failed to delete meter' });
+    } finally {
+        client.release();
+    }
+});
+
+// Update meter load profile (what the meter actually measures —
+// powers the AI recommendations so it stops guessing what loads exist)
+app.patch('/meters/:id/profile', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const { load_types, load_description, site_type, name } = req.body;
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const check = await client.query(
+                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
+                 WHERE m.id = $1 AND s.tenant_id = $2`,
+                [id, tenantId]
+            );
+            if (check.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
+        }
+        // Validate load_types: must be an array of strings if provided
+        if (load_types !== undefined && load_types !== null) {
+            if (!Array.isArray(load_types) || load_types.some(t => typeof t !== 'string')) {
+                return res.status(400).json({ error: 'load_types must be an array of strings' });
+            }
+        }
+        const result = await client.query(`
+            UPDATE meters SET
+                load_types       = COALESCE($1, load_types),
+                load_description = COALESCE($2, load_description),
+                site_type        = COALESCE($3, site_type),
+                name             = COALESCE($4, name)
+            WHERE id = $5
+            RETURNING id, name, load_types, load_description, site_type
+        `, [
+            load_types ?? null,
+            load_description ?? null,
+            site_type ?? null,
+            name ?? null,
+            id,
+        ]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Meter not found' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('Update meter profile error:', err);
+        res.status(500).json({ error: 'Failed to update meter profile' });
     } finally {
         client.release();
     }

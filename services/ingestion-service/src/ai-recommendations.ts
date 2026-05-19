@@ -52,6 +52,8 @@ export async function generateAndStoreSiteRecommendations(
     const client = await pool.connect();
     let tariffContext = 'No tariff data configured.';
     let activeAlerts: { type: string; message: string }[] = [];
+    let loadProfile  = 'No load profile declared by site owner.';
+    let declaredSiteType: string | null = null;
     try {
         const settingsRes = await client.query(
             `SELECT tariff_peak, tariff_standard, tariff_offpeak, peak_times, offpeak_times
@@ -75,6 +77,31 @@ export async function generateAndStoreSiteRecommendations(
             [tenantId]
         );
         activeAlerts = alertRes.rows;
+
+        // Load profile — what each active meter on this site actually measures.
+        // This stops Claude from inventing/guessing about motors, VFDs, lighting type, etc.
+        const profileRes = await client.query(
+            `SELECT name, load_types, load_description, site_type
+             FROM meters
+             WHERE site_id = $1 AND is_active = true
+             ORDER BY name ASC`,
+            [siteId]
+        );
+        if (profileRes.rows.length > 0) {
+            const declaredTypes = profileRes.rows
+                .map(m => m.site_type)
+                .filter(Boolean);
+            declaredSiteType = declaredTypes[0] || null;
+
+            const lines = profileRes.rows.map(m => {
+                const types = (m.load_types && m.load_types.length > 0)
+                    ? m.load_types.join(', ')
+                    : 'not specified';
+                const desc = m.load_description ? ` (notes: ${m.load_description})` : '';
+                return `  • ${m.name}: ${types}${desc}`;
+            });
+            loadProfile = lines.join('\n');
+        }
     } finally {
         client.release();
     }
@@ -87,7 +114,11 @@ export async function generateAndStoreSiteRecommendations(
 Analyse the data below and return ONLY a valid JSON array — no prose, no markdown fences, just raw JSON.
 
 SITE: ${siteName} | ${siteAddress}
+SITE TYPE: ${declaredSiteType || 'Not declared'}
 TARIFF TYPE: ${tariffType} (SA context: Megaflex = large demand tariff, TOU = time-of-use, FLAT = single rate)
+
+DECLARED LOADS PER METER (this is what's physically connected — do NOT invent loads that aren't listed):
+${loadProfile}
 
 ENERGY SCORE: ${totalScore}/100
   Power Factor component:    ${components.pf}/100
@@ -118,6 +149,8 @@ INSTRUCTIONS:
 - Apply NRS 048-2, SANS 10142, EN 50160 where relevant.
 - If insufficient data for a recommendation type, omit it.
 - Priority 1 = highest urgency / best ROI.
+- ONLY recommend retrofits/upgrades for loads that appear in DECLARED LOADS. Do not suggest VFD installation if no DOL motors are listed, do not suggest LED retrofits if lighting is already LED, etc. If a load type is not declared, do not assume it exists.
+- If load profile is incomplete or "not specified" for the main meter, flag this as an ENERGY_AUDIT recommendation so the site owner declares loads — better data → better recommendations.
 
 JSON schema for each item:
 {

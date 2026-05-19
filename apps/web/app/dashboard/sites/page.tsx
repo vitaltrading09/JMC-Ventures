@@ -8,7 +8,7 @@ import {
     Plus, Search, MapPin, X, Loader2, Server,
     ChevronDown, ChevronRight, Trash2, BarChart2,
     Activity, Clock, ArrowRight, AlertTriangle,
-    Copy, Check, Wifi, PauseCircle, PlayCircle
+    Copy, Check, Wifi, PauseCircle, PlayCircle, Settings, Save, Tag
 } from "lucide-react";
 
 interface Site {
@@ -26,6 +26,9 @@ interface Meter {
     model: string;
     site_id: string;
     is_active: boolean;
+    load_types?: string[] | null;
+    load_description?: string | null;
+    site_type?: string | null;
     latest_reading?: {
         power_active_total?: number;
         voltage_a?: number;
@@ -34,6 +37,98 @@ interface Meter {
         time: string;
     };
 }
+
+// Load type catalog — what each meter physically measures.
+// The AI uses these to scope recommendations (no more guessing about VFDs / LED retrofits).
+const LOAD_TYPE_CATALOG: { category: string; options: { value: string; label: string }[] }[] = [
+    {
+        category: "Lighting",
+        options: [
+            { value: "lighting_led",          label: "LED Lighting" },
+            { value: "lighting_fluorescent",  label: "Fluorescent / T8 / T5" },
+            { value: "lighting_hid",          label: "HID / Metal Halide / Sodium" },
+            { value: "lighting_incandescent", label: "Incandescent / Halogen" },
+        ],
+    },
+    {
+        category: "HVAC",
+        options: [
+            { value: "hvac_split_ac",   label: "Split Air Conditioners" },
+            { value: "hvac_chiller",    label: "Chiller Plant" },
+            { value: "hvac_heatpump",   label: "Heat Pump" },
+            { value: "hvac_ahu",        label: "AHU / Ventilation Fans" },
+        ],
+    },
+    {
+        category: "Motors",
+        options: [
+            { value: "motors_dol",       label: "Direct-Online (DOL) Motors" },
+            { value: "motors_vfd",       label: "Motors with VFD" },
+            { value: "motors_softstart", label: "Soft-Starter Motors" },
+        ],
+    },
+    {
+        category: "Refrigeration",
+        options: [
+            { value: "refrig_displays", label: "Refrigerated Display Cases" },
+            { value: "refrig_coldroom", label: "Cold Rooms (0–8 °C)" },
+            { value: "refrig_freezer",  label: "Freezer Rooms (< -18 °C)" },
+            { value: "refrig_icemakers", label: "Ice Makers" },
+        ],
+    },
+    {
+        category: "Compressed Air & Pumps",
+        options: [
+            { value: "compressor_air",        label: "Air Compressors" },
+            { value: "compressor_refrigeration", label: "Refrigeration Compressors" },
+            { value: "pumps_water",           label: "Water Pumps" },
+            { value: "pumps_process",         label: "Process Pumps" },
+        ],
+    },
+    {
+        category: "Process / Industrial",
+        options: [
+            { value: "ovens_baking",     label: "Bakery / Pizza Ovens" },
+            { value: "ovens_industrial", label: "Industrial Ovens / Furnaces" },
+            { value: "welding",          label: "Welding Equipment" },
+            { value: "conveyors",        label: "Conveyors" },
+            { value: "machine_tools",    label: "CNC / Machine Tools" },
+        ],
+    },
+    {
+        category: "IT & Office",
+        options: [
+            { value: "it_servers",       label: "Servers / Data Room" },
+            { value: "office_equipment", label: "Office Equipment (PCs, printers)" },
+            { value: "pos_systems",      label: "POS / Till Systems" },
+        ],
+    },
+    {
+        category: "Other",
+        options: [
+            { value: "ev_charging",     label: "EV Charging" },
+            { value: "solar_pv",        label: "Solar PV Generation" },
+            { value: "battery_storage", label: "Battery Storage" },
+            { value: "water_heating",   label: "Electric Water Heating / Geysers" },
+            { value: "kitchen_equip",   label: "Commercial Kitchen Equipment" },
+            { value: "general_loads",   label: "General Plug Loads / Sub-mains" },
+        ],
+    },
+];
+
+const SITE_TYPE_OPTIONS = [
+    "Retail / Supermarket",
+    "Office Building",
+    "Warehouse / Distribution",
+    "Industrial / Manufacturing",
+    "Cold Storage",
+    "Restaurant / Food Service",
+    "Hotel / Hospitality",
+    "Hospital / Medical",
+    "School / Educational",
+    "Mixed Use",
+    "Other",
+];
 
 export default function SitesPage() {
     const router = useRouter();
@@ -54,6 +149,61 @@ export default function SitesPage() {
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [togglingId, setTogglingId] = useState<string | null>(null);
     const [copied, setCopied] = useState<string | null>(null);
+
+    // Meter load-profile modal state
+    const [editingMeter, setEditingMeter] = useState<Meter | null>(null);
+    const [profileForm, setProfileForm] = useState<{
+        load_types: string[];
+        load_description: string;
+        site_type: string;
+    }>({ load_types: [], load_description: "", site_type: "" });
+    const [savingProfile, setSavingProfile] = useState(false);
+
+    const openMeterSettings = (meter: Meter) => {
+        setEditingMeter(meter);
+        setProfileForm({
+            load_types: meter.load_types ?? [],
+            load_description: meter.load_description ?? "",
+            site_type: meter.site_type ?? "",
+        });
+        setError("");
+    };
+
+    const toggleLoadType = (value: string) => {
+        setProfileForm(f => ({
+            ...f,
+            load_types: f.load_types.includes(value)
+                ? f.load_types.filter(t => t !== value)
+                : [...f.load_types, value],
+        }));
+    };
+
+    const handleSaveProfile = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!editingMeter) return;
+        setSavingProfile(true); setError("");
+        try {
+            const res = await fetch(
+                `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${editingMeter.id}/profile`,
+                {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+                    body: JSON.stringify({
+                        load_types: profileForm.load_types,
+                        load_description: profileForm.load_description || null,
+                        site_type: profileForm.site_type || null,
+                    }),
+                }
+            );
+            if (!res.ok) throw new Error(await res.text());
+            setEditingMeter(null);
+            fetchData();
+        } catch (err: any) {
+            setError(err.message || "Failed to save load profile");
+        } finally {
+            setSavingProfile(false);
+        }
+    };
 
     const copyToClipboard = (text: string, label: string) => {
         navigator.clipboard.writeText(text).then(() => {
@@ -298,10 +448,20 @@ export default function SitesPage() {
                                                             <Activity className="w-4 h-4" />
                                                         </div>
                                                         <div className="flex-1 min-w-0">
-                                                            <div className="flex items-center gap-2">
+                                                            <div className="flex items-center gap-2 flex-wrap">
                                                                 <p className="text-sm font-medium text-white truncate">{meter.name}</p>
                                                                 {!meter.is_active && (
                                                                     <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide bg-amber-500/15 text-amber-400 border border-amber-500/20">Paused</span>
+                                                                )}
+                                                                {(meter.load_types && meter.load_types.length > 0) ? (
+                                                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-medium uppercase tracking-wide bg-blue-500/10 text-blue-300 border border-blue-500/20 flex items-center gap-1">
+                                                                        <Tag className="w-2.5 h-2.5" />
+                                                                        {meter.load_types.length} load{meter.load_types.length !== 1 ? 's' : ''} declared
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="px-1.5 py-0.5 rounded text-[9px] font-medium uppercase tracking-wide bg-slate-700/40 text-slate-400 border border-slate-700">
+                                                                        loads not declared
+                                                                    </span>
                                                                 )}
                                                             </div>
                                                             <p className="text-xs text-slate-500">{meter.model} · SN: {meter.serial_number}</p>
@@ -354,6 +514,12 @@ export default function SitesPage() {
                                                                 className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors">
                                                                 <BarChart2 className="w-3.5 h-3.5" /> Chart
                                                             </Link>
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); openMeterSettings(meter); }}
+                                                                title="Configure loads measured by this meter"
+                                                                className="p-1.5 text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 rounded-lg transition-colors">
+                                                                <Settings className="w-3.5 h-3.5" />
+                                                            </button>
                                                             <button
                                                                 onClick={(e) => handleToggleMeter(e, meter)}
                                                                 disabled={togglingId === meter.id}
@@ -475,6 +641,119 @@ export default function SitesPage() {
                                 Done
                             </button>
                         </div>
+                    </Card>
+                </div>
+            )}
+
+            {/* Meter Load Profile Modal — declare what this meter measures so the AI knows your site */}
+            {editingMeter && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+                    <Card className="w-full max-w-2xl p-6 bg-slate-900 border-slate-800 animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 rounded-lg bg-blue-500/10">
+                                    <Tag className="w-5 h-5 text-blue-400" />
+                                </div>
+                                <div>
+                                    <h2 className="text-xl font-semibold text-white">Configure Loads — {editingMeter.name}</h2>
+                                    <p className="text-xs text-slate-400 mt-0.5">
+                                        Tell the AI exactly what this meter measures — no more guessing about VFDs, lighting type, or refrigeration.
+                                    </p>
+                                </div>
+                            </div>
+                            <button onClick={() => setEditingMeter(null)} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
+                        </div>
+                        {error && <div className="mt-3 p-3 rounded bg-red-500/10 border border-red-500/20 text-red-400 text-sm">{error}</div>}
+
+                        <form onSubmit={handleSaveProfile} className="mt-4 space-y-5">
+                            {/* Site type — overall classification */}
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-2">Site Type</label>
+                                <select
+                                    value={profileForm.site_type}
+                                    onChange={e => setProfileForm(f => ({ ...f, site_type: e.target.value }))}
+                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-sm"
+                                >
+                                    <option value="">— Select site type —</option>
+                                    {SITE_TYPE_OPTIONS.map(s => (
+                                        <option key={s} value={s}>{s}</option>
+                                    ))}
+                                </select>
+                                <p className="text-[11px] text-slate-500 mt-1">Helps the AI benchmark your consumption against similar facilities.</p>
+                            </div>
+
+                            {/* Load type checklist — grouped by category */}
+                            <div>
+                                <div className="flex items-center justify-between mb-2">
+                                    <label className="block text-sm font-medium text-slate-300">Loads Measured by This Meter</label>
+                                    <span className="text-xs text-slate-500">
+                                        {profileForm.load_types.length} selected
+                                    </span>
+                                </div>
+                                <div className="space-y-3">
+                                    {LOAD_TYPE_CATALOG.map(group => (
+                                        <div key={group.category} className="rounded-lg bg-slate-950 border border-slate-800 p-3">
+                                            <p className="text-xs font-semibold text-blue-300 uppercase tracking-wider mb-2">{group.category}</p>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                                {group.options.map(opt => {
+                                                    const checked = profileForm.load_types.includes(opt.value);
+                                                    return (
+                                                        <label
+                                                            key={opt.value}
+                                                            className={`flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer text-xs transition-colors ${
+                                                                checked
+                                                                    ? 'bg-blue-500/15 border border-blue-500/30 text-blue-200'
+                                                                    : 'bg-slate-900 border border-slate-800 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+                                                            }`}
+                                                        >
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={checked}
+                                                                onChange={() => toggleLoadType(opt.value)}
+                                                                className="w-3.5 h-3.5 rounded accent-blue-500"
+                                                            />
+                                                            <span className="truncate">{opt.label}</span>
+                                                        </label>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Free-text description for anything not in the catalog */}
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-2">Additional Notes</label>
+                                <textarea
+                                    value={profileForm.load_description}
+                                    onChange={e => setProfileForm(f => ({ ...f, load_description: e.target.value }))}
+                                    rows={3}
+                                    placeholder="e.g. 'Main incomer feeds 2 × 11 kW DOL motors driving conveyors, 6 × 4 kW VFD-controlled fans, plus 80 kW of LED lighting. Bakery oven runs 04:00–11:00.'"
+                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-none"
+                                />
+                                <p className="text-[11px] text-slate-500 mt-1">
+                                    Anything not in the catalog above — load sizes, operating hours, recent changes.
+                                    The more you tell the AI, the more specific the recommendations.
+                                </p>
+                            </div>
+
+                            <div className="flex justify-end gap-3 pt-2 border-t border-slate-800">
+                                <button type="button" onClick={() => setEditingMeter(null)} className="px-4 py-2 text-sm text-slate-400 hover:text-white">
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={savingProfile}
+                                    className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-sm font-medium"
+                                >
+                                    {savingProfile
+                                        ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</>
+                                        : <><Save className="h-4 w-4" /> Save Load Profile</>
+                                    }
+                                </button>
+                            </div>
+                        </form>
                     </Card>
                 </div>
             )}
