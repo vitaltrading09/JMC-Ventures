@@ -65,9 +65,7 @@ app.use('/auth', createProxyMiddleware({
     pathRewrite: {
         '^/auth': '', // Remove /auth prefix when forwarding
     },
-    on: {
-        proxyRes: stripUpstreamCors,
-    },
+    onProxyRes: stripUpstreamCors,
 }));
 
 // Proxy to Ingestion Service (if needed for manual trigger)
@@ -77,9 +75,7 @@ app.use('/ingestion', createProxyMiddleware({
     pathRewrite: {
         '^/ingestion': '', // Remove /ingestion prefix when forwarding
     },
-    on: {
-        proxyRes: stripUpstreamCors,
-    },
+    onProxyRes: stripUpstreamCors,
 }));
 
 app.listen(port, () => {
