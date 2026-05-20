@@ -105,19 +105,15 @@ export default function DashboardPage() {
     const [refreshedAt,         setRefreshedAt]         = useState<Date>(new Date());
     const [selectedChartMeter,  setSelectedChartMeter]  = useState<string | null>("all");
 
-    const getToken = () =>
-        typeof window !== "undefined" ? (localStorage.getItem("token") ?? "") : "";
-
     // Fetch chart data — "all" fetches site-wide aggregate, otherwise per-meter
     const fetchChartData = useCallback(async (meterId: string) => {
         setChartLoading(true);
         try {
-            const headers = { Authorization: `Bearer ${getToken()}` };
             const from = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
             const url = meterId === "all"
                 ? `${API}/ingestion/readings/aggregate?from=${from}&limit=500`
                 : `${API}/ingestion/meters/${meterId}/readings?from=${from}&limit=500`;
-            const res = await fetch(url, { headers });
+            const res = await fetch(url, { credentials: 'include' });
             if (res.ok) {
                 const readings: Reading[] = await res.json();
                 setChartData(
@@ -140,12 +136,10 @@ export default function DashboardPage() {
 
     const fetchDashboard = useCallback(async () => {
         try {
-            const headers = { Authorization: `Bearer ${getToken()}` };
-
             const [metersRes, alertsRes, scoresRes] = await Promise.all([
-                fetch(`${API}/ingestion/meters`,       { headers }),
-                fetch(`${API}/ingestion/alerts`,       { headers }),
-                fetch(`${API}/ingestion/sites/scores`, { headers }),
+                fetch(`${API}/ingestion/meters`,       { credentials: 'include' }),
+                fetch(`${API}/ingestion/alerts`,       { credentials: 'include' }),
+                fetch(`${API}/ingestion/sites/scores`, { credentials: 'include' }),
             ]);
 
             if (metersRes.status === 401) { window.location.href = "/login"; return; }

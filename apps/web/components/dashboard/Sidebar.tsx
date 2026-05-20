@@ -44,13 +44,17 @@ export function Sidebar() {
         } catch { }
     }, []);
 
-    const handleLogout = () => {
-        // Clear all auth state
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
+    const handleLogout = async () => {
+        // Ask the server to clear the HTTPOnly cookie (JS can't do it directly)
+        try {
+            await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/auth/logout`, {
+                method: 'POST',
+                credentials: 'include',
+            });
+        } catch { /* ignore — redirect anyway */ }
 
-        // Also clear the Next.js middleware cookie
-        document.cookie = 'token=; path=/; max-age=0; SameSite=Strict';
+        // Clear non-sensitive display data
+        localStorage.removeItem('user');
 
         // Force hard navigation to clear React state
         window.location.href = '/login';

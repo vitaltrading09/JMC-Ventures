@@ -28,10 +28,8 @@ export function ChatWidget() {
         if (!isOpen || context) return;
         const fetchContext = async () => {
             try {
-                const token = localStorage.getItem('token');
-                if (!token) return;
                 const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/ai-context`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
+                    credentials: 'include',
                 });
                 if (res.ok) {
                     const data = await res.json();
@@ -66,16 +64,13 @@ export function ChatWidget() {
         try {
             // First, proactively fetch the absolute freshest context so the AI has real-time data
             let currentContext = context;
-            const token = localStorage.getItem('token');
-            if (token) {
-                const ctxRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/ai-context`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                if (ctxRes.ok) {
-                    const ctxData = await ctxRes.json();
-                    currentContext = ctxData.context || '';
-                    setContext(currentContext);
-                }
+            const ctxRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/ai-context`, {
+                credentials: 'include',
+            });
+            if (ctxRes.ok) {
+                const ctxData = await ctxRes.json();
+                currentContext = ctxData.context || '';
+                setContext(currentContext);
             }
 
             const apiMessages = messages.concat(userMsg).map(m => ({ role: m.role, content: m.content }));

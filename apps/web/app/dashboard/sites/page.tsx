@@ -187,7 +187,8 @@ export default function SitesPage() {
                 `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${editingMeter.id}/profile`,
                 {
                     method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         load_types: profileForm.load_types,
                         load_description: profileForm.load_description || null,
@@ -215,14 +216,11 @@ export default function SitesPage() {
     const [siteForm, setSiteForm] = useState({ name: "", address: "", timezone: "Africa/Johannesburg" });
     const [meterForm, setMeterForm] = useState({ name: "", serial_number: "", model: "" });
 
-    const token = () => localStorage.getItem('token') || '';
-
     const fetchData = async () => {
         try {
-            const headers = { Authorization: `Bearer ${token()}` };
             const [sitesRes, metersRes] = await Promise.all([
-                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, { headers }),
-                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, { headers }),
+                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, { credentials: 'include' }),
+                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, { credentials: 'include' }),
             ]);
             if (sitesRes.status === 401 || metersRes.status === 401) {
                 window.location.href = '/login'; return;
@@ -246,7 +244,8 @@ export default function SitesPage() {
         try {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(siteForm),
             });
             if (!res.ok) throw new Error(await res.text());
@@ -267,7 +266,8 @@ export default function SitesPage() {
         try {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ ...meterForm, site_id: selectedSiteId }),
             });
             if (!res.ok) throw new Error(await res.text());
@@ -286,7 +286,7 @@ export default function SitesPage() {
         try {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${meterId}`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${token()}` },
+                credentials: 'include',
             });
             if (!res.ok) throw new Error(await res.text());
             fetchData();
@@ -300,7 +300,7 @@ export default function SitesPage() {
         try {
             const res = await fetch(
                 `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${meter.id}/active`,
-                { method: 'PATCH', headers: { Authorization: `Bearer ${token()}` } }
+                { method: 'PATCH', credentials: 'include' }
             );
             if (!res.ok) throw new Error(await res.text());
             fetchData();
@@ -314,7 +314,7 @@ export default function SitesPage() {
         try {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${siteId}`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${token()}` },
+                credentials: 'include',
             });
             if (!res.ok) throw new Error(await res.text());
             fetchData();

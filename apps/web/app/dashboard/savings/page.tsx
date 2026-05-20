@@ -27,7 +27,6 @@ interface Recommendation {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
-const getToken = () => typeof window !== "undefined" ? (localStorage.getItem("token") ?? "") : "";
 
 const TYPE_COLOUR: Record<string, string> = {
     POWER_FACTOR_CORRECTION: "#facc15",
@@ -63,7 +62,7 @@ export default function SavingsPage() {
     const fetchRecs = useCallback(async () => {
         try {
             const res = await fetch(`${API}/ingestion/recommendations`, {
-                headers: { Authorization: `Bearer ${getToken()}` },
+                credentials: 'include',
             });
             if (res.status === 401) { window.location.href = "/login"; return; }
             const data = await res.json();

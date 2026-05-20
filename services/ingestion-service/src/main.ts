@@ -455,18 +455,31 @@ import jwt from 'jsonwebtoken';
 
 const app = express();
 const port = process.env.PORT || 3002;
-const JWT_SECRET = process.env.JWT_SECRET || 'powerguard-super-secret-key-change-in-prod';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET || JWT_SECRET === 'powerguard-super-secret-key-change-in-prod' || JWT_SECRET.length < 32) {
+    console.error('FATAL: JWT_SECRET is missing, too short, or still set to the default placeholder.');
+    console.error('       Set a strong secret (≥32 chars) in services/ingestion-service/.env');
+    process.exit(1);
+}
 
 app.use(cors());
 app.use(express.json());
 
-// JWT Middleware
+// JWT Middleware — accepts HTTPOnly cookie (preferred) or Authorization: Bearer header
 const authenticateToken = (req: any, res: any, next: any) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    if (token == null) return res.sendStatus(401);
+    // 1. Try cookie first (set by auth-service on login, not readable by JS)
+    const cookieHeader = req.headers['cookie'] || '';
+    const cookieMatch = cookieHeader.match(/(?:^|;\s*)token=([^;]+)/);
+    const cookieToken = cookieMatch ? cookieMatch[1] : null;
 
-    jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
+    // 2. Fall back to Authorization header
+    const authHeader = req.headers['authorization'];
+    const bearerToken = authHeader ? authHeader.split(' ')[1] : null;
+
+    const token = cookieToken || bearerToken;
+    if (!token) return res.sendStatus(401);
+
+    jwt.verify(token, JWT_SECRET as string, (err: any, user: any) => {
         if (err) return res.sendStatus(403);
         req.user = user;
         next();

@@ -23,10 +23,9 @@ export default function AlertsPage() {
         contractedMdi:  "",
     });
 
-    const token = () => localStorage.getItem("token") || "";
 
     useEffect(() => {
-        fetch(`${API}/ingestion/sites`, { headers: { Authorization: `Bearer ${token()}` } })
+        fetch(`${API}/ingestion/sites`, { credentials: 'include' })
             .then(r => r.json())
             .then((data: any[]) => {
                 if (Array.isArray(data) && data.length > 0) {
@@ -40,7 +39,7 @@ export default function AlertsPage() {
 
     useEffect(() => {
         if (!selectedSiteId) return;
-        fetch(`${API}/ingestion/sites/${selectedSiteId}/settings`, { headers: { Authorization: `Bearer ${token()}` } })
+        fetch(`${API}/ingestion/sites/${selectedSiteId}/settings`, { credentials: 'include' })
             .then(r => r.json())
             .then(data => {
                 setAlerts({
@@ -65,7 +64,8 @@ export default function AlertsPage() {
             const toNum = (v: string) => v !== "" ? Number(v) : null;
             await fetch(`${API}/ingestion/sites/${selectedSiteId}/settings`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                credentials: 'include',
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     alert_max_kw:       toNum(alerts.maxPeak),
                     alert_min_v:        toNum(alerts.minVoltage),

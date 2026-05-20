@@ -28,7 +28,6 @@ interface Lead {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
-const getToken = () => typeof window !== "undefined" ? (localStorage.getItem("token") ?? "") : "";
 
 const STATUS_CONFIG: Record<LeadStatus, { label: string; icon: React.ElementType; cls: string; bg: string }> = {
     NEW:       { label: "New",       icon: Clock,         cls: "text-blue-400   border-blue-500/30",   bg: "bg-blue-500/10" },
@@ -72,7 +71,7 @@ export default function LeadsQueuePage() {
     const fetchLeads = useCallback(async () => {
         try {
             const res = await fetch(`${API}/ingestion/leads`, {
-                headers: { Authorization: `Bearer ${getToken()}` },
+                credentials: 'include',
             });
             if (res.status === 401) { window.location.href = "/login"; return; }
             const data = await res.json();
@@ -88,10 +87,8 @@ export default function LeadsQueuePage() {
         try {
             const res = await fetch(`${API}/ingestion/leads/${lead.id}`, {
                 method: "PATCH",
-                headers: {
-                    Authorization: `Bearer ${getToken()}`,
-                    "Content-Type": "application/json",
-                },
+                credentials: 'include',
+                headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ status: newStatus }),
             });
             if (!res.ok) { showToast("Failed to update status"); return; }

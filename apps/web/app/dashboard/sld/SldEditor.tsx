@@ -33,7 +33,6 @@ import PdfBackdropNode from "./PdfBackdropNode";
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
-const token = () => (typeof window !== "undefined" ? localStorage.getItem("token") ?? "" : "");
 
 interface Site  { id: string; name: string; }
 interface Meter {
@@ -74,11 +73,10 @@ function Inner() {
     // ── Fetch sites + meters + alerts ─────────────────────────────────────────
     useEffect(() => {
         (async () => {
-            const headers = { Authorization: `Bearer ${token()}` };
             const [s, m, a] = await Promise.all([
-                fetch(`${API}/ingestion/sites`,   { headers }).then(r => r.ok ? r.json() : []),
-                fetch(`${API}/ingestion/meters`,  { headers }).then(r => r.ok ? r.json() : []),
-                fetch(`${API}/ingestion/alerts`,  { headers }).then(r => r.ok ? r.json() : []),
+                fetch(`${API}/ingestion/sites`,   { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+                fetch(`${API}/ingestion/meters`,  { credentials: 'include' }).then(r => r.ok ? r.json() : []),
+                fetch(`${API}/ingestion/alerts`,  { credentials: 'include' }).then(r => r.ok ? r.json() : []),
             ]);
             setSites(Array.isArray(s) ? s : []);
             setMeters(Array.isArray(m) ? m : []);
@@ -91,10 +89,9 @@ function Inner() {
     // Refresh live data (meters + alerts) every 12s while page is open
     useEffect(() => {
         const iv = setInterval(async () => {
-            const headers = { Authorization: `Bearer ${token()}` };
             const [m, a] = await Promise.all([
-                fetch(`${API}/ingestion/meters`, { headers }).then(r => r.ok ? r.json() : null),
-                fetch(`${API}/ingestion/alerts`, { headers }).then(r => r.ok ? r.json() : null),
+                fetch(`${API}/ingestion/meters`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
+                fetch(`${API}/ingestion/alerts`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
             ]);
             if (Array.isArray(m)) setMeters(m);
             if (Array.isArray(a)) setAlerts(a);
@@ -106,8 +103,7 @@ function Inner() {
     useEffect(() => {
         if (!siteId) return;
         (async () => {
-            const headers = { Authorization: `Bearer ${token()}` };
-            const res = await fetch(`${API}/ingestion/sites/${siteId}/diagram`, { headers });
+            const res = await fetch(`${API}/ingestion/sites/${siteId}/diagram`, { credentials: 'include' });
             if (!res.ok) { setNodes([]); setHasPdf(false); setPdfUrl(null); return; }
             const data = await res.json();
             const layoutNodes = (data.layout?.nodes ?? []) as Node<MeterNodeData>[];
@@ -116,7 +112,7 @@ function Inner() {
             // Build a one-time auth'd object URL for the PDF stream.
             // ReactPDF needs either a URL string or Uint8Array; we use a blob URL.
             if (data.has_pdf) {
-                const pdfRes = await fetch(`${API}/ingestion/sites/${siteId}/diagram/pdf`, { headers });
+                const pdfRes = await fetch(`${API}/ingestion/sites/${siteId}/diagram/pdf`, { credentials: 'include' });
                 if (pdfRes.ok) {
                     const blob = await pdfRes.blob();
                     setPdfUrl(prev => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob); });
@@ -248,7 +244,8 @@ function Inner() {
             };
             const res = await fetch(`${API}/ingestion/sites/${siteId}/diagram`, {
                 method:  "PUT",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
+                credentials: 'include',
+                headers: { "Content-Type": "application/json" },
                 body:    JSON.stringify({
                     layout: payload,
                     // PDF.js reports float dimensions but the DB column is INTEGER.
@@ -271,7 +268,7 @@ function Inner() {
             form.append("pdf", file);
             const res = await fetch(`${API}/ingestion/sites/${siteId}/diagram/pdf`, {
                 method:  "POST",
-                headers: { Authorization: `Bearer ${token()}` },
+                credentials: 'include',
                 body:    form,
             });
             if (!res.ok) {
@@ -280,8 +277,7 @@ function Inner() {
                 return;
             }
             // Reload the PDF and the diagram metadata
-            const headers = { Authorization: `Bearer ${token()}` };
-            const pdfRes  = await fetch(`${API}/ingestion/sites/${siteId}/diagram/pdf`, { headers });
+            const pdfRes  = await fetch(`${API}/ingestion/sites/${siteId}/diagram/pdf`, { credentials: 'include' });
             if (pdfRes.ok) {
                 const blob = await pdfRes.blob();
                 setPdfUrl(prev => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob); });
@@ -296,7 +292,7 @@ function Inner() {
         if (!siteId || !confirm("Remove the PDF backdrop for this site? Your meter positions stay in place.")) return;
         const res = await fetch(`${API}/ingestion/sites/${siteId}/diagram/pdf`, {
             method:  "DELETE",
-            headers: { Authorization: `Bearer ${token()}` },
+            credentials: 'include',
         });
         if (res.ok) {
             setPdfUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null; });

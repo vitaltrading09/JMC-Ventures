@@ -24,11 +24,8 @@ export function NotificationBell() {
     useEffect(() => {
         const fetchAlerts = async () => {
             try {
-                const token = localStorage.getItem('token');
-                if (!token) return;
-
                 const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/alerts`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
+                    credentials: 'include',
                 });
                 if (res.ok) {
                     const data = await res.json();
@@ -58,10 +55,9 @@ export function NotificationBell() {
 
     const markAsRead = async (id: string) => {
         try {
-            const token = localStorage.getItem('token');
             await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/alerts/${id}/read`, {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
+                credentials: 'include',
             });
             setAlerts(alerts.map(a => a.id === id ? { ...a, is_read: true } : a));
         } catch (error) {

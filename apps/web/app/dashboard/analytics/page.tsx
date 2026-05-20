@@ -109,14 +109,11 @@ export default function AnalyticsPage() {
     const [recsLoading,     setRecsLoading]     = useState(false);
     const [generating,      setGenerating]      = useState(false);
 
-    const token = () => (typeof window !== "undefined" ? localStorage.getItem("token") ?? "" : "");
-
     // Load meter list once; selecting a meter triggers fetchMeterData below.
     const fetchData = useCallback(async () => {
         setLoading(true);
         try {
-            const headers = { Authorization: `Bearer ${token()}` };
-            const metersRes = await fetch(`${API}/ingestion/meters`, { headers });
+            const metersRes = await fetch(`${API}/ingestion/meters`, { credentials: 'include' });
             if (!metersRes.ok) return;
             const meters = await metersRes.json();
             const active = meters.filter((m: any) => m.is_active !== false);
@@ -137,23 +134,21 @@ export default function AnalyticsPage() {
     const fetchMeterData = useCallback(async (mid: string, sid: string) => {
         setLoading(true);
         try {
-            const headers = { Authorization: `Bearer ${token()}` };
-
             // Settings
-            const settRes = await fetch(`${API}/ingestion/sites/${sid}/settings`, { headers });
+            const settRes = await fetch(`${API}/ingestion/sites/${sid}/settings`, { credentials: 'include' });
             if (settRes.ok) setSettings(await settRes.json());
 
             // Readings (7d)
             const from = new Date(Date.now() - 7 * 86400000).toISOString();
             const readRes = await fetch(
                 `${API}/ingestion/meters/${mid}/readings?from=${from}&limit=2000`,
-                { headers }
+                { credentials: 'include' }
             );
             if (readRes.ok) setReadings(await readRes.json());
 
             // Per-meter recommendations
             setRecsLoading(true);
-            const recsRes = await fetch(`${API}/ingestion/meters/${mid}/recommendations`, { headers });
+            const recsRes = await fetch(`${API}/ingestion/meters/${mid}/recommendations`, { credentials: 'include' });
             if (recsRes.ok) setMeterRecs(await recsRes.json());
             setRecsLoading(false);
         } finally {
@@ -180,12 +175,11 @@ export default function AnalyticsPage() {
         if (!meterId) return;
         setGenerating(true);
         try {
-            const headers = { Authorization: `Bearer ${token()}` };
             const res = await fetch(`${API}/ingestion/meters/${meterId}/recommendations/generate`, {
-                method: 'POST', headers,
+                method: 'POST', credentials: 'include',
             });
             if (res.ok) {
-                const recsRes = await fetch(`${API}/ingestion/meters/${meterId}/recommendations`, { headers });
+                const recsRes = await fetch(`${API}/ingestion/meters/${meterId}/recommendations`, { credentials: 'include' });
                 if (recsRes.ok) setMeterRecs(await recsRes.json());
             } else {
                 const err = await res.json();

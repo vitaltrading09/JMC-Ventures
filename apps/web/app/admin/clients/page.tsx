@@ -30,7 +30,6 @@ interface TenantPortfolio {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
-const getToken = () => typeof window !== "undefined" ? (localStorage.getItem("token") ?? "") : "";
 
 function scoreColour(s: number | null) {
     if (s === null) return "text-slate-500";
@@ -84,15 +83,14 @@ export default function ClientPortfoliosPage() {
     };
 
     const fetchAll = useCallback(async () => {
-        const h = { Authorization: `Bearer ${getToken()}` };
         setLoading(true);
         try {
             const [tRes, sRes, mRes, lRes, scRes] = await Promise.all([
-                fetch(`${API}/auth/tenants`,           { headers: h }),
-                fetch(`${API}/ingestion/sites`,         { headers: h }),
-                fetch(`${API}/ingestion/meters`,        { headers: h }),
-                fetch(`${API}/ingestion/leads`,         { headers: h }),
-                fetch(`${API}/ingestion/sites/scores`,  { headers: h }),
+                fetch(`${API}/auth/tenants`,           { credentials: 'include' }),
+                fetch(`${API}/ingestion/sites`,         { credentials: 'include' }),
+                fetch(`${API}/ingestion/meters`,        { credentials: 'include' }),
+                fetch(`${API}/ingestion/leads`,         { credentials: 'include' }),
+                fetch(`${API}/ingestion/sites/scores`,  { credentials: 'include' }),
             ]);
             if (tRes.status === 401) { window.location.href = "/login"; return; }
 
@@ -120,7 +118,8 @@ export default function ClientPortfoliosPage() {
         try {
             const res = await fetch(`${API}/auth/tenants`, {
                 method:  "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+                credentials: 'include',
+                headers: { "Content-Type": "application/json" },
                 body:    JSON.stringify({ name: newName }),
             });
             if (!res.ok) throw new Error();

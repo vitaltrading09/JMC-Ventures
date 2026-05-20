@@ -61,13 +61,12 @@ export default function AlertsPage() {
     const [filter,   setFilter]   = useState<"all" | "unread" | "CRITICAL" | "WARNING">("unread");
     const [marking,  setMarking]  = useState<string | null>(null);
 
-    const token = () => localStorage.getItem("token") ?? "";
 
     const fetchAlerts = useCallback(async () => {
         setLoading(true);
         try {
             const res = await fetch(`${API}/ingestion/alerts`, {
-                headers: { Authorization: `Bearer ${token()}` },
+                credentials: 'include',
             });
             if (res.ok) setAlerts(await res.json());
         } finally {
@@ -82,7 +81,7 @@ export default function AlertsPage() {
         try {
             await fetch(`${API}/ingestion/alerts/${id}/read`, {
                 method: "POST",
-                headers: { Authorization: `Bearer ${token()}` },
+                credentials: 'include',
             });
             setAlerts(a => a.map(x => x.id === id ? { ...x, is_read: true } : x));
         } finally {
@@ -95,7 +94,7 @@ export default function AlertsPage() {
         for (const a of unread) {
             await fetch(`${API}/ingestion/alerts/${a.id}/read`, {
                 method: "POST",
-                headers: { Authorization: `Bearer ${token()}` },
+                credentials: 'include',
             });
         }
         setAlerts(a => a.map(x => ({ ...x, is_read: true })));

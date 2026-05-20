@@ -58,12 +58,11 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
     // Simulation state
     const [systemConfig, setSystemConfig] = useState({ solarKw: 0, batteryKwh: 0, batteryPowerKw: 0 });
 
-    const token = () => localStorage.getItem('token') || '';
     const API   = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081';
 
     // Fetch meter info once
     useEffect(() => {
-        fetch(`${API}/ingestion/meters`, { headers: { Authorization: `Bearer ${token()}` } })
+        fetch(`${API}/ingestion/meters`, { credentials: 'include' })
             .then(r => r.json())
             .then((all: Meter[]) => { setMeter(all.find(m => m.id === params.id) || null); setLoading(false); })
             .catch(() => setLoading(false));
@@ -73,7 +72,7 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
         setChartLoading(true);
         try {
             const url = `${API}/ingestion/meters/${params.id}/readings?from=${fromDate}T00:00:00&to=${toDate}T23:59:59&limit=2000`;
-            const res = await fetch(url, { headers: { Authorization: `Bearer ${token()}` } });
+            const res = await fetch(url, { credentials: 'include' });
             if (res.ok) {
                 const data = await res.json();
                 setReadings(data.map((r: any) => ({

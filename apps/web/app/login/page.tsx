@@ -20,6 +20,7 @@ export default function LoginPage() {
         try {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/auth/login`, {
                 method: "POST",
+                credentials: "include",  // receive the HTTPOnly session cookie
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ email, password }),
             });
@@ -30,13 +31,9 @@ export default function LoginPage() {
                 throw new Error(data.error || "Login failed");
             }
 
-            // Success
-            // Store token in localStorage for API calls
-            localStorage.setItem("token", data.token);
+            // Token is now in an HTTPOnly cookie set by the server (not readable by JS).
+            // Only store non-sensitive display info in localStorage.
             localStorage.setItem("user", JSON.stringify(data.user));
-
-            // Set cookie for middleware (optional for now, but good practice)
-            document.cookie = `token=${data.token}; path=/; max-age=86400; SameSite=Strict`;
 
             // Redirect to dashboard
             router.push("/dashboard");

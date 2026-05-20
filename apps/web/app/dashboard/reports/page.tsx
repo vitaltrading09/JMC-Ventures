@@ -34,7 +34,6 @@ interface Recommendation {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
-const getToken = () => typeof window !== "undefined" ? (localStorage.getItem("token") ?? "") : "";
 
 const TYPE_COLOUR: Record<string, string> = {
     POWER_FACTOR_CORRECTION: "#f59e0b",
@@ -175,7 +174,7 @@ export default function ReportsPage() {
     }, []);
 
     const fetchAll = useCallback(async () => {
-        const h = { Authorization: `Bearer ${getToken()}` };
+        const h = { credentials: 'include' as const };
         try {
             const [sRes, scRes, rRes, mRes] = await Promise.all([
                 fetch(`${API}/ingestion/sites`,           { headers: h }),
@@ -212,7 +211,7 @@ export default function ReportsPage() {
         if (!selectedId || meters.length === 0) return;
         const meter = meters.find(m => m.site_id === selectedId);
         if (!meter) { setConsumption([]); return; }
-        const h = { Authorization: `Bearer ${getToken()}` };
+        const h = { credentials: 'include' as const };
         fetch(`${API}/ingestion/meters/${meter.id}/monthly?months=6`, { headers: h })
             .then(r => r.ok ? r.json() : [])
             .then((rows: { month: string; kwh: string | number }[]) => {

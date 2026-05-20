@@ -37,18 +37,17 @@ export default function DataImportPage() {
     const [result, setResult] = useState<{ count: number; skipped: number; meterId: string } | null>(null);
     const [error, setError] = useState("");
 
-    const token = () => localStorage.getItem('token') || '';
 
     // Fetch sites
     useEffect(() => {
-        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, { headers: { Authorization: `Bearer ${token()}` } })
+        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, { credentials: 'include' })
             .then(r => r.json()).then(setSites).catch(() => { });
     }, []);
 
     // Fetch meters for selected site
     useEffect(() => {
         if (!selectedSiteId) return;
-        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, { headers: { Authorization: `Bearer ${token()}` } })
+        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, { credentials: 'include' })
             .then(r => r.json())
             .then((all: Meter[]) => setMeters(all.filter(m => m.site_id === selectedSiteId)))
             .catch(() => { });
@@ -60,7 +59,8 @@ export default function DataImportPage() {
         try {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name: newMeterName.trim(), site_id: selectedSiteId, serial_number: 'IMPORTED', model: 'CSV Import' }),
             });
             if (!res.ok) throw new Error(await res.text());
@@ -81,7 +81,7 @@ export default function DataImportPage() {
         try {
             const fd = new FormData(); fd.append('file', f);
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/upload/preview`, {
-                method: 'POST', headers: { Authorization: `Bearer ${token()}` }, body: fd,
+                method: 'POST', credentials: 'include', body: fd,
             });
             if (res.ok) setPreview(await res.json());
             else setError("Could not preview file — make sure it's a valid CSV.");
@@ -95,7 +95,7 @@ export default function DataImportPage() {
         const fd = new FormData(); fd.append('file', file); fd.append('meter_id', selectedMeterId);
         try {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/upload`, {
-                method: 'POST', headers: { Authorization: `Bearer ${token()}` }, body: fd,
+                method: 'POST', credentials: 'include', body: fd,
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Upload failed');

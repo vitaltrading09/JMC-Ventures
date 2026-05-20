@@ -30,10 +30,14 @@ export function AdminSidebar() {
         } catch { }
     }, []);
 
-    const handleLogout = () => {
-        localStorage.removeItem("token");
+    const handleLogout = async () => {
+        try {
+            await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/auth/logout`, {
+                method: 'POST',
+                credentials: 'include',
+            });
+        } catch { /* ignore — redirect anyway */ }
         localStorage.removeItem("user");
-        document.cookie = "token=; path=/; max-age=0; SameSite=Strict";
         window.location.href = "/login";
     };
 

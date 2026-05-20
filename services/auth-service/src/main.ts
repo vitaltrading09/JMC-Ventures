@@ -27,7 +27,13 @@ app.get('/health', (req, res) => {
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'powerguard-super-secret-key-change-in-prod';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET || JWT_SECRET === 'powerguard-super-secret-key-change-in-prod' || JWT_SECRET.length < 32) {
+  console.error('FATAL: JWT_SECRET is missing, too short, or still set to the default placeholder.');
+  console.error('       Set a strong secret (≥32 chars) in services/auth-service/.env');
+  process.exit(1);
+}
+const COOKIE_SECURE = process.env.NODE_ENV === 'production';
 
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
@@ -64,9 +70,18 @@ app.post('/login', async (req, res) => {
       { expiresIn: '24h' }
     );
 
-    // 4. Return Token & User Info
+    // 4. Set HTTPOnly cookie (not readable by JS — XSS-safe) + return user display info
+    const cookieOptions = [
+      `token=${token}`,
+      'HttpOnly',
+      'Path=/',
+      'Max-Age=86400',
+      'SameSite=Strict',
+      ...(COOKIE_SECURE ? ['Secure'] : []),
+    ].join('; ');
+    res.setHeader('Set-Cookie', cookieOptions);
+
     res.json({
-      token,
       user: {
         id: user.id,
         email: user.email,
@@ -82,14 +97,28 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// Verify Token Endpoint (for Gateway/Other Services)
-app.get('/verify', (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ error: 'No token provided' });
+// Logout — clears the HTTPOnly cookie
+app.post('/logout', (req, res) => {
+  res.setHeader('Set-Cookie', 'token=; HttpOnly; Path=/; Max-Age=0; SameSite=Strict');
+  res.json({ ok: true });
+});
 
-  const token = authHeader.split(' ')[1];
+// Verify Token Endpoint — accepts HTTPOnly cookie OR Authorization: Bearer header
+app.get('/verify', (req, res) => {
+  // 1. Try cookie first
+  const cookieHeader = req.headers.cookie || '';
+  const cookieMatch = cookieHeader.match(/(?:^|;\s*)token=([^;]+)/);
+  const cookieToken = cookieMatch ? cookieMatch[1] : null;
+
+  // 2. Fall back to Authorization header
+  const authHeader = req.headers.authorization;
+  const bearerToken = authHeader ? authHeader.split(' ')[1] : null;
+
+  const token = cookieToken || bearerToken;
+  if (!token) return res.status(401).json({ error: 'No token provided' });
+
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET as string);
     res.json({ valid: true, user: decoded });
   } catch (err) {
     res.status(401).json({ valid: false, error: 'Invalid token' });

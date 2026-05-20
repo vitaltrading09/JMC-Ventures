@@ -29,7 +29,6 @@ interface SiteScore {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
-const getToken = () => typeof window !== "undefined" ? (localStorage.getItem("token") ?? "") : "";
 
 function scoreColour(s: number) {
     if (s >= 80) return "text-emerald-400";
@@ -65,13 +64,12 @@ export default function AdminOverviewPage() {
     const [loading, setLoading] = useState(true);
 
     const fetchAll = useCallback(async () => {
-        const h = { Authorization: `Bearer ${getToken()}` };
         try {
             const [sitesRes, metersRes, leadsRes, scoresRes] = await Promise.all([
-                fetch(`${API}/ingestion/sites`,        { headers: h }),
-                fetch(`${API}/ingestion/meters`,       { headers: h }),
-                fetch(`${API}/ingestion/leads`,        { headers: h }),
-                fetch(`${API}/ingestion/sites/scores`, { headers: h }),
+                fetch(`${API}/ingestion/sites`,        { credentials: 'include' }),
+                fetch(`${API}/ingestion/meters`,       { credentials: 'include' }),
+                fetch(`${API}/ingestion/leads`,        { credentials: 'include' }),
+                fetch(`${API}/ingestion/sites/scores`, { credentials: 'include' }),
             ]);
             if (sitesRes.status === 401) { window.location.href = "/login"; return; }
 

@@ -34,7 +34,6 @@ interface Meter { id: string; name: string; site_id: string; is_active?: boolean
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
-const getToken = () => typeof window !== "undefined" ? (localStorage.getItem("token") ?? "") : "";
 
 const TYPE_META: Record<string, { label: string; icon: React.ElementType; colour: string }> = {
     POWER_FACTOR_CORRECTION: { label: "Power Factor",     icon: Zap,           colour: "text-yellow-400 bg-yellow-500/10 border-yellow-500/20" },
@@ -78,12 +77,11 @@ export default function RecommendationsPage() {
     };
 
     const fetchData = useCallback(async () => {
-        const headers = { Authorization: `Bearer ${getToken()}` };
         try {
             const [recsRes, sitesRes, metersRes] = await Promise.all([
-                fetch(`${API}/ingestion/recommendations`, { headers }),
-                fetch(`${API}/ingestion/sites`, { headers }),
-                fetch(`${API}/ingestion/meters`, { headers }),
+                fetch(`${API}/ingestion/recommendations`, { credentials: 'include' }),
+                fetch(`${API}/ingestion/sites`, { credentials: 'include' }),
+                fetch(`${API}/ingestion/meters`, { credentials: 'include' }),
             ]);
             if (recsRes.status === 401) { window.location.href = "/login"; return; }
             const [recsData, sitesData, metersData] = await Promise.all([
@@ -103,7 +101,7 @@ export default function RecommendationsPage() {
         try {
             const res = await fetch(`${API}/ingestion/sites/${siteId}/recommendations/generate`, {
                 method: "POST",
-                headers: { Authorization: `Bearer ${getToken()}` },
+                credentials: 'include',
             });
             const data = await res.json();
             if (!res.ok) { showToast(`Error: ${data.error}`); return; }
@@ -118,7 +116,7 @@ export default function RecommendationsPage() {
         try {
             const res = await fetch(`${API}/ingestion/meters/${meterId}/recommendations/generate`, {
                 method: "POST",
-                headers: { Authorization: `Bearer ${getToken()}` },
+                credentials: 'include',
             });
             const data = await res.json();
             if (!res.ok) { showToast(`Error: ${data.error}`); return; }
@@ -133,7 +131,7 @@ export default function RecommendationsPage() {
         try {
             const res = await fetch(`${API}/ingestion/recommendations/${recId}/notify`, {
                 method: "POST",
-                headers: { Authorization: `Bearer ${getToken()}` },
+                credentials: 'include',
             });
             const data = await res.json();
             if (res.status === 409) { showToast("A lead already exists for this recommendation"); return; }

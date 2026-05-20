@@ -35,14 +35,13 @@ export default function TariffsPage() {
     // surfaces a "using defaults" banner so the user knows to hit Save.
     const [timesAreDefaults, setTimesAreDefaults] = useState(true);
 
-    const token = () => localStorage.getItem('token') || '';
 
     // Fetch sites on mount
     useEffect(() => {
         const fetchSites = async () => {
             try {
                 const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, {
-                    headers: { Authorization: `Bearer ${token()}` }
+                    credentials: 'include',
                 });
                 const data = await res.json();
                 if (Array.isArray(data) && data.length > 0) {
@@ -65,7 +64,7 @@ export default function TariffsPage() {
         const fetchSettings = async () => {
             try {
                 const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${selectedSiteId}/settings`, {
-                    headers: { Authorization: `Bearer ${token()}` }
+                    credentials: 'include',
                 });
                 const data = await res.json();
                 // If any time field is filled in the DB, use the DB values verbatim.
@@ -102,10 +101,8 @@ export default function TariffsPage() {
         try {
             await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${selectedSiteId}/settings`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token()}`
-                },
+                credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     tariff_peak:     tariff.rates.peak     || null,
                     tariff_standard: tariff.rates.standard || null,
