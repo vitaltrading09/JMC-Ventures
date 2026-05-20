@@ -251,8 +251,9 @@ function Inner() {
                 headers: { "Content-Type": "application/json", Authorization: `Bearer ${token()}` },
                 body:    JSON.stringify({
                     layout: payload,
-                    background_width:  pdfDim?.w,
-                    background_height: pdfDim?.h,
+                    // PDF.js reports float dimensions but the DB column is INTEGER.
+                    background_width:  pdfDim ? Math.round(pdfDim.w) : undefined,
+                    background_height: pdfDim ? Math.round(pdfDim.h) : undefined,
                 }),
             });
             if (res.ok) setDirty(false);

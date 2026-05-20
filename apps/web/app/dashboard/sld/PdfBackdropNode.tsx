@@ -21,9 +21,10 @@ function PdfBackdropImpl({ data }: { data: PdfBackdropNodeData }) {
     return (
         <div
             // pointer-events:none so the PDF can't be clicked/dragged.
-            // Brightness boost makes the (typically white) PDF readable on dark theme.
+            // Full opacity + no brightness filter keeps thin black lines crisp even
+            // when the canvas is zoomed out to fit-screen. (Earlier opacity:0.85 let
+            // the dark slate background bleed through and fade the lines away.)
             className="pointer-events-none select-none"
-            style={{ filter: "brightness(1.4) contrast(0.95)", opacity: 0.85 }}
         >
             <Document
                 file={data.pdfUrl}

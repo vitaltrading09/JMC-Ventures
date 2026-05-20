@@ -37,8 +37,8 @@ function MeterNodeImpl({ data, selected }: NodeProps<MeterNodeData>) {
         return (
             <div
                 className={`relative rounded-md border bg-slate-900/95 backdrop-blur-sm text-white shadow-lg transition-all
-                    w-9 h-9 flex flex-col items-center justify-center
-                    border-slate-700 hover:border-blue-400 hover:scale-110 cursor-pointer
+                    w-6 h-6 flex flex-col items-center justify-center
+                    border-slate-700 hover:border-blue-400 hover:scale-125 cursor-pointer
                     ${ringClass}
                     ${data.isEditing ? "cursor-move" : ""}`}
                 title={data.label}
@@ -46,14 +46,14 @@ function MeterNodeImpl({ data, selected }: NodeProps<MeterNodeData>) {
                 <Handle type="target" position={Position.Top}    style={{ opacity: 0 }} />
                 <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
 
-                <span className={`inline-block w-2 h-2 rounded-full ${liveDot}`} />
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${liveDot}`} />
                 {data.alertSeverity && (
-                    <span className="absolute -top-1 -right-1 flex items-center justify-center bg-amber-500 text-slate-950 rounded-full text-[9px] font-bold w-4 h-4 ring-2 ring-slate-950">
+                    <span className="absolute -top-1 -right-1 flex items-center justify-center bg-amber-500 text-slate-950 rounded-full text-[8px] font-bold w-3 h-3 ring-1 ring-slate-950">
                         {data.alertCount && data.alertCount > 1 ? data.alertCount : "!"}
                     </span>
                 )}
                 {/* Tiny label under the pin so users can identify pins at a glance */}
-                <span className="absolute top-full mt-0.5 text-[9px] font-medium text-slate-300 whitespace-nowrap drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] pointer-events-none">
+                <span className="absolute top-full mt-0.5 text-[8px] font-medium text-slate-300 whitespace-nowrap drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] pointer-events-none">
                     {data.label}
                 </span>
             </div>
