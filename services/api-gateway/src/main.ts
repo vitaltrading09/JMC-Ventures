@@ -47,12 +47,26 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'api-gateway', timestamp: new Date().toISOString() });
 });
 
+// Strip CORS headers from upstream responses so the gateway's own CORS headers
+// are not overridden. Internal services run cors() with no options which emits
+// Access-Control-Allow-Origin: * — invalid when combined with credentials.
+function stripUpstreamCors(proxyRes: any) {
+    delete proxyRes.headers['access-control-allow-origin'];
+    delete proxyRes.headers['access-control-allow-credentials'];
+    delete proxyRes.headers['access-control-allow-methods'];
+    delete proxyRes.headers['access-control-allow-headers'];
+    delete proxyRes.headers['access-control-expose-headers'];
+}
+
 // Proxy to Auth Service
 app.use('/auth', createProxyMiddleware({
     target: process.env.AUTH_SERVICE_URL || 'http://localhost:3001',
     changeOrigin: true,
     pathRewrite: {
         '^/auth': '', // Remove /auth prefix when forwarding
+    },
+    on: {
+        proxyRes: stripUpstreamCors,
     },
 }));
 
@@ -62,6 +76,9 @@ app.use('/ingestion', createProxyMiddleware({
     changeOrigin: true,
     pathRewrite: {
         '^/ingestion': '', // Remove /ingestion prefix when forwarding
+    },
+    on: {
+        proxyRes: stripUpstreamCors,
     },
 }));
 
