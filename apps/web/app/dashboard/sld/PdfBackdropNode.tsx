@@ -14,6 +14,10 @@ export interface PdfBackdropNodeData {
 }
 
 function PdfBackdropImpl({ data }: { data: PdfBackdropNodeData }) {
+    // Sharpness trick: render the PDF canvas at a much higher pixel density than
+    // the display width. We pass `devicePixelRatio` so react-pdf draws the
+    // underlying bitmap at width × ratio physical pixels — staying crisp even
+    // when React Flow zooms in. Ratio 3 is a good sweet-spot vs memory.
     return (
         <div
             // pointer-events:none so the PDF can't be clicked/dragged.
@@ -29,6 +33,7 @@ function PdfBackdropImpl({ data }: { data: PdfBackdropNodeData }) {
                 <Page
                     pageNumber={1}
                     width={data.width ?? 1400}
+                    devicePixelRatio={3}
                     renderTextLayer={false}
                     renderAnnotationLayer={false}
                     onRenderSuccess={(p: any) => {

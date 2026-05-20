@@ -130,9 +130,17 @@ function Inner() {
                 setPdfDim(null);
             }
             setDirty(false);
-            setTimeout(() => rf.fitView({ padding: 0.2 }), 300);
+            setTimeout(() => rf.fitView({ padding: 0.15 }), 300);
         })();
     }, [siteId, rf]);
+
+    // Re-fit once the PDF has reported its rendered dimensions — the first
+    // fitView often fires before the PDF canvas exists, leaving it overshoot.
+    useEffect(() => {
+        if (!pdfDim) return;
+        const id = setTimeout(() => rf.fitView({ padding: 0.15 }), 150);
+        return () => clearTimeout(id);
+    }, [pdfDim, rf]);
 
     // ── Merge live data + alerts into the displayed nodes ────────────────────
     // Decouples layout state from the per-tick data refresh — we keep positions
@@ -168,7 +176,8 @@ function Inner() {
             ...n,
             type: "meter",
             draggable: editMode,
-            selectable: editMode,
+            // Always selectable so view-mode users can click a pin to expand its details.
+            selectable: true,
             data: {
                 label:         meter?.name ?? n.data.label ?? "Unknown",
                 meterId:       n.data.meterId,
@@ -435,10 +444,11 @@ function Inner() {
                     onNodesChange={onNodesChange}
                     nodesDraggable={editMode}
                     nodesConnectable={false}
-                    elementsSelectable={editMode}
+                    elementsSelectable={true}
                     fitView
-                    minZoom={0.15}
-                    maxZoom={2.5}
+                    fitViewOptions={{ padding: 0.15 }}
+                    minZoom={0.1}
+                    maxZoom={4}
                     proOptions={{ hideAttribution: true }}
                     panOnDrag
                     selectionOnDrag={false}

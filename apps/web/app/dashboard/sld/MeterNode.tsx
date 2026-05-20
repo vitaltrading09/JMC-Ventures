@@ -31,14 +31,43 @@ function MeterNodeImpl({ data, selected }: NodeProps<MeterNodeData>) {
         ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]"
         : "bg-slate-600";
 
+    // Compact pin (default): tiny square footprint that doesn't obscure the SLD.
+    // Click the pin to "select" it, which switches to the expanded detail card.
+    if (!selected) {
+        return (
+            <div
+                className={`relative rounded-md border bg-slate-900/95 backdrop-blur-sm text-white shadow-lg transition-all
+                    w-9 h-9 flex flex-col items-center justify-center
+                    border-slate-700 hover:border-blue-400 hover:scale-110 cursor-pointer
+                    ${ringClass}
+                    ${data.isEditing ? "cursor-move" : ""}`}
+                title={data.label}
+            >
+                <Handle type="target" position={Position.Top}    style={{ opacity: 0 }} />
+                <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+
+                <span className={`inline-block w-2 h-2 rounded-full ${liveDot}`} />
+                {data.alertSeverity && (
+                    <span className="absolute -top-1 -right-1 flex items-center justify-center bg-amber-500 text-slate-950 rounded-full text-[9px] font-bold w-4 h-4 ring-2 ring-slate-950">
+                        {data.alertCount && data.alertCount > 1 ? data.alertCount : "!"}
+                    </span>
+                )}
+                {/* Tiny label under the pin so users can identify pins at a glance */}
+                <span className="absolute top-full mt-0.5 text-[9px] font-medium text-slate-300 whitespace-nowrap drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] pointer-events-none">
+                    {data.label}
+                </span>
+            </div>
+        );
+    }
+
+    // Expanded card (when selected) — full live readout.
     return (
         <div
-            className={`relative rounded-xl border bg-slate-900/95 backdrop-blur-sm text-white px-3 py-2 min-w-[140px] shadow-xl transition-all
-                ${selected ? "border-blue-400" : "border-slate-700"}
+            className={`relative rounded-xl border bg-slate-900/95 backdrop-blur-sm text-white px-3 py-2 min-w-[160px] shadow-2xl transition-all
+                border-blue-400 ring-2 ring-blue-500/30
                 ${ringClass}
                 ${data.isEditing ? "cursor-move" : ""}`}
         >
-            {/* Hidden connection handles — kept so edges can attach in future */}
             <Handle type="target" position={Position.Top}    style={{ opacity: 0 }} />
             <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
 
@@ -56,7 +85,6 @@ function MeterNodeImpl({ data, selected }: NodeProps<MeterNodeData>) {
                 )}
             </div>
 
-            {/* Live data row */}
             <div className="mt-1.5 flex items-baseline gap-3 text-[11px] font-mono">
                 {data.powerKw != null ? (
                     <span className="flex items-center gap-1 text-blue-300">
@@ -78,6 +106,7 @@ function MeterNodeImpl({ data, selected }: NodeProps<MeterNodeData>) {
                     V<sub>L-N</sub> {data.voltage.toFixed(0)} V
                 </div>
             )}
+            <p className="mt-1 text-[9px] text-slate-600 italic">click elsewhere to collapse</p>
         </div>
     );
 }
