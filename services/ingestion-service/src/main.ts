@@ -49,8 +49,20 @@ const pool = new Pool({
             ADD COLUMN IF NOT EXISTS tariff_type VARCHAR(50),
             ADD COLUMN IF NOT EXISTS weight_pf DECIMAL(4,3),
             ADD COLUMN IF NOT EXISTS weight_thd DECIMAL(4,3),
-            ADD COLUMN IF NOT EXISTS weight_load_factor DECIMAL(4,3),
+            ADD COLUMN IF NOT EXISTS weight_voltage_unbalance DECIMAL(4,3),
             ADD COLUMN IF NOT EXISTS weight_voltage_quality DECIMAL(4,3);
+        `);
+
+        // Drop the legacy load_factor weight column if it still exists.
+        // Load factor is no longer a scored component (see energy-score.ts);
+        // values stored there are not transferable to voltage unbalance.
+        await client.query(`
+            DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name='site_settings' AND column_name='weight_load_factor') THEN
+                    ALTER TABLE site_settings DROP COLUMN weight_load_factor;
+                END IF;
+            END $$;
         `);
 
         // NRS 048 alert thresholds + MDI + demand tariff
@@ -70,12 +82,33 @@ const pool = new Pool({
                 site_id UUID REFERENCES sites(id) ON DELETE CASCADE,
                 score DECIMAL(5,2) NOT NULL,
                 pf_score DECIMAL(5,2), thd_score DECIMAL(5,2),
-                load_factor_score DECIMAL(5,2), voltage_quality_score DECIMAL(5,2),
+                voltage_unbalance_score DECIMAL(5,2), voltage_quality_score DECIMAL(5,2),
                 weight_pf DECIMAL(4,3), weight_thd DECIMAL(4,3),
-                weight_load_factor DECIMAL(4,3), weight_voltage_quality DECIMAL(4,3),
+                weight_voltage_unbalance DECIMAL(4,3), weight_voltage_quality DECIMAL(4,3),
                 tariff_type VARCHAR(50), calculated_at TIMESTAMPTZ DEFAULT NOW()
             );
             CREATE INDEX IF NOT EXISTS idx_energy_scores_site ON energy_scores (site_id, calculated_at DESC);
+        `);
+
+        // For existing databases: add the new unbalance columns and drop the
+        // legacy load_factor ones. Old historical rows lose those columns —
+        // acceptable because score data is recomputed every 5 min anyway.
+        await client.query(`
+            ALTER TABLE energy_scores
+                ADD COLUMN IF NOT EXISTS voltage_unbalance_score DECIMAL(5,2),
+                ADD COLUMN IF NOT EXISTS weight_voltage_unbalance DECIMAL(4,3);
+        `);
+        await client.query(`
+            DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name='energy_scores' AND column_name='load_factor_score') THEN
+                    ALTER TABLE energy_scores DROP COLUMN load_factor_score;
+                END IF;
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name='energy_scores' AND column_name='weight_load_factor') THEN
+                    ALTER TABLE energy_scores DROP COLUMN weight_load_factor;
+                END IF;
+            END $$;
         `);
 
         // Recommendations table — meter_id is nullable so legacy site-wide
@@ -1432,7 +1465,7 @@ app.get('/sites/scores', authenticateToken, async (req: any, res) => {
         let query = `
             SELECT s.id as site_id, s.name as site_name,
                    es.score, es.tariff_type, es.calculated_at,
-                   es.pf_score, es.thd_score, es.load_factor_score, es.voltage_quality_score
+                   es.pf_score, es.thd_score, es.voltage_unbalance_score, es.voltage_quality_score
             FROM sites s
             LEFT JOIN LATERAL (
                 SELECT * FROM energy_scores

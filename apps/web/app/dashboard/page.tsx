@@ -47,7 +47,7 @@ interface SiteScore {
     score: number;
     pf_score: number;
     thd_score: number;
-    load_factor_score: number;
+    voltage_unbalance_score: number;
     voltage_quality_score: number;
     tariff_type: string;
     calculated_at: string;
@@ -207,10 +207,10 @@ export default function DashboardPage() {
     const [expandedHint, setExpandedHint] = useState<string | null>(null);
 
     const avgComponents = scores.length > 0 ? {
-        pf:      Math.round(scores.reduce((s, r) => s + r.pf_score,             0) / scores.length),
-        thd:     Math.round(scores.reduce((s, r) => s + r.thd_score,            0) / scores.length),
-        load:    Math.round(scores.reduce((s, r) => s + r.load_factor_score,    0) / scores.length),
-        voltage: Math.round(scores.reduce((s, r) => s + r.voltage_quality_score, 0) / scores.length),
+        pf:        Math.round(scores.reduce((s, r) => s + r.pf_score,                 0) / scores.length),
+        thd:       Math.round(scores.reduce((s, r) => s + r.thd_score,                0) / scores.length),
+        unbalance: Math.round(scores.reduce((s, r) => s + r.voltage_unbalance_score,  0) / scores.length),
+        voltage:   Math.round(scores.reduce((s, r) => s + r.voltage_quality_score,    0) / scores.length),
     } : null;
 
     const { text: statusText, cls: statusCls } = scoreLabel(avgScore);
@@ -308,9 +308,9 @@ export default function DashboardPage() {
                                     noData: scores.some(s => s.thd_score === 70),
                                 },
                                 {
-                                    label: "Load Factor",
-                                    value: avgComponents?.load,
-                                    hint: "Average demand divided by peak demand over the last 7 days. A low load factor (e.g. 0.35) means your contracted capacity is sized for a peak you rarely hit — you pay demand charges on that full capacity every month. Improving load factor reduces demand costs.",
+                                    label: "Voltage Unbalance",
+                                    value: avgComponents?.unbalance,
+                                    hint: "Maximum deviation of any phase voltage from the 3-phase average, as a percentage. NRS 048-2 allows up to 2%. Above that, motors and VSDs overheat — a 2% unbalance can cause >25% extra winding heating, shortening motor life by years. Rebalance single-phase loads or investigate a faulty neutral if this is high. Single-phase sites show a neutral score (no unbalance is possible).",
                                     noData: false,
                                 },
                                 {

@@ -15,7 +15,7 @@ interface SiteScore {
     score: number;
     pf_score?: number;
     thd_score?: number;
-    load_factor_score?: number;
+    voltage_unbalance_score?: number;
     voltage_quality_score?: number;
     tariff_type: string;
     calculated_at: string;
@@ -114,11 +114,11 @@ function getLookingAhead(sc: SiteScore | null) {
             body: `Elevated THD increases transformer losses, generates excess heat in cabling, and can void equipment warranties on drives and motors. A passive harmonic filter (R 35–80k depending on kVA) typically recovers 12–18 score points and reduces running costs through lower transformer losses — payback within 18–24 months.`,
         },
         {
-            key: "load",
-            score: sc.load_factor_score ?? 100,
-            component: "Load Factor",
-            title: "Smoothing your load profile will reduce demand charges",
-            body: `Your load factor indicates sharp consumption peaks relative to your average draw. On commercial Eskom tariffs, maximum demand charges can represent 30–50% of the total bill. Load shifting, demand management automation, or a peak-shaving battery system would flatten the curve and reduce your monthly maximum demand reading — often the single highest-value action available.`,
+            key: "unbalance",
+            score: sc.voltage_unbalance_score ?? 100,
+            component: "Voltage Unbalance",
+            title: "Voltage unbalance is shortening the life of your motors and drives",
+            body: `Phase voltages drifting apart force motors to draw extra current on the deficient phase, causing winding heating disproportionate to the unbalance. A 2% unbalance (the NRS 048-2 limit) causes roughly 8% increase in motor losses and noticeably reduced bearing/insulation life. Rebalancing single-phase loads across phases, identifying a high-impedance neutral, or correcting a phase-down condition typically resolves this and improves both reliability and energy efficiency.`,
         },
         {
             key: "voltage",
@@ -250,10 +250,10 @@ export default function ReportsPage() {
         .sort((a, b) => b.value - a.value);
 
     const components = selectedScore ? [
-        { label: "Power Factor",    score: selectedScore.pf_score             ?? null, key: "pf"   },
-        { label: "Harmonic (THD)",  score: selectedScore.thd_score            ?? null, key: "thd"  },
-        { label: "Load Factor",     score: selectedScore.load_factor_score    ?? null, key: "load" },
-        { label: "Voltage Quality", score: selectedScore.voltage_quality_score ?? null, key: "volt" },
+        { label: "Power Factor",      score: selectedScore.pf_score                ?? null, key: "pf"        },
+        { label: "Harmonic (THD)",    score: selectedScore.thd_score               ?? null, key: "thd"       },
+        { label: "Voltage Unbalance", score: selectedScore.voltage_unbalance_score ?? null, key: "unbalance" },
+        { label: "Voltage Quality",   score: selectedScore.voltage_quality_score   ?? null, key: "volt"      },
     ] : [];
 
     const lookingAhead = getLookingAhead(selectedScore);

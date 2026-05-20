@@ -116,25 +116,25 @@ CREATE TABLE IF NOT EXISTS dead_letter_payloads (
 -- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS tariff_type VARCHAR(50);
 -- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS weight_pf DECIMAL(4,3);
 -- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS weight_thd DECIMAL(4,3);
--- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS weight_load_factor DECIMAL(4,3);
+-- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS weight_voltage_unbalance DECIMAL(4,3);
 -- ALTER TABLE site_settings ADD COLUMN IF NOT EXISTS weight_voltage_quality DECIMAL(4,3);
 -- (These are added at runtime via the ingestion-service startup migration)
 
 -- Energy Scores — calculated every 5 min, tracked over time per site
 CREATE TABLE IF NOT EXISTS energy_scores (
-    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    site_id              UUID REFERENCES sites(id) ON DELETE CASCADE,
-    score                DECIMAL(5,2) NOT NULL CHECK (score >= 0 AND score <= 100),
-    pf_score             DECIMAL(5,2),
-    thd_score            DECIMAL(5,2),
-    load_factor_score    DECIMAL(5,2),
-    voltage_quality_score DECIMAL(5,2),
-    weight_pf            DECIMAL(4,3),
-    weight_thd           DECIMAL(4,3),
-    weight_load_factor   DECIMAL(4,3),
-    weight_voltage_quality DECIMAL(4,3),
-    tariff_type          VARCHAR(50),
-    calculated_at        TIMESTAMPTZ DEFAULT NOW()
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    site_id                 UUID REFERENCES sites(id) ON DELETE CASCADE,
+    score                   DECIMAL(5,2) NOT NULL CHECK (score >= 0 AND score <= 100),
+    pf_score                DECIMAL(5,2),
+    thd_score               DECIMAL(5,2),
+    voltage_unbalance_score DECIMAL(5,2),
+    voltage_quality_score   DECIMAL(5,2),
+    weight_pf               DECIMAL(4,3),
+    weight_thd              DECIMAL(4,3),
+    weight_voltage_unbalance DECIMAL(4,3),
+    weight_voltage_quality  DECIMAL(4,3),
+    tariff_type             VARCHAR(50),
+    calculated_at           TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_energy_scores_site ON energy_scores (site_id, calculated_at DESC);
 

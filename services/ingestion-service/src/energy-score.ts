@@ -4,32 +4,37 @@ import { Pool } from 'pg';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 export interface ScoreWeights {
-    pf:             number;
-    thd:            number;
-    loadFactor:     number;
-    voltageQuality: number;
+    pf:               number;
+    thd:              number;
+    voltageUnbalance: number;
+    voltageQuality:   number;
 }
 
 export interface EnergyScoreResult {
     score: number;          // 0–100 composite
     components: {
-        pf:             number;
-        thd:            number;
-        loadFactor:     number;
-        voltageQuality: number;
+        pf:               number;
+        thd:              number;
+        voltageUnbalance: number;
+        voltageQuality:   number;
     };
     weights:    ScoreWeights;
     tariffType: string;
     metrics: {
-        avgPf:       number | null;
-        avgThd:      number | null;
-        avgKw:       number | null;
-        peakKw:      number | null;
-        loadFactor:  number | null;
-        avgV:        number | null;
-        minV:        number | null;
-        maxV:        number | null;
-        energyKwh:   number | null;
+        avgPf:            number | null;
+        avgThd:           number | null;
+        avgKw:            number | null;
+        peakKw:           number | null;
+        loadFactor:       number | null;   // kept as informational context for AI
+        avgV:             number | null;
+        minV:             number | null;
+        maxV:             number | null;
+        // Per-phase averages used for unbalance calculation
+        avgVa:            number | null;
+        avgVb:            number | null;
+        avgVc:            number | null;
+        unbalancePct:     number | null;
+        energyKwh:        number | null;
     };
 }
 
@@ -53,17 +58,17 @@ export function detectTariffType(avgKw: number | null): string {
 // Weights must sum to 1.0. Reflect what costs clients the most money.
 // ─────────────────────────────────────────────────────────────────────────────
 export function getDefaultWeights(tariffType: string): ScoreWeights {
+    // Voltage unbalance directly degrades motor efficiency + lifespan (a 2%
+    // unbalance can cause 25%+ extra winding heating). Weighting it heavier on
+    // MEGAFLEX/TOU sites reflects the fact those sites run more motor loads.
     switch (tariffType) {
         case 'MEGAFLEX':
-            // Demand charge dominates → load factor weighted highest
-            return { pf: 0.25, thd: 0.18, loadFactor: 0.35, voltageQuality: 0.22 };
+            return { pf: 0.28, thd: 0.20, voltageUnbalance: 0.28, voltageQuality: 0.24 };
         case 'TOU':
-            // PF penalties + peak demand both significant
-            return { pf: 0.30, thd: 0.18, loadFactor: 0.28, voltageQuality: 0.24 };
+            return { pf: 0.32, thd: 0.20, voltageUnbalance: 0.22, voltageQuality: 0.26 };
         case 'FLAT':
         default:
-            // PF still matters, energy efficiency more so than load factor
-            return { pf: 0.32, thd: 0.20, loadFactor: 0.22, voltageQuality: 0.26 };
+            return { pf: 0.34, thd: 0.20, voltageUnbalance: 0.18, voltageQuality: 0.28 };
     }
 }
 
@@ -94,15 +99,29 @@ function scoreTHD(thd: number | null): number {
     return 10;
 }
 
-// Load factor = avg_demand / peak_demand. Low LF = paying for demand not used.
-function scoreLoadFactor(lf: number | null): number {
-    if (lf === null) return 50;
-    if (lf > 0.85) return 100;
-    if (lf > 0.75) return 85;
-    if (lf > 0.65) return 68;
-    if (lf > 0.50) return 48;
-    if (lf > 0.35) return 28;
-    return 10;
+// Voltage unbalance (%): max deviation of any phase from the 3-phase mean,
+// expressed as a percentage of that mean. NEMA definition.
+//   < 1% utility-grade  |  2% NRS 048-2 limit  |  > 3% causes motor failure
+// Single-phase sites (no Vb/Vc) return a neutral 75 — not penalised, not
+// rewarded, since unbalance is meaningless without 3 phases.
+function scoreVoltageUnbalance(unbalancePct: number | null): number {
+    if (unbalancePct === null) return 75;
+    if (unbalancePct < 0.5) return 100;
+    if (unbalancePct < 1)   return 88;
+    if (unbalancePct < 2)   return 65;   // within NRS 048-2 limit but worth flagging
+    if (unbalancePct < 3)   return 35;
+    if (unbalancePct < 5)   return 15;
+    return 5;
+}
+
+function computeUnbalance(va: number | null, vb: number | null, vc: number | null): number | null {
+    // Need all three phases above a sensible threshold (50 V) to compute.
+    if (va === null || vb === null || vc === null) return null;
+    if (va < 50  || vb < 50  || vc < 50)           return null;
+    const mean = (va + vb + vc) / 3;
+    if (mean <= 0) return null;
+    const maxDev = Math.max(Math.abs(va - mean), Math.abs(vb - mean), Math.abs(vc - mean));
+    return (maxDev / mean) * 100;
 }
 
 // Voltage quality: deviation from SA nominal (230 V phase-neutral, 400 V line-line)
@@ -177,6 +196,15 @@ export async function computeAndStoreSiteScore(
                 MAX(mr.voltage_a)
                     FILTER (WHERE mr.voltage_a > 50)
                     AS max_v,
+                AVG(mr.voltage_a)
+                    FILTER (WHERE mr.voltage_a > 50)
+                    AS avg_va,
+                AVG(mr.voltage_b)
+                    FILTER (WHERE mr.voltage_b > 50)
+                    AS avg_vb,
+                AVG(mr.voltage_c)
+                    FILTER (WHERE mr.voltage_c > 50)
+                    AS avg_vc,
                 COUNT(*)
                     AS reading_count,
                 ROUND(
@@ -203,7 +231,7 @@ export async function computeAndStoreSiteScore(
         // Check for custom weights + tariff type in site_settings
         const settingsRes = await client.query(`
             SELECT tariff_type,
-                   weight_pf, weight_thd, weight_load_factor, weight_voltage_quality
+                   weight_pf, weight_thd, weight_voltage_unbalance, weight_voltage_quality
             FROM site_settings
             WHERE site_id = $1
         `, [siteId]);
@@ -213,10 +241,10 @@ export async function computeAndStoreSiteScore(
         const defaults   = getDefaultWeights(tariffType);
 
         const weights: ScoreWeights = {
-            pf:             cfg?.weight_pf             ? Number(cfg.weight_pf)             : defaults.pf,
-            thd:            cfg?.weight_thd            ? Number(cfg.weight_thd)            : defaults.thd,
-            loadFactor:     cfg?.weight_load_factor    ? Number(cfg.weight_load_factor)    : defaults.loadFactor,
-            voltageQuality: cfg?.weight_voltage_quality? Number(cfg.weight_voltage_quality): defaults.voltageQuality,
+            pf:               cfg?.weight_pf                 ? Number(cfg.weight_pf)                 : defaults.pf,
+            thd:              cfg?.weight_thd                ? Number(cfg.weight_thd)                : defaults.thd,
+            voltageUnbalance: cfg?.weight_voltage_unbalance  ? Number(cfg.weight_voltage_unbalance)  : defaults.voltageUnbalance,
+            voltageQuality:   cfg?.weight_voltage_quality    ? Number(cfg.weight_voltage_quality)    : defaults.voltageQuality,
         };
 
         const avgPf  = row.avg_pf  ? Number(row.avg_pf)  : null;
@@ -224,19 +252,23 @@ export async function computeAndStoreSiteScore(
         const avgV   = row.avg_v   ? Number(row.avg_v)   : null;
         const minV   = row.min_v   ? Number(row.min_v)   : null;
         const maxV   = row.max_v   ? Number(row.max_v)   : null;
+        const avgVa  = row.avg_va  ? Number(row.avg_va)  : null;
+        const avgVb  = row.avg_vb  ? Number(row.avg_vb)  : null;
+        const avgVc  = row.avg_vc  ? Number(row.avg_vc)  : null;
+        const unbalancePct = computeUnbalance(avgVa, avgVb, avgVc);
 
         const components = {
-            pf:             scorePowerFactor(avgPf),
-            thd:            scoreTHD(avgThd),
-            loadFactor:     scoreLoadFactor(lf),
-            voltageQuality: scoreVoltageQuality(avgV, minV, maxV),
+            pf:               scorePowerFactor(avgPf),
+            thd:              scoreTHD(avgThd),
+            voltageUnbalance: scoreVoltageUnbalance(unbalancePct),
+            voltageQuality:   scoreVoltageQuality(avgV, minV, maxV),
         };
 
         const score = Math.round(
-            components.pf             * weights.pf +
-            components.thd            * weights.thd +
-            components.loadFactor     * weights.loadFactor +
-            components.voltageQuality * weights.voltageQuality
+            components.pf               * weights.pf +
+            components.thd              * weights.thd +
+            components.voltageUnbalance * weights.voltageUnbalance +
+            components.voltageQuality   * weights.voltageQuality
         );
 
         // Persist to energy_scores table — only for site-wide computations.
@@ -245,14 +277,14 @@ export async function computeAndStoreSiteScore(
             await client.query(`
                 INSERT INTO energy_scores (
                     site_id, score,
-                    pf_score, thd_score, load_factor_score, voltage_quality_score,
-                    weight_pf, weight_thd, weight_load_factor, weight_voltage_quality,
+                    pf_score, thd_score, voltage_unbalance_score, voltage_quality_score,
+                    weight_pf, weight_thd, weight_voltage_unbalance, weight_voltage_quality,
                     tariff_type
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             `, [
                 siteId, score,
-                components.pf, components.thd, components.loadFactor, components.voltageQuality,
-                weights.pf, weights.thd, weights.loadFactor, weights.voltageQuality,
+                components.pf, components.thd, components.voltageUnbalance, components.voltageQuality,
+                weights.pf, weights.thd, weights.voltageUnbalance, weights.voltageQuality,
                 tariffType,
             ]);
         }
@@ -266,6 +298,7 @@ export async function computeAndStoreSiteScore(
                 avgPf, avgThd, avgKw, peakKw,
                 loadFactor: lf,
                 avgV, minV, maxV,
+                avgVa, avgVb, avgVc, unbalancePct,
                 energyKwh: row.energy_kwh ? Number(row.energy_kwh) : null,
             },
         };

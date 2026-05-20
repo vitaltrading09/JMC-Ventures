@@ -132,7 +132,9 @@ export async function generateAndStoreSiteRecommendations(
 
     // ── Build Claude prompt ────────────────────────────────────────────────
     const { metrics, components, tariffType, score: totalScore } = score;
-    const lf = metrics.loadFactor !== null ? metrics.loadFactor.toFixed(2) : 'N/A';
+    const lf  = metrics.loadFactor !== null   ? metrics.loadFactor.toFixed(2)   : 'N/A';
+    const unb = metrics.unbalancePct !== null ? metrics.unbalancePct.toFixed(2) + '%' : 'N/A (single-phase or insufficient data)';
+    const vab = metrics.avgVa !== null ? `${metrics.avgVa.toFixed(1)}V / ${metrics.avgVb?.toFixed(1) ?? '—'}V / ${metrics.avgVc?.toFixed(1) ?? '—'}V` : 'N/A';
 
     const prompt = `You are PowerGuard's energy analysis engine for South African industrial and commercial sites.
 Analyse the data below and return ONLY a valid JSON object of the form:
@@ -148,21 +150,23 @@ DECLARED LOADS${meterId ? ' (this meter)' : ' PER METER'} (this is what's physic
 ${loadProfile}
 
 ENERGY SCORE: ${totalScore}/100
-  Power Factor component:    ${components.pf}/100
-  Load Factor component:     ${components.loadFactor}/100
-  Voltage Quality component: ${components.voltageQuality}/100
-  THD component:             ${components.thd}/100
+  Power Factor component:      ${components.pf}/100
+  Voltage Unbalance component: ${components.voltageUnbalance}/100
+  Voltage Quality component:   ${components.voltageQuality}/100
+  THD component:               ${components.thd}/100
 
 PERFORMANCE METRICS (last 7 days of available data):
-  Avg Power Factor:  ${metrics.avgPf?.toFixed(3) ?? 'N/A'}   (SA target ≥0.95, penalty below 0.90)
-  Avg THD (voltage): ${metrics.avgThd?.toFixed(2) ?? 'N/A'}% (NRS 048 limit 8%, EN 50160 planning level 5%)
-  Peak Demand:       ${metrics.peakKw?.toFixed(1) ?? 'N/A'} kW
-  Avg Demand:        ${metrics.avgKw?.toFixed(1) ?? 'N/A'} kW
-  Load Factor:       ${lf}                                   (ideal ≥0.80 on demand tariffs)
-  Avg Voltage:       ${metrics.avgV?.toFixed(1) ?? 'N/A'} V  (SA nominal 230 V phase-neutral / 400 V line-line)
-  Min Voltage:       ${metrics.minV?.toFixed(1) ?? 'N/A'} V
-  Max Voltage:       ${metrics.maxV?.toFixed(1) ?? 'N/A'} V
-  Monthly Energy:    ${metrics.energyKwh?.toFixed(0) ?? 'N/A'} kWh
+  Avg Power Factor:   ${metrics.avgPf?.toFixed(3) ?? 'N/A'}   (SA target ≥0.95, penalty below 0.90)
+  Avg THD (voltage):  ${metrics.avgThd?.toFixed(2) ?? 'N/A'}% (NRS 048 limit 8%, EN 50160 planning level 5%)
+  Peak Demand:        ${metrics.peakKw?.toFixed(1) ?? 'N/A'} kW
+  Avg Demand:         ${metrics.avgKw?.toFixed(1) ?? 'N/A'} kW
+  Load Factor:        ${lf}                                   (informational — ideal ≥0.80 on demand tariffs)
+  Per-phase avg V:    ${vab}
+  Voltage Unbalance:  ${unb}                                  (NRS 048-2 limit 2%; >2% damages motors / drives)
+  Avg Voltage:        ${metrics.avgV?.toFixed(1) ?? 'N/A'} V  (SA nominal 230 V phase-neutral / 400 V line-line)
+  Min Voltage:        ${metrics.minV?.toFixed(1) ?? 'N/A'} V
+  Max Voltage:        ${metrics.maxV?.toFixed(1) ?? 'N/A'} V
+  Monthly Energy:     ${metrics.energyKwh?.toFixed(0) ?? 'N/A'} kWh
 
 TARIFF CONFIGURATION:
 ${tariffContext}
