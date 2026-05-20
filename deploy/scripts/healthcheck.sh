@@ -1,5 +1,5 @@
 #!/bin/bash
-# PowerGuard healthcheck — runs every minute via root cron.
+# Grid-IQ healthcheck — runs every minute via root cron.
 #
 # systemd's Restart=always covers crashes, but won't help if a process is
 # *alive but deadlocked* (e.g. wedged on a DB query, stuck in a tight loop,
@@ -7,8 +7,8 @@
 # service; if the request fails or times out, the service is restarted.
 #
 # Install:  installed automatically by deploy/scripts/install.sh
-# Manual:   sudo crontab -e  →  * * * * * /home/ubuntu/PowerGuard/deploy/scripts/healthcheck.sh >> /var/log/powerguard-healthcheck.log 2>&1
-# Tail:     sudo tail -f /var/log/powerguard-healthcheck.log
+# Manual:   sudo crontab -e  →  * * * * * /home/ubuntu/Grid-IQ/deploy/scripts/healthcheck.sh >> /var/log/gridiq-healthcheck.log 2>&1
+# Tail:     sudo tail -f /var/log/gridiq-healthcheck.log
 
 set -u
 TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"

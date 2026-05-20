@@ -1,7 +1,7 @@
 #!/bin/bash
-# PowerGuard — restore from S3 backup (disaster recovery / quarterly drill)
+# Grid-IQ — restore from S3 backup (disaster recovery / quarterly drill)
 # Usage: sudo bash deploy/scripts/backup-restore.sh [BACKUP_FILENAME]
-#   BACKUP_FILENAME — optional, e.g. powerguard_20250520_020000.dump
+#   BACKUP_FILENAME — optional, e.g. gridiq_20250520_020000.dump
 #   If omitted, lists the 20 most recent backups and prompts for selection.
 #
 # ⚠️  This replaces the LIVE database. Services are stopped during restore.
@@ -9,7 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="/var/log/powerguard"
+LOG_DIR="/var/log/gridiq"
 LOG="${LOG_DIR}/backup.log"
 
 log()  { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [RESTORE] $1" | tee -a "$LOG"; }
@@ -29,7 +29,7 @@ BUCKET="${BACKUP_S3_BUCKET:?Set BACKUP_S3_BUCKET in /home/ubuntu/.backup-env}"
 
 echo ""
 echo "════════════════════════════════════════════════════"
-echo "  PowerGuard — Restore from S3 Backup"
+echo "  Grid-IQ — Restore from S3 Backup"
 echo "════════════════════════════════════════════════════"
 echo ""
 echo "  ⚠️  WARNING: This will REPLACE the current database."

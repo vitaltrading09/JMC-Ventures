@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# PowerGuard Production Startup Script
+# Grid-IQ Production Startup Script
 # Run this once after pulling from GitHub: bash start.sh
 # ============================================================
 
@@ -48,11 +48,11 @@ cd ../..
 
 echo ""
 echo "============================================================"
-echo "✅ PowerGuard is LIVE!"
+echo "✅ Grid-IQ is LIVE!"
 echo "   Dashboard:  http://35.179.107.189:3000"
 echo "   API:        http://35.179.107.189:8081/health"
 echo ""
-echo "   Login with: demo@powerguard.com / password123"
+echo "   Login with: demo@grid-iq.co.za / password123"
 echo "============================================================"
 echo ""
 echo "Tip: Run 'cat /tmp/auth.log' to check the auth service logs."

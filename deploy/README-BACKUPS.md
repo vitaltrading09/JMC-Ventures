@@ -1,4 +1,4 @@
-# PowerGuard — Backup System
+# Grid-IQ — Backup System
 
 ## What runs
 
@@ -16,28 +16,28 @@
 ```bash
 # Cape Town region — keeps data in SA for POPIA
 aws s3api create-bucket \
-  --bucket powerguard-backups-prod \
+  --bucket gridiq-backups-prod \
   --region af-south-1 \
   --create-bucket-configuration LocationConstraint=af-south-1
 
 # Block all public access
 aws s3api put-public-access-block \
-  --bucket powerguard-backups-prod \
+  --bucket gridiq-backups-prod \
   --public-access-block-configuration \
     "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
 
 # Enable versioning (safety net for accidental deletes)
 aws s3api put-bucket-versioning \
-  --bucket powerguard-backups-prod \
+  --bucket gridiq-backups-prod \
   --versioning-configuration Status=Enabled
 ```
 
 ### Step 2 — Create IAM user + access key
 
 1. Go to **IAM → Users → Create user**
-2. Username: `powerguard-backup`
+2. Username: `gridiq-backup`
 3. Attach the policy in `deploy/iam/backup-policy.json`
-   - Replace `BUCKET_NAME` with `powerguard-backups-prod` before pasting
+   - Replace `BUCKET_NAME` with `gridiq-backups-prod` before pasting
 4. Create access key (type: "Application running outside AWS")
 5. Save the **Access Key ID** and **Secret Access Key**
 
@@ -57,7 +57,7 @@ nano /home/ubuntu/.backup-env
 
 Contents:
 ```bash
-BACKUP_S3_BUCKET=powerguard-backups-prod
+BACKUP_S3_BUCKET=gridiq-backups-prod
 AWS_DEFAULT_REGION=af-south-1
 # Only needed if NOT using an EC2 instance role:
 AWS_ACCESS_KEY_ID=AKIAxxxxxxxxxxxxxxxx
@@ -71,7 +71,7 @@ chmod 600 /home/ubuntu/.backup-env
 ### Step 4 — Run the setup script
 
 ```bash
-cd ~/PowerGuard
+cd ~/Grid-IQ
 sudo bash deploy/scripts/setup-backups.sh
 ```
 
@@ -88,14 +88,14 @@ This will:
 ### From S3 (database only)
 
 ```bash
-sudo bash ~/PowerGuard/deploy/scripts/backup-restore.sh
+sudo bash ~/Grid-IQ/deploy/scripts/backup-restore.sh
 ```
 
 The script lists available backups and prompts for confirmation. Type `RESTORE` to proceed. Services are stopped during restore and restarted after.
 
 To restore a specific file directly:
 ```bash
-sudo bash ~/PowerGuard/deploy/scripts/backup-restore.sh powerguard_20250520_020000.dump
+sudo bash ~/Grid-IQ/deploy/scripts/backup-restore.sh powerguard_20250520_020000.dump
 ```
 
 ### From EBS snapshot (full server restore)
@@ -103,7 +103,7 @@ sudo bash ~/PowerGuard/deploy/scripts/backup-restore.sh powerguard_20250520_0200
 Use this when the instance itself is unrecoverable (disk failure, accidental termination):
 
 1. Go to **EC2 → Snapshots** in AWS console
-2. Find the most recent `powerguard-weekly-*` snapshot
+2. Find the most recent `gridiq-weekly-*` snapshot
 3. **Actions → Create volume** (same AZ as your instance)
 4. Detach the failed root volume and attach the restored one, OR launch a new instance from the snapshot:
    - **Actions → Create image from snapshot** → **Launch instance**
@@ -114,10 +114,10 @@ Use this when the instance itself is unrecoverable (disk failure, accidental ter
 
 ```bash
 # Watch backup log live
-tail -f /var/log/powerguard/backup.log
+tail -f /var/log/gridiq/backup.log
 
 # Check last backup time
-grep "backup complete" /var/log/powerguard/backup.log | tail -5
+grep "backup complete" /var/log/gridiq/backup.log | tail -5
 
 # List S3 backups
 source /home/ubuntu/.backup-env
@@ -125,7 +125,7 @@ aws s3 ls s3://$BACKUP_S3_BUCKET/daily/ | sort -r | head -10
 
 # List EBS snapshots
 aws ec2 describe-snapshots \
-  --filters "Name=tag:Project,Values=powerguard" \
+  --filters "Name=tag:Project,Values=gridiq" \
   --query 'Snapshots[*].[SnapshotId,StartTime,State,Description]' \
   --output table
 ```

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quick overview of all PowerGuard infrastructure.
+# Quick overview of all Grid-IQ infrastructure.
 # Run: bash deploy/scripts/status.sh
 
 YEL='\033[1;33m'
@@ -10,7 +10,7 @@ RST='\033[0m'
 
 echo -e "${YEL}━━━ Docker Containers ━━━${RST}"
 docker ps --format "  {{.Names}}  ←  {{.Status}}  ({{.Ports}})" 2>/dev/null | grep -E "powerguard" \
-    || echo -e "  ${RED}No PowerGuard containers running${RST}"
+    || echo -e "  ${RED}No Grid-IQ containers running${RST}"
 
 echo ""
 echo -e "${YEL}━━━ systemd Services ━━━${RST}"

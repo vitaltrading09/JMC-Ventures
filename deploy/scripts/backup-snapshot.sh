@@ -1,12 +1,12 @@
 #!/bin/bash
-# PowerGuard — weekly EBS snapshot (whole-disk, includes OS + Docker volumes)
+# Grid-IQ — weekly EBS snapshot (whole-disk, includes OS + Docker volumes)
 # Cron (installed by setup-backups.sh): 0 3 * * 0 (Sunday 03:00 UTC = 05:00 SAST)
 # Requires: ec2:CreateSnapshot, ec2:DescribeInstances, ec2:DescribeSnapshots,
 #           ec2:DeleteSnapshot, ec2:CreateTags  (IAM policy: deploy/iam/backup-policy.json)
 
 set -euo pipefail
 
-LOG_DIR="/var/log/powerguard"
+LOG_DIR="/var/log/gridiq"
 LOG="${LOG_DIR}/backup.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [BACKUP-SNAPSHOT] $1" | tee -a "$LOG"; }
@@ -43,9 +43,9 @@ log "Volume: $VOLUME_ID"
 DATE_TAG=$(date +%Y-%m-%d)
 SNAPSHOT_ID=$(aws ec2 create-snapshot \
     --volume-id "$VOLUME_ID" \
-    --description "PowerGuard weekly backup ${DATE_TAG}" \
+    --description "Grid-IQ weekly backup ${DATE_TAG}" \
     --tag-specifications \
-        "ResourceType=snapshot,Tags=[{Key=Name,Value=powerguard-weekly-${DATE_TAG}},{Key=Project,Value=powerguard},{Key=Backup,Value=weekly}]" \
+        "ResourceType=snapshot,Tags=[{Key=Name,Value=gridiq-weekly-${DATE_TAG}},{Key=Project,Value=gridiq},{Key=Backup,Value=weekly}]" \
     --query 'SnapshotId' \
     --output text 2>>"$LOG")
 
@@ -68,7 +68,7 @@ while IFS= read -r old_snap; do
     } || log "  WARNING: could not delete $old_snap (may already be deleted)"
 done < <(aws ec2 describe-snapshots \
     --filters \
-        "Name=tag:Project,Values=powerguard" \
+        "Name=tag:Project,Values=gridiq" \
         "Name=tag:Backup,Values=weekly" \
     --query "Snapshots[?StartTime<='${CUTOFF}'].SnapshotId" \
     --output text 2>>"$LOG" | tr '\t' '\n' || true)

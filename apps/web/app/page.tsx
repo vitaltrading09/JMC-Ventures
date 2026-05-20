@@ -14,7 +14,7 @@ export default function Home() {
                     </div>
 
                     <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold tracking-tight mb-6 text-transparent bg-clip-text bg-gradient-to-r from-slate-100 to-slate-400">
-                        PowerGuard
+                        Grid-IQ
                     </h1>
 
                     <p className="text-xl text-slate-400 mb-8 max-w-2xl font-light leading-relaxed">

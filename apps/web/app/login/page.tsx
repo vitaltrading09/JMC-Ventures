@@ -58,7 +58,7 @@ export default function LoginPage() {
                     <Link href="/" className="flex items-center gap-2 mb-8">
                         <Zap className="h-8 w-8 text-blue-500" />
                         <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">
-                            PowerGuard
+                            Grid-IQ
                         </span>
                     </Link>
                 </div>
@@ -87,7 +87,7 @@ export default function LoginPage() {
 
                 {/* Footer */}
                 <div className="relative z-10 text-sm text-slate-500 mt-8 md:mt-0">
-                    &copy; 2024 PowerGuard Intelligence. All rights reserved.
+                    &copy; 2024 Grid-IQ Intelligence. All rights reserved.
                 </div>
             </div>
 

@@ -1,10 +1,10 @@
 #!/bin/bash
-# PowerGuard — one-time backup system setup
+# Grid-IQ — one-time backup system setup
 # Run: sudo bash deploy/scripts/setup-backups.sh
 #
 # What this does:
 #   1. Installs AWS CLI v2 if missing
-#   2. Creates /var/log/powerguard/backup.log
+#   2. Creates /var/log/gridiq/backup.log
 #   3. Makes backup scripts executable
 #   4. Installs cron jobs (daily pg_dump 02:00 UTC, weekly snapshot Sunday 03:00 UTC)
 #   5. Configures logrotate
@@ -19,12 +19,12 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-LOG_DIR="/var/log/powerguard"
+LOG_DIR="/var/log/gridiq"
 LOG="${LOG_DIR}/backup.log"
 
 echo ""
 echo "════════════════════════════════════════════════════"
-echo "  PowerGuard Backup System Setup"
+echo "  Grid-IQ Backup System Setup"
 echo "════════════════════════════════════════════════════"
 echo ""
 
@@ -71,7 +71,7 @@ if [ ! -f /home/ubuntu/.backup-env ]; then
     echo "    nano /home/ubuntu/.backup-env"
     echo ""
     echo "  Required contents:"
-    echo "    BACKUP_S3_BUCKET=powerguard-backups-prod"
+    echo "    BACKUP_S3_BUCKET=gridiq-backups-prod"
     echo "    AWS_DEFAULT_REGION=af-south-1"
     echo ""
     echo "  If NOT using an EC2 instance role, also add:"
@@ -120,7 +120,7 @@ echo "  ✓ Weekly snapshot:  every Sunday at 03:00 UTC (05:00 SAST)"
 # ── 6. Logrotate ─────────────────────────────────────────────────────────────
 echo ""
 echo "▶ Configuring logrotate…"
-cat > /etc/logrotate.d/powerguard-backup <<EOF
+cat > /etc/logrotate.d/gridiq-backup <<EOF
 ${LOG} {
     daily
     rotate 30

@@ -1,8 +1,8 @@
 #!/bin/bash
-# PowerGuard production setup — switches services from `nohup &` to systemd.
+# Grid-IQ production setup — switches services from `nohup &` to systemd.
 # Idempotent: safe to run multiple times.
 #
-# Run from anywhere on the server:  sudo bash /home/ubuntu/PowerGuard/deploy/scripts/install.sh
+# Run from anywhere on the server:  sudo bash /home/ubuntu/Grid-IQ/deploy/scripts/install.sh
 
 set -euo pipefail
 
@@ -16,10 +16,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SYSTEMD_SRC="$REPO_ROOT/deploy/systemd"
 HEALTHCHECK="$REPO_ROOT/deploy/scripts/healthcheck.sh"
-HEALTHCHECK_LOG="/var/log/powerguard-healthcheck.log"
+HEALTHCHECK_LOG="/var/log/gridiq-healthcheck.log"
 
 echo "════════════════════════════════════════════════════"
-echo "  PowerGuard systemd setup"
+echo "  Grid-IQ systemd setup"
 echo "════════════════════════════════════════════════════"
 echo "  Repo:          $REPO_ROOT"
 echo "  systemd src:   $SYSTEMD_SRC"
@@ -75,7 +75,7 @@ fi
 
 # Legacy nohup processes (compiled dist/ or tsx source)
 pkill -f "npx tsx services/" 2>/dev/null || true
-pkill -f "PowerGuard/services" 2>/dev/null || true
+pkill -f "Grid-IQ/services" 2>/dev/null || true
 pkill -f "next-server"       2>/dev/null || true
 pkill -f "next start"        2>/dev/null || true
 sleep 2
@@ -128,7 +128,7 @@ chmod 644 "$HEALTHCHECK_LOG"
 # (which trips `set -e`), and `crontab -l` returns 1 on an empty crontab.
 CRON_LINE="* * * * * $HEALTHCHECK >> $HEALTHCHECK_LOG 2>&1"
 EXISTING_CRON="$(crontab -l 2>/dev/null || true)"
-FILTERED="$(echo "$EXISTING_CRON" | grep -vF "powerguard" || true)"
+FILTERED="$(echo "$EXISTING_CRON" | grep -vF "gridiq" || true)"
 {
     [ -n "$FILTERED" ] && echo "$FILTERED"
     echo "$CRON_LINE"
@@ -136,7 +136,7 @@ FILTERED="$(echo "$EXISTING_CRON" | grep -vF "powerguard" || true)"
 echo "  ✓ Cron installed: runs every minute, logs to $HEALTHCHECK_LOG"
 
 # ── 8. Logrotate for the healthcheck log ──────────────────────────────────
-cat > /etc/logrotate.d/powerguard-healthcheck <<EOF
+cat > /etc/logrotate.d/gridiq-healthcheck <<EOF
 $HEALTHCHECK_LOG {
     daily
     rotate 14

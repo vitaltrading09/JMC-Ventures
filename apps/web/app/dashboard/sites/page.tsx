@@ -606,7 +606,7 @@ export default function SitesPage() {
 
                         <div className="mt-5 space-y-3">
                             {[
-                                { label: "Broker IP / Host",  value: window.location.hostname === 'localhost' ? '(your PC IP on local network)' : window.location.hostname, note: "Your PowerGuard server IP — use ifconfig/ipconfig to find it on local network" },
+                                { label: "Broker IP / Host",  value: window.location.hostname === 'localhost' ? '(your PC IP on local network)' : window.location.hostname, note: "Your Grid-IQ server IP — use ifconfig/ipconfig to find it on local network" },
                                 { label: "Port",              value: "1883",                        note: "Plain TCP — no TLS for local setup" },
                                 { label: "Username",          value: "acuvim_meter",                note: "MQTT client username" },
                                 { label: "Password",          value: "change_me_in_production",     note: "From mosquitto passwd file — update before going live" },

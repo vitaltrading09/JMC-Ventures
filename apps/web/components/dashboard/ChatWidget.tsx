@@ -18,7 +18,7 @@ export function ChatWidget() {
     const [suggestions, setSuggestions] = useState<string[]>([]);
     const [showSuggestions, setShowSuggestions] = useState(true);
     const [messages, setMessages] = useState<ChatMessage[]>([
-        { id: '1', role: 'assistant', content: 'Hello! I\'m your **PowerGuard AI Consultant** — I have access to your live energy data. Ask me anything about your sites, power quality, costs, or alerts.' }
+        { id: '1', role: 'assistant', content: 'Hello! I\'m your **Grid-IQ AI Consultant** — I have access to your live energy data. Ask me anything about your sites, power quality, costs, or alerts.' }
     ]);
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -160,7 +160,7 @@ export function ChatWidget() {
                                 <Sparkles className="w-4 h-4" />
                             </div>
                             <div>
-                                <h3 className="font-semibold text-white text-sm">PowerGuard AI</h3>
+                                <h3 className="font-semibold text-white text-sm">Grid-IQ AI</h3>
                                 <p className="text-xs text-blue-400 font-medium flex items-center gap-1">
                                     <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
                                     Live data connected · Gemini 2.5
@@ -224,7 +224,7 @@ export function ChatWidget() {
                                 {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                             </button>
                         </form>
-                        <p className="text-center mt-2 text-[10px] text-slate-600">PowerGuard AI · Always verify critical decisions manually</p>
+                        <p className="text-center mt-2 text-[10px] text-slate-600">Grid-IQ AI · Always verify critical decisions manually</p>
                     </div>
                 </div>
             )}

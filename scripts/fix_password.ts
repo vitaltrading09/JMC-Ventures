@@ -21,7 +21,7 @@ async function fixPassword() {
         const res = await client.query(`
             UPDATE users 
             SET password_hash = $1 
-            WHERE email = 'demo@powerguard.com'
+            WHERE email = 'demo@grid-iq.co.za'
         `, [hash]);
 
         console.log(`✅ Updated ${res.rowCount} user(s). Password is now '${password}'`);

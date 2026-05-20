@@ -1,5 +1,5 @@
 {
-  "_comment": "IAM policy for PowerGuard backup user. Attach to an IAM user (not a role) when the EC2 instance has no instance profile. Replace BUCKET_NAME with your actual bucket name.",
+  "_comment": "IAM policy for Grid-IQ backup user. Attach to an IAM user (not a role) when the EC2 instance has no instance profile. Replace BUCKET_NAME with your actual bucket name.",
   "Version": "2012-10-17",
   "Statement": [
     {

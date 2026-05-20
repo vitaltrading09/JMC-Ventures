@@ -9,7 +9,7 @@ dotenv.config();
 
 // Crash early rather than run with an insecure default
 const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET || JWT_SECRET === 'powerguard-super-secret-key-change-in-prod' || JWT_SECRET.length < 32) {
+if (!JWT_SECRET || JWT_SECRET === 'gridiq-super-secret-key-change-in-prod' || JWT_SECRET.length < 32) {
     console.error('FATAL: JWT_SECRET is missing, too short, or still set to the default placeholder.');
     console.error('       Set a strong secret (≥32 chars) in services/api-gateway/.env');
     process.exit(1);

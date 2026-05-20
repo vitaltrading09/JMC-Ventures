@@ -456,7 +456,7 @@ import jwt from 'jsonwebtoken';
 const app = express();
 const port = process.env.PORT || 3002;
 const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET || JWT_SECRET === 'powerguard-super-secret-key-change-in-prod' || JWT_SECRET.length < 32) {
+if (!JWT_SECRET || JWT_SECRET === 'gridiq-super-secret-key-change-in-prod' || JWT_SECRET.length < 32) {
     console.error('FATAL: JWT_SECRET is missing, too short, or still set to the default placeholder.');
     console.error('       Set a strong secret (≥32 chars) in services/ingestion-service/.env');
     process.exit(1);
@@ -889,7 +889,7 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
         const monthly = monthlyResult.rows[0];
 
         // --- Build rich context string ---
-        let contextString = `=== POWERGUARD LIVE DATA SNAPSHOT ===\n`;
+        let contextString = `=== GRID-IQ LIVE DATA SNAPSHOT ===\n`;
         contextString += `Timestamp: ${new Date().toLocaleString()}\n\n`;
 
         // Meters

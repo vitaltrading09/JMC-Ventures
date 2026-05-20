@@ -35,15 +35,15 @@ async function main() {
         const password = 'password123';
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        const userCheck = await client.query("SELECT id FROM users WHERE email = 'demo@powerguard.com'");
+        const userCheck = await client.query("SELECT id FROM users WHERE email = 'demo@grid-iq.co.za'");
         if (userCheck.rows.length === 0) {
             await client.query(`
                 INSERT INTO users (tenant_id, email, password_hash, role) 
-                VALUES ($1, 'demo@powerguard.com', $2, 'admin')
+                VALUES ($1, 'demo@grid-iq.co.za', $2, 'admin')
             `, [tenantId, hashedPassword]);
-            console.log(`Created User: demo@powerguard.com`);
+            console.log(`Created User: demo@grid-iq.co.za`);
         } else {
-            console.log("User demo@powerguard.com already exists.");
+            console.log("User demo@grid-iq.co.za already exists.");
         }
 
         // 3. Create Sites & Meters (5 Demo Sites)

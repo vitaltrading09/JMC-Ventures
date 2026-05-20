@@ -136,7 +136,7 @@ export async function generateAndStoreSiteRecommendations(
     const unb = metrics.unbalancePct !== null ? metrics.unbalancePct.toFixed(2) + '%' : 'N/A (single-phase or insufficient data)';
     const vab = metrics.avgVa !== null ? `${metrics.avgVa.toFixed(1)}V / ${metrics.avgVb?.toFixed(1) ?? '—'}V / ${metrics.avgVc?.toFixed(1) ?? '—'}V` : 'N/A';
 
-    const prompt = `You are PowerGuard's energy analysis engine for South African industrial and commercial sites.
+    const prompt = `You are Grid-IQ's energy analysis engine for South African industrial and commercial sites.
 Analyse the data below and return ONLY a valid JSON object of the form:
 { "recommendations": [ ... 2 to 5 items matching the schema below ... ] }
 No prose, no markdown fences — just raw parseable JSON.
@@ -210,7 +210,7 @@ JSON schema for each item:
         const completion = await openai.chat.completions.create({
             model:    'gpt-5.4-nano',
             messages: [
-                { role: 'system', content: 'You are PowerGuard\'s energy analysis engine. Reply with ONLY a valid JSON array of recommendations — no prose, no markdown fences, just raw JSON parseable by JSON.parse().' },
+                { role: 'system', content: 'You are Grid-IQ\'s energy analysis engine. Reply with ONLY a valid JSON array of recommendations — no prose, no markdown fences, just raw JSON parseable by JSON.parse().' },
                 { role: 'user',   content: prompt },
             ],
             // Force JSON output so we never have to strip prose/markdown from the reply.

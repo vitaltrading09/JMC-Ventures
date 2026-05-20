@@ -303,7 +303,7 @@ export default function SavingsPage() {
                     <Card className="bg-gradient-to-r from-blue-600/10 to-emerald-600/10 border-blue-500/20">
                         <div className="flex flex-col md:flex-row md:items-center gap-6 md:gap-10">
                             <div className="flex-1">
-                                <h3 className="text-lg font-bold text-white">Your PowerGuard Subscription</h3>
+                                <h3 className="text-lg font-bold text-white">Your Grid-IQ Subscription</h3>
                                 <p className="text-slate-400 text-sm mt-1">
                                     Flat monthly fee · unlimited sites · 24/7 monitoring · AI analysis included
                                 </p>

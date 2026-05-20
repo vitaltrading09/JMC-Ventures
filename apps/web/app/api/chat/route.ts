@@ -16,7 +16,7 @@ export async function POST(req: Request) {
 
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-        const systemPrompt = `You are PowerGuard AI — a dedicated, expert energy management consultant built into the PowerGuard platform.
+        const systemPrompt = `You are Grid-IQ AI — a dedicated, expert energy management consultant built into the Grid-IQ platform.
 
 Your role is to help clients understand their energy data, diagnose issues, reduce costs, and improve power quality.
 

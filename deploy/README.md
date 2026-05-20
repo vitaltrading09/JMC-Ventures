@@ -1,4 +1,4 @@
-# PowerGuard Production Deployment
+# Grid-IQ Production Deployment
 
 systemd-based service supervision with auto-restart + minute-by-minute healthchecks.
 
@@ -19,10 +19,10 @@ This replaces that with:
 
 ## One-time install
 
-After cloning the repo to `/home/ubuntu/PowerGuard` and creating all `.env` files:
+After cloning the repo to `/home/ubuntu/Grid-IQ` and creating all `.env` files:
 
 ```bash
-sudo bash /home/ubuntu/PowerGuard/deploy/scripts/install.sh
+sudo bash /home/ubuntu/Grid-IQ/deploy/scripts/install.sh
 ```
 
 The script is idempotent — safe to re-run.
@@ -53,13 +53,13 @@ sudo systemctl restart powerguard-ingestion
 sudo systemctl restart powerguard-{auth,ingestion,gateway,web}
 
 # See what the healthcheck has been doing
-sudo tail -f /var/log/powerguard-healthcheck.log
+sudo tail -f /var/log/gridiq-healthcheck.log
 ```
 
 ## Redeploying after `git pull`
 
 ```bash
-bash /home/ubuntu/PowerGuard/deploy/scripts/redeploy.sh
+bash /home/ubuntu/Grid-IQ/deploy/scripts/redeploy.sh
 ```
 
 This pulls, runs `npm install`, rebuilds the Next.js frontend, and restarts all four services in correct order.
@@ -106,7 +106,7 @@ Each minute, `healthcheck.sh` hits `/health` on each service. If the probe fails
 
 Watch it live:
 ```bash
-sudo tail -f /var/log/powerguard-healthcheck.log
+sudo tail -f /var/log/gridiq-healthcheck.log
 ```
 
 Healthy days the log stays empty — entries only appear when something actually broke.

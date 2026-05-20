@@ -16,7 +16,7 @@ import {
 
 export function AdminSidebar() {
     const pathname = usePathname();
-    const [user, setUser] = useState({ name: "Platform Admin", email: "admin@powerguard.co.za", initials: "PG" });
+    const [user, setUser] = useState({ name: "Platform Admin", email: "admin@grid-iq.co.za", initials: "PG" });
 
     useEffect(() => {
         try {
@@ -57,7 +57,7 @@ export function AdminSidebar() {
                     <Zap className="h-8 w-8 text-blue-500" />
                     <div>
                         <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">
-                            PowerGuard
+                            Grid-IQ
                         </span>
                         <span className="ml-1.5 text-[10px] font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-1.5 py-0.5 rounded uppercase tracking-wider">
                             Operator

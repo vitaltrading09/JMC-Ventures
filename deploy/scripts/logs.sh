@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tail logs for a PowerGuard service.
+# Tail logs for a Grid-IQ service.
 # Usage: bash deploy/scripts/logs.sh <auth|ingestion|gateway|web>  [lines]
 
 SERVICE="${1:-}"
@@ -29,4 +29,4 @@ case "$SERVICE" in
     *) echo "Unknown service: $SERVICE"; exit 1 ;;
 esac
 
-exec journalctl -u "powerguard-$SERVICE" -n "$LINES" -f --no-pager
+exec journalctl -u "gridiq-$SERVICE" -n "$LINES" -f --no-pager

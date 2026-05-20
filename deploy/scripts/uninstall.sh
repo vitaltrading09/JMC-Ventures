@@ -27,11 +27,11 @@ echo "  ✓ systemd daemon reloaded"
 echo ""
 echo "▶ Removing healthcheck cron…"
 (crontab -l 2>/dev/null | grep -vF "$HEALTHCHECK") | crontab -
-rm -f /etc/logrotate.d/powerguard-healthcheck
+rm -f /etc/logrotate.d/gridiq-healthcheck
 echo "  ✓ Cron and logrotate config removed"
 
 echo ""
 echo "Docker containers (TimescaleDB, Redis, Mosquitto) left running."
-echo "Application logs at /var/log/powerguard-healthcheck.log preserved."
+echo "Application logs at /var/log/gridiq-healthcheck.log preserved."
 echo ""
 echo "Done. You can now use 'bash start.sh' again."

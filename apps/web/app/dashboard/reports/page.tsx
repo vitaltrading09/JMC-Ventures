@@ -316,7 +316,7 @@ export default function ReportsPage() {
                             <Zap className="h-6 w-6 text-blue-400 shrink-0" />
                             <div>
                                 <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">
-                                    PowerGuard
+                                    Grid-IQ
                                 </p>
                                 <p className="text-base font-bold text-white leading-tight">
                                     Monthly Energy Report
@@ -666,7 +666,7 @@ export default function ReportsPage() {
                         <div className="flex items-center gap-2">
                             <Zap className="h-4 w-4 text-blue-500 shrink-0" />
                             <span className="text-xs font-semibold text-slate-500">
-                                PowerGuard Energy Intelligence
+                                Grid-IQ Energy Intelligence
                             </span>
                         </div>
                         <div className="text-right">
@@ -674,7 +674,7 @@ export default function ReportsPage() {
                                 Next report: <span className="font-medium text-slate-600">{nextMonth}</span>
                             </p>
                             <p className="text-[10px] text-slate-400 mt-0.5">
-                                powerguard.co.za · Confidential
+                                grid-iq.co.za · Confidential
                             </p>
                         </div>
                     </div>

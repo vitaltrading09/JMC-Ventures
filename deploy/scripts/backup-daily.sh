@@ -1,5 +1,5 @@
 #!/bin/bash
-# PowerGuard — daily PostgreSQL backup to S3
+# Grid-IQ — daily PostgreSQL backup to S3
 # Cron (installed by setup-backups.sh): 0 2 * * * (02:00 UTC = 04:00 SAST)
 # Config: /home/ubuntu/.backup-env
 #   BACKUP_S3_BUCKET   required
@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="/var/log/powerguard"
+LOG_DIR="/var/log/gridiq"
 LOG="${LOG_DIR}/backup.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [BACKUP-DAILY] $1" | tee -a "$LOG"; }
@@ -22,7 +22,7 @@ touch "$LOG"
 
 BUCKET="${BACKUP_S3_BUCKET:?Set BACKUP_S3_BUCKET in /home/ubuntu/.backup-env}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-BACKUP_NAME="powerguard_${TIMESTAMP}.dump"
+BACKUP_NAME="gridiq_${TIMESTAMP}.dump"
 TMP_FILE="/tmp/${BACKUP_NAME}"
 
 log "════════════════════════════════════════"

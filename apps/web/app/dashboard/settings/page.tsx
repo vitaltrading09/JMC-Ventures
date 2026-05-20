@@ -30,7 +30,7 @@ export default function SettingsPage() {
                         </div>
                         <div className="space-y-2">
                             <label className="text-sm font-medium text-slate-400">Email Address</label>
-                            <input type="email" defaultValue="admin@powerguard.com" className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                            <input type="email" defaultValue="admin@grid-iq.co.za" className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
                         </div>
                     </div>
                     <div className="px-6 py-4 bg-slate-900/50 rounded-b-xl border-t border-slate-800 flex justify-end">

@@ -84,7 +84,7 @@ export function Sidebar() {
                 <Link href="/" className="flex items-center gap-2">
                     <Zap className="h-6 w-6 text-blue-500" />
                     <span className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">
-                        PowerGuard
+                        Grid-IQ
                     </span>
                 </Link>
                 <div className="flex items-center gap-3">
@@ -113,7 +113,7 @@ export function Sidebar() {
                     <Link href="/" className="flex items-center gap-2">
                         <Zap className="h-8 w-8 text-blue-500" />
                         <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">
-                            PowerGuard
+                            Grid-IQ
                         </span>
                     </Link>
                 </div>
