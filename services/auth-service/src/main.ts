@@ -125,14 +125,20 @@ app.get('/verify', (req, res) => {
   }
 });
 
-// Middleware for Admin Routes
+// Middleware for Admin Routes — accepts HTTPOnly cookie OR Authorization: Bearer
 const requireSuperAdmin = (req: any, res: any, next: any) => {
+  const cookieHeader = req.headers.cookie || '';
+  const cookieMatch = cookieHeader.match(/(?:^|;\s*)token=([^;]+)/);
+  const cookieToken = cookieMatch ? cookieMatch[1] : null;
+
   const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
+  const bearerToken = authHeader ? authHeader.split(' ')[1] : null;
+
+  const token = cookieToken || bearerToken;
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
 
   try {
-    const decoded: any = jwt.verify(token, JWT_SECRET);
+    const decoded: any = jwt.verify(token, JWT_SECRET as string);
     if (decoded.role !== 'super_admin' && decoded.role !== 'admin') {
       // NOTE: For demo, allowing 'admin' (the seeded user) to act as super_admin for now
       return res.status(403).json({ error: 'Forbidden: Super Admin required' });
