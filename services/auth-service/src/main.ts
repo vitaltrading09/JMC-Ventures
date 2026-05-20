@@ -33,7 +33,9 @@ if (!JWT_SECRET || JWT_SECRET === 'powerguard-super-secret-key-change-in-prod' |
   console.error('       Set a strong secret (≥32 chars) in services/auth-service/.env');
   process.exit(1);
 }
-const COOKIE_SECURE = process.env.NODE_ENV === 'production';
+// COOKIE_SECURE must be explicitly set to 'true' via env — not inferred from
+// NODE_ENV — so we can run production mode over HTTP until TLS is provisioned.
+const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
 
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
