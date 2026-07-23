@@ -9,6 +9,7 @@ import {
 } from "recharts";
 import { Zap, TrendingDown, RefreshCw, Loader2, DollarSign, Lightbulb, ChevronRight, Activity } from "lucide-react";
 import Link from "next/link";
+import { zar, normalizeRec } from "@/lib/format";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
 
@@ -149,7 +150,7 @@ export default function AnalyticsPage() {
             // Per-meter recommendations
             setRecsLoading(true);
             const recsRes = await fetch(`${API}/ingestion/meters/${mid}/recommendations`, { credentials: 'include' });
-            if (recsRes.ok) setMeterRecs(await recsRes.json());
+            if (recsRes.ok) setMeterRecs((await recsRes.json()).map(normalizeRec));
             setRecsLoading(false);
         } finally {
             setLoading(false);
@@ -180,7 +181,7 @@ export default function AnalyticsPage() {
             });
             if (res.ok) {
                 const recsRes = await fetch(`${API}/ingestion/meters/${meterId}/recommendations`, { credentials: 'include' });
-                if (recsRes.ok) setMeterRecs(await recsRes.json());
+                if (recsRes.ok) setMeterRecs((await recsRes.json()).map(normalizeRec));
             } else {
                 const err = await res.json();
                 alert(`Could not generate: ${err.error || res.status}`);
@@ -445,7 +446,7 @@ TARIFF RATES (actual configured):
                                 {rec.estimated_monthly_saving_zar > 0 && (
                                     <div className="text-right shrink-0">
                                         <p className="text-sm font-bold text-emerald-400">
-                                            R{rec.estimated_monthly_saving_zar.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}
+                                            {zar(rec.estimated_monthly_saving_zar)}
                                         </p>
                                         <p className="text-[10px] text-slate-500">per month</p>
                                     </div>
@@ -522,7 +523,7 @@ TARIFF RATES (actual configured):
                             ].map(b => (
                                 <div key={b.label} className="text-center p-3 rounded-lg bg-slate-900/50">
                                     <p className={`text-xs font-medium uppercase tracking-wide ${b.color}`}>{b.label}</p>
-                                    <p className="text-lg font-bold text-white mt-1">R{b.cost.toFixed(0)}</p>
+                                    <p className="text-lg font-bold text-white mt-1">{zar(b.cost)}</p>
                                     <p className="text-xs text-slate-500 mt-0.5">{b.kwh.toFixed(0)} kWh</p>
                                 </div>
                             ))}
@@ -530,12 +531,12 @@ TARIFF RATES (actual configured):
                         <div className="flex items-center justify-between pt-3 border-t border-slate-700">
                             <div>
                                 <p className="text-xs text-slate-500">7-day total</p>
-                                <p className="text-2xl font-bold text-white">R{cost.totalCost.toFixed(0)}</p>
+                                <p className="text-2xl font-bold text-white">{zar(cost.totalCost)}</p>
                                 <p className="text-xs text-slate-500 mt-0.5">Avg rate R{cost.avgRate.toFixed(3)}/kWh</p>
                             </div>
                             <div className="text-right">
                                 <p className="text-xs text-slate-500">Projected monthly</p>
-                                <p className="text-2xl font-bold text-emerald-400">R{projMonthly.toFixed(0)}</p>
+                                <p className="text-2xl font-bold text-emerald-400">{zar(projMonthly)}</p>
                                 <p className="text-xs text-slate-500 mt-0.5">Based on 7-day trend</p>
                             </div>
                         </div>

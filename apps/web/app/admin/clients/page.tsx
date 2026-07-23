@@ -6,6 +6,7 @@ import {
     Building2, Database, Briefcase,
     Loader2, RefreshCw, Plus, ChevronDown, Search,
 } from "lucide-react";
+import { toNum } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Tenant   { id: string; name: string; site_count?: string; user_count?: string; created_at: string; }
@@ -140,7 +141,7 @@ export default function ClientPortfoliosPage() {
         );
         const tScores = scores.filter(sc => siteIds.has(sc.site_id));
         const avgScore = tScores.length > 0
-            ? tScores.reduce((a, sc) => a + sc.score, 0) / tScores.length
+            ? tScores.reduce((a, sc) => a + toNum(sc.score), 0) / tScores.length
             : null;
 
         const siteDetails = tSites.map(site => ({

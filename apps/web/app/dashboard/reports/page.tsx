@@ -6,6 +6,7 @@ import {
     XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { Zap, Printer, ChevronDown, Loader2, Leaf, AlertTriangle } from "lucide-react";
+import { zar, normalizeRec } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Site { id: string; name: string; address?: string; }
@@ -59,9 +60,8 @@ const TYPE_LABEL: Record<string, string> = {
 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function fmtZAR(n: number) {
-    return `R ${n.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}`;
-}
+// Currency formatting lives in @/lib/format (zar); alias kept for existing call sites.
+const fmtZAR = zar;
 
 function scoreStroke(s: number | null) {
     if (s === null) return "#cbd5e1";
@@ -191,7 +191,7 @@ export default function ReportsPage() {
             ]);
             setSites  (Array.isArray(s)  ? s  : []);
             setScores (Array.isArray(sc) ? sc : []);
-            setRecs   (Array.isArray(r)  ? r  : []);
+            setRecs   (Array.isArray(r)  ? r.map(normalizeRec)  : []);
             setMeters (Array.isArray(m)  ? m  : []);
         } catch { }
         finally { setLoading(false); }

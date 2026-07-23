@@ -6,6 +6,7 @@ import {
     Loader2, Briefcase, RefreshCw, CheckCircle2,
     Clock, FileText, XCircle, ChevronDown,
 } from "lucide-react";
+import { zar, toNum } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type LeadStatus = "NEW" | "IN_REVIEW" | "QUOTED" | "WON" | "LOST";
@@ -43,8 +44,10 @@ const NEXT_STATUS: Partial<Record<LeadStatus, LeadStatus>> = {
     QUOTED:    "WON",
 };
 
-function fmt(n: number) {
-    return n > 0 ? `R ${n.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}` : "—";
+function fmt(v: unknown) {
+    // Coerce NUMERIC-column strings before comparing/formatting.
+    const n = toNum(v);
+    return n > 0 ? zar(n) : "—";
 }
 
 function timeAgo(iso: string) {

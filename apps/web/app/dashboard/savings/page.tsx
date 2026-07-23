@@ -11,6 +11,7 @@ import {
     Loader2, BadgeDollarSign, RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
+import { zar, toNum, normalizeRec } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Recommendation {
@@ -50,9 +51,8 @@ const TYPE_LABEL: Record<string, string> = {
     ENERGY_AUDIT:            "Energy Audit",
 };
 
-function fmt(n: number) {
-    return `R ${n.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}`;
-}
+// Currency formatting lives in @/lib/format (zar); alias kept for existing call sites.
+const fmt = zar;
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function SavingsPage() {
@@ -66,7 +66,8 @@ export default function SavingsPage() {
             });
             if (res.status === 401) { window.location.href = "/login"; return; }
             const data = await res.json();
-            setRecs(Array.isArray(data) ? data : []);
+            // NUMERIC columns arrive as strings — coerce so sums add (not concatenate).
+            setRecs(Array.isArray(data) ? data.map(normalizeRec) : []);
         } catch { /* API offline — show empty state */ }
         finally { setLoading(false); }
     }, []);

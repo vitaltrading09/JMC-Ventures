@@ -6,6 +6,7 @@ import {
     Zap, Loader2, RefreshCw, BellRing, CheckCircle2, TrendingUp,
     Lightbulb, Filter, Sun, Activity, AlertTriangle, BarChart2, ChevronDown, ChevronUp,
 } from "lucide-react";
+import { zar, normalizeRec } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Recommendation {
@@ -52,9 +53,8 @@ const CONFIDENCE_COLOUR: Record<string, string> = {
     LOW:    "text-slate-400   bg-slate-700",
 };
 
-function fmt(n: number) {
-    return `R ${n.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}`;
-}
+// Currency formatting lives in @/lib/format (zar); alias kept for existing call sites.
+const fmt = zar;
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function RecommendationsPage() {
@@ -87,7 +87,8 @@ export default function RecommendationsPage() {
             const [recsData, sitesData, metersData] = await Promise.all([
                 recsRes.json(), sitesRes.json(), metersRes.json()
             ]);
-            setRecs(Array.isArray(recsData) ? recsData : []);
+            // NUMERIC columns arrive as strings — coerce so the header total sums correctly.
+            setRecs(Array.isArray(recsData) ? recsData.map(normalizeRec) : []);
             setSites(Array.isArray(sitesData) ? sitesData : []);
             setMeters(Array.isArray(metersData) ? metersData : []);
         } catch (e) { console.error(e); }

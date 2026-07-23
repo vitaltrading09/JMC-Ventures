@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { Card, CardHeader } from "@/components/ui/Card";
+import { toNum } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Meter {
@@ -193,18 +194,20 @@ export default function DashboardPage() {
         return pfs.length > 0 ? pfs.reduce((a, b) => a + b, 0) / pfs.length : null;
     })();
 
-    // Energy score: average across all sites with a score
+    // Energy score: average across all sites with a score.
+    // toNum() guards against NUMERIC columns arriving as strings (otherwise the
+    // reduce concatenates and only "works" by luck when there is a single site).
     const avgScore = scores.length > 0
-        ? Math.round(scores.reduce((s, r) => s + r.score, 0) / scores.length)
+        ? Math.round(scores.reduce((s, r) => s + toNum(r.score), 0) / scores.length)
         : null;
 
     const [expandedHint, setExpandedHint] = useState<string | null>(null);
 
     const avgComponents = scores.length > 0 ? {
-        pf:        Math.round(scores.reduce((s, r) => s + r.pf_score,                 0) / scores.length),
-        thd:       Math.round(scores.reduce((s, r) => s + r.thd_score,                0) / scores.length),
-        unbalance: Math.round(scores.reduce((s, r) => s + r.voltage_unbalance_score,  0) / scores.length),
-        voltage:   Math.round(scores.reduce((s, r) => s + r.voltage_quality_score,    0) / scores.length),
+        pf:        Math.round(scores.reduce((s, r) => s + toNum(r.pf_score),                0) / scores.length),
+        thd:       Math.round(scores.reduce((s, r) => s + toNum(r.thd_score),               0) / scores.length),
+        unbalance: Math.round(scores.reduce((s, r) => s + toNum(r.voltage_unbalance_score), 0) / scores.length),
+        voltage:   Math.round(scores.reduce((s, r) => s + toNum(r.voltage_quality_score),   0) / scores.length),
     } : null;
 
     const { text: statusText, cls: statusCls } = scoreLabel(avgScore);

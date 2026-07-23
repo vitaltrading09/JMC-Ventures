@@ -8,6 +8,7 @@ import {
     ChevronRight, Activity,
 } from "lucide-react";
 import Link from "next/link";
+import { toNum } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Site  { id: string; name: string; address?: string; tenant_id?: string; }
@@ -150,7 +151,7 @@ export default function AdminOverviewPage() {
                     <div className="mt-2 text-3xl font-bold text-emerald-400">{scores.length}</div>
                     <p className="text-sm text-slate-500 mt-1">
                         {scores.length > 0
-                            ? `Avg score: ${Math.round(scores.reduce((s, r) => s + r.score, 0) / scores.length)}`
+                            ? `Avg score: ${Math.round(scores.reduce((s, r) => s + toNum(r.score), 0) / scores.length)}`
                             : "Run AI analysis to score"}
                     </p>
                 </Card>
