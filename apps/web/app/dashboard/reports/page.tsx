@@ -174,13 +174,15 @@ export default function ReportsPage() {
     }, []);
 
     const fetchAll = useCallback(async () => {
-        const h = { credentials: 'include' as const };
+        // credentials:'include' is a top-level fetch option — NOT a header.
+        // (Nesting it in { headers } sends the auth cookie nowhere → 401/CORS fail.)
+        const opts = { credentials: 'include' as const };
         try {
             const [sRes, scRes, rRes, mRes] = await Promise.all([
-                fetch(`${API}/ingestion/sites`,           { headers: h }),
-                fetch(`${API}/ingestion/sites/scores`,    { headers: h }),
-                fetch(`${API}/ingestion/recommendations`, { headers: h }),
-                fetch(`${API}/ingestion/meters`,          { headers: h }),
+                fetch(`${API}/ingestion/sites`,           opts),
+                fetch(`${API}/ingestion/sites/scores`,    opts),
+                fetch(`${API}/ingestion/recommendations`, opts),
+                fetch(`${API}/ingestion/meters`,          opts),
             ]);
             if (sRes.status === 401) { window.location.href = "/login"; return; }
             const [s, sc, r, m] = await Promise.all([
@@ -211,8 +213,8 @@ export default function ReportsPage() {
         if (!selectedId || meters.length === 0) return;
         const meter = meters.find(m => m.site_id === selectedId);
         if (!meter) { setConsumption([]); return; }
-        const h = { credentials: 'include' as const };
-        fetch(`${API}/ingestion/meters/${meter.id}/monthly?months=6`, { headers: h })
+        const opts = { credentials: 'include' as const };
+        fetch(`${API}/ingestion/meters/${meter.id}/monthly?months=6`, opts)
             .then(r => r.ok ? r.json() : [])
             .then((rows: { month: string; kwh: string | number }[]) => {
                 setConsumption(rows.map(r => ({ month: r.month, kwh: Number(r.kwh) })));
