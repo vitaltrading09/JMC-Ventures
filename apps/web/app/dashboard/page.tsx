@@ -441,6 +441,12 @@ export default function DashboardPage() {
                             {avgPf !== null ? avgPf.toFixed(3) : "—"}
                         </span>
                     </div>
+                    {/* Scope: this is the live snapshot across meters, NOT the 7-day
+                        average shown on Analytics. Labelled so the two can't be
+                        mistaken for contradicting each other. */}
+                    <p className="text-[10px] text-slate-600 mt-1">
+                        Live snapshot · {meters.length} meter{meters.length !== 1 ? "s" : ""}
+                    </p>
                     <div className="mt-4 text-sm text-slate-400">
                         {avgPf === null   ? "No readings yet"
                          : avgPf >= 0.95 ? "✓ Excellent"

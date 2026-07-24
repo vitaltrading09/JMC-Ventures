@@ -241,15 +241,32 @@ export default function AnalyticsPage() {
             const cost7d = calcTariffCost(readings, settings);
             const projMonthly = (cost7d.totalCost / 7 * 30).toFixed(0);
 
+            // 7-day averages are the headline figures shown on the KPI tiles. Send
+            // these as primary and mark the instantaneous values clearly as a single
+            // snapshot, so the AI doesn't quote a one-off reading as "the" power
+            // factor and contradict the dashboard.
+            const avg7PF  = readings.filter(r => r.power_factor_total != null)
+                .reduce((a, r, _, arr) => a + (r.power_factor_total! / arr.length), 0);
+            const avg7THD = readings.filter(r => r.thd_voltage_a != null)
+                .reduce((a, r, _, arr) => a + (r.thd_voltage_a! / arr.length), 0);
+
             const context = `
 Site meter: ${meterName}
 Analysis period: last 7 days (${readings.length} readings)
-Peak demand: ${peakKw} kW
-Average demand: ${avgKw} kW
-Latest power factor: ${latPF}
-Latest voltage THD: ${latTHD}
-Latest voltage L1: ${latVolt} V
-Latest current L1/L2/L3: ${latI1} / ${latI2} / ${latI3} A
+
+HEADLINE METRICS (7-day averages — these are what the client sees on their dashboard;
+quote THESE figures, not the instantaneous snapshot below):
+  Power factor (7-day avg): ${avg7PF > 0 ? avg7PF.toFixed(3) : "N/A"}
+  Voltage THD (7-day avg):  ${avg7THD > 0 ? avg7THD.toFixed(2) + "%" : "N/A"}
+  Peak demand (7-day max):  ${peakKw} kW
+  Average demand (7-day):   ${avgKw} kW
+
+INSTANTANEOUS SNAPSHOT (most recent single reading only — do not present these as the
+site's typical or headline values; use only to comment on current conditions):
+  Power factor now: ${latPF}
+  Voltage THD now: ${latTHD}
+  Voltage L1 now: ${latVolt} V
+  Current L1/L2/L3 now: ${latI1} / ${latI2} / ${latI3} A
 
 TARIFF RATES (actual configured):
   Peak (07:00-10:00, 18:00-20:00): R${rPeak.toFixed(2)}/kWh
@@ -493,31 +510,38 @@ TARIFF RATES (actual configured):
                     {[
                         {
                             label: "Power Factor",
+                            scope: `${meterName} · 7-day avg`,
                             value: avgPF > 0 ? avgPF.toFixed(3) : "—",
                             sub: avgPF >= 0.95 ? "✓ Excellent" : avgPF >= 0.85 ? "⚠ Acceptable" : "✗ Below 0.85",
                             cls: avgPF >= 0.95 ? "text-emerald-400" : avgPF >= 0.85 ? "text-yellow-400" : "text-red-400",
                         },
                         {
-                            label: "Avg THD Voltage",
+                            label: "THD Voltage",
+                            scope: `${meterName} · 7-day avg`,
                             value: avgTHD > 0 ? `${avgTHD.toFixed(2)}%` : "—",
                             sub: avgTHD === 0 ? "No data" : avgTHD < 8 ? "✓ Within NRS 048" : "✗ Above 8% (NRS 048)",
                             cls: avgTHD === 0 ? "text-slate-500" : avgTHD < 8 ? "text-emerald-400" : "text-red-400",
                         },
                         {
                             label: "Voltage Range L1",
+                            scope: `${meterName} · 7-day min–max`,
                             value: voltMin != null ? `${voltMin.toFixed(0)}–${voltMax?.toFixed(0)} V` : "—",
                             sub: voltMin != null && voltMin >= 207 && voltMax! <= 253 ? "✓ NRS 048 (207–253 V)" : voltMin != null ? "⚠ Outside NRS 048" : "No data",
                             cls: voltMin != null && voltMin >= 207 && voltMax! <= 253 ? "text-emerald-400" : "text-yellow-400",
                         },
                         {
-                            label: "Peak Demand (7d)",
+                            label: "Peak Demand",
+                            scope: `${meterName} · 7-day max`,
                             value: demandData.length ? `${Math.max(...demandData.map(d => d.peak))} kW` : "—",
                             sub: demandData.length ? `Avg ${(demandData.reduce((a, d) => a + d.avg, 0) / demandData.length).toFixed(0)} kW` : "No data",
                             cls: "text-white",
                         },
-                    ].map(({ label, value, sub, cls }) => (
+                    ].map(({ label, scope, value, sub, cls }) => (
                         <Card key={label} className="p-4">
                             <p className="text-xs text-slate-500 font-medium uppercase tracking-wide">{label}</p>
+                            {/* Scope line: which meter and which window this number covers, so
+                                figures can't be mistaken for a different aggregation elsewhere. */}
+                            <p className="text-[10px] text-slate-600 mt-0.5 truncate">{scope}</p>
                             <p className={`text-2xl font-bold mt-1 ${cls}`}>{value}</p>
                             <p className={`text-xs mt-1 ${cls}`}>{sub}</p>
                         </Card>

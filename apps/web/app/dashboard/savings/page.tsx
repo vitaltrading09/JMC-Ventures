@@ -83,6 +83,36 @@ export default function SavingsPage() {
     const kwhSaved   = totalMonthly / 2.5;
     const co2Avoided = (kwhSaved * 0.92 * 12) / 1000; // tCO2e / year
 
+    // Export the opportunity pipeline as CSV — a client can hand this straight to
+    // an installer for quoting. Values are quoted/escaped so commas in titles are safe.
+    const exportCsv = () => {
+        const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+        const rows = [
+            ["Site", "Recommendation", "Type", "Monthly Saving (ZAR)", "Implementation Cost (ZAR)", "Payback (months)"],
+            ...[...recs]
+                .sort((a, b) => b.estimated_monthly_saving_zar - a.estimated_monthly_saving_zar)
+                .map(r => [
+                    r.site_name,
+                    r.title,
+                    TYPE_LABEL[r.type] ?? r.type,
+                    r.estimated_monthly_saving_zar,
+                    r.estimated_implementation_cost_zar,
+                    r.payback_months || "",
+                ]),
+            [],
+            ["TOTAL", "", "", totalMonthly, totalImplCost, ""],
+        ];
+        const csv = rows.map(row => row.map(esc).join(",")).join("\r\n");
+        // BOM so Excel opens UTF-8 correctly on Windows.
+        const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement("a");
+        a.href = url;
+        a.download = `grid-iq-savings-${new Date().toISOString().slice(0, 10)}.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
     // Attribution chart data — group by type, sum estimated savings
     const attribution = Object.entries(
         recs.reduce<Record<string, number>>((acc, r) => {
@@ -121,8 +151,12 @@ export default function SavingsPage() {
                     >
                         <RefreshCw className="h-4 w-4" /> Refresh
                     </button>
-                    <button className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-medium transition-colors">
-                        <Download className="h-4 w-4" /> Export Report
+                    <button
+                        onClick={exportCsv}
+                        disabled={recs.length === 0}
+                        className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
+                    >
+                        <Download className="h-4 w-4" /> Export CSV
                     </button>
                 </div>
             </div>
