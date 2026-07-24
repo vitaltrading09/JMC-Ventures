@@ -6,6 +6,7 @@ import { Queue, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 import { initMqtt } from './mqtt';
 import { computeAndStoreSiteScore, getLatestSiteScore } from './energy-score';
+import { assessPowerQuality } from './power-quality';
 import {
     generateAndStoreSiteRecommendations,
     getSiteRecommendations,
@@ -1275,6 +1276,41 @@ app.get('/readings/aggregate', authenticateToken, async (req: any, res) => {
         res.status(500).json({ error: 'Database error' });
     } finally {
         client.release();
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Power Quality Health Check — NRS 048-2 compliance + equipment risk assessment.
+// Deterministic: every figure is measured or derived from a published standard.
+// ─────────────────────────────────────────────────────────────────────────────
+app.get('/meters/:id/compliance', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const days = Math.min(Math.max(parseInt(String(req.query.days || '7')), 1), 90);
+    const { tenantId, role } = req.user;
+
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const authCheck = await client.query(`
+                SELECT m.id FROM meters m
+                JOIN sites s ON m.site_id = s.id
+                WHERE m.id = $1 AND s.tenant_id = $2
+            `, [id, tenantId]);
+            if (authCheck.rows.length === 0) {
+                return res.status(403).json({ error: 'Forbidden' });
+            }
+        }
+    } finally {
+        client.release();
+    }
+
+    try {
+        const report = await assessPowerQuality(pool, id, days);
+        if (!report) return res.status(404).json({ error: 'Meter not found' });
+        res.json(report);
+    } catch (err) {
+        console.error('Compliance assessment error:', err);
+        res.status(500).json({ error: 'Assessment failed' });
     }
 });
 

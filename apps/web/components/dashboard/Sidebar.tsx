@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
     LayoutDashboard,
+    ShieldCheck,
     Zap,
     PieChart,
     Settings,
@@ -67,6 +68,8 @@ export function Sidebar() {
 
     const links = [
         { name: "Overview",        href: "/dashboard",                  icon: LayoutDashboard },
+        // Flagship deliverable — the standards-cited report clients buy.
+        { name: "Health Check",    href: "/dashboard/health-check",     icon: ShieldCheck },
         { name: "Sites",           href: "/dashboard/sites",            icon: Building2 },
         { name: "SLD",             href: "/dashboard/sld",              icon: Network },
         { name: "Alerts",          href: "/dashboard/alerts",           icon: Bell },
