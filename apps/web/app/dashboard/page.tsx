@@ -7,7 +7,7 @@ import {
 } from "recharts";
 import {
     Activity, Zap, AlertTriangle, Loader2, RefreshCw, Server, Gauge, Plus,
-    TrendingUp, ChevronRight, Info, ShieldAlert, XCircle,
+    TrendingUp, ChevronRight, Info, ShieldAlert, ShieldCheck, XCircle,
 } from "lucide-react";
 import Link from "next/link";
 import { Card, CardHeader } from "@/components/ui/Card";
@@ -100,6 +100,7 @@ export default function DashboardPage() {
     const [meters,              setMeters]              = useState<Meter[]>([]);
     const [alerts,              setAlerts]              = useState<Alert[]>([]);
     const [scores,              setScores]              = useState<SiteScore[]>([]);
+    const [pqStatus,            setPqStatus]            = useState<any>(null);
     const [chartData,           setChartData]           = useState<{ time: string; kw: number }[]>([]);
     const [loading,             setLoading]             = useState(true);
     const [chartLoading,        setChartLoading]        = useState(false);
@@ -152,6 +153,17 @@ export default function DashboardPage() {
             setMeters(Array.isArray(metersData) ? metersData : []);
             setAlerts(Array.isArray(alertsData) ? alertsData : []);
             setScores(Array.isArray(scoresData) ? scoresData : []);
+
+            // Power quality verdict for the first active meter — the flagship
+            // finding belongs on the home screen, not buried behind a menu.
+            const primary = (Array.isArray(metersData) ? metersData : [])
+                .find(m => (m as any).is_active !== false);
+            if (primary) {
+                fetch(`${API}/ingestion/meters/${primary.id}/compliance?days=7`, { credentials: 'include' })
+                    .then(r => r.ok ? r.json() : null)
+                    .then(pq => { if (pq) setPqStatus(pq); })
+                    .catch(() => { /* non-fatal — the rest of the dashboard still works */ });
+            }
 
             // Default to site-wide aggregate view; preserve user's manual selection
             setSelectedChartMeter(prev => prev ?? "all");
@@ -383,6 +395,61 @@ export default function DashboardPage() {
                     </div>
                 </div>
             </Card>
+
+            {/* ── Power Quality status ───────────────────────────────────── */}
+            {/* The flagship finding, surfaced on every login rather than only when
+                somebody remembers to open the report. */}
+            {pqStatus && (
+                <Link href="/dashboard/health-check" className="block group">
+                    <Card className={`border transition-colors ${
+                        pqStatus.verdict === "NON_COMPLIANT"       ? "border-red-500/40 bg-red-500/5 hover:border-red-500/60"
+                        : pqStatus.verdict === "COMPLIANT_WITH_RISK" ? "border-amber-500/40 bg-amber-500/5 hover:border-amber-500/60"
+                        : "border-emerald-500/40 bg-emerald-500/5 hover:border-emerald-500/60"
+                    }`}>
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-5">
+                            <div className="flex items-start gap-4 flex-1">
+                                <ShieldCheck className={`h-8 w-8 shrink-0 ${
+                                    pqStatus.verdict === "NON_COMPLIANT" ? "text-red-400"
+                                    : pqStatus.verdict === "COMPLIANT_WITH_RISK" ? "text-amber-400"
+                                    : "text-emerald-400"
+                                }`} />
+                                <div>
+                                    <p className="text-xs uppercase tracking-wider text-slate-500">
+                                        Power Quality — {pqStatus.meter_name}
+                                    </p>
+                                    <p className="text-lg font-bold text-white mt-0.5">
+                                        {pqStatus.verdict === "NON_COMPLIANT"       ? "Non-compliant supply"
+                                         : pqStatus.verdict === "COMPLIANT_WITH_RISK" ? "Compliant — equipment at risk"
+                                         : pqStatus.verdict === "INSUFFICIENT_DATA"   ? "Gathering data"
+                                         : "Compliant — no risks found"}
+                                    </p>
+                                    <p className="text-xs text-slate-400 mt-1">
+                                        {pqStatus.risks?.length > 0
+                                            ? pqStatus.risks[0].title
+                                            : "NRS 048-2 assessment over the last 7 days"}
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="flex gap-6 shrink-0">
+                                {[
+                                    { label: "Supply", value: pqStatus.supply_score },
+                                    { label: "Installation", value: pqStatus.install_score },
+                                ].map(s => (
+                                    <div key={s.label} className="text-center">
+                                        <p className="text-[10px] uppercase tracking-wider text-slate-500">{s.label}</p>
+                                        <p className={`text-2xl font-bold ${
+                                            s.value >= 85 ? "text-emerald-400" : s.value >= 70 ? "text-amber-400" : "text-red-400"
+                                        }`}>{s.value}</p>
+                                    </div>
+                                ))}
+                                <div className="flex items-center text-slate-500 group-hover:text-slate-300 transition-colors">
+                                    <ChevronRight className="h-5 w-5" />
+                                </div>
+                            </div>
+                        </div>
+                    </Card>
+                </Link>
+            )}
 
             {/* ── KPI Grid ───────────────────────────────────────────────── */}
             <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">

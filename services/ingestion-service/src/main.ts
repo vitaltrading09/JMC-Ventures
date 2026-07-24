@@ -181,6 +181,38 @@ const pool = new Pool({
             )
         `);
         console.log("DB Schema initialized: site_settings verified");
+
+        // Power quality assessment snapshots — the long-term record behind trend
+        // lines and the value ledger. One row per meter per assessment run.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS pq_assessments (
+                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                meter_id      UUID REFERENCES meters(id) ON DELETE CASCADE,
+                site_id       UUID REFERENCES sites(id) ON DELETE CASCADE,
+                tenant_id     UUID REFERENCES tenants(id) ON DELETE CASCADE,
+                assessed_at   TIMESTAMPTZ DEFAULT NOW(),
+                period_days   INTEGER,
+                readings      INTEGER,
+                verdict       VARCHAR(32),
+                supply_score  INTEGER,
+                install_score INTEGER,
+                parameters    JSONB,
+                risks         JSONB,
+                degrading     JSONB
+            );
+            CREATE INDEX IF NOT EXISTS idx_pq_meter_time ON pq_assessments (meter_id, assessed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_pq_tenant_time ON pq_assessments (tenant_id, assessed_at DESC);
+        `);
+        console.log("DB Schema initialized: pq_assessments verified");
+
+        // White-label branding — lets an installer or reseller put their own
+        // identity on the report they hand to their client.
+        await client.query(`
+            ALTER TABLE tenants ADD COLUMN IF NOT EXISTS brand_name TEXT;
+            ALTER TABLE tenants ADD COLUMN IF NOT EXISTS brand_logo_url TEXT;
+            ALTER TABLE tenants ADD COLUMN IF NOT EXISTS brand_footer TEXT;
+        `);
+        console.log("DB Schema initialized: tenant branding verified");
     } catch (e) {
         console.error("DB Schema initialization failed", e);
     } finally {
@@ -1307,10 +1339,184 @@ app.get('/meters/:id/compliance', authenticateToken, async (req: any, res) => {
     try {
         const report = await assessPowerQuality(pool, id, days);
         if (!report) return res.status(404).json({ error: 'Meter not found' });
+
+        // Snapshot the assessment for long-term trend and the value ledger.
+        // Rate-limited to one row per meter per ~day so that simply opening the
+        // report repeatedly doesn't inflate the history.
+        if (report.verdict !== 'INSUFFICIENT_DATA') {
+            const snap = await pool.connect();
+            try {
+                const recent = await snap.query(
+                    `SELECT 1 FROM pq_assessments
+                     WHERE meter_id = $1 AND assessed_at > NOW() - INTERVAL '20 hours' LIMIT 1`,
+                    [id]
+                );
+                if (recent.rows.length === 0) {
+                    await snap.query(`
+                        INSERT INTO pq_assessments
+                            (meter_id, site_id, tenant_id, period_days, readings, verdict,
+                             supply_score, install_score, parameters, risks, degrading)
+                        SELECT $1, m.site_id, s.tenant_id, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb
+                        FROM meters m JOIN sites s ON m.site_id = s.id WHERE m.id = $1
+                    `, [
+                        id, days, report.readings, report.verdict,
+                        report.supply_score, report.install_score,
+                        JSON.stringify(report.parameters),
+                        JSON.stringify(report.risks),
+                        JSON.stringify(report.degrading),
+                    ]);
+                }
+            } catch (e: any) {
+                // Snapshotting must never break the report itself.
+                console.error('PQ snapshot failed:', e.message || e);
+            } finally {
+                snap.release();
+            }
+        }
+
         res.json(report);
     } catch (err) {
         console.error('Compliance assessment error:', err);
         res.status(500).json({ error: 'Assessment failed' });
+    }
+});
+
+// Assessment history for a meter — powers long-term trend lines.
+app.get('/meters/:id/compliance/history', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const limit = Math.min(parseInt(String(req.query.limit || '52')), 200);
+    const { tenantId, role } = req.user;
+
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const authCheck = await client.query(
+                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
+                 WHERE m.id = $1 AND s.tenant_id = $2`, [id, tenantId]);
+            if (authCheck.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
+        }
+        const result = await client.query(`
+            SELECT assessed_at, verdict, supply_score, install_score, readings,
+                   jsonb_array_length(COALESCE(risks,'[]'::jsonb)) AS risk_count
+            FROM pq_assessments
+            WHERE meter_id = $1
+            ORDER BY assessed_at DESC
+            LIMIT $2
+        `, [id, limit]);
+        res.json(result.rows.reverse());
+    } catch (err) {
+        console.error('Compliance history error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Value ledger — what Grid-IQ has caught for this client. Shown when the
+// invoice lands: the running record of monitoring actually earning its keep.
+// ─────────────────────────────────────────────────────────────────────────────
+app.get('/value-ledger', authenticateToken, async (req: any, res) => {
+    const { tenantId, role } = req.user;
+    const effectiveTenantId = role === 'super_admin' ? (req.query.tenant_id || null) : tenantId;
+
+    const client = await pool.connect();
+    try {
+        const params: any[] = [];
+        let where = '';
+        if (effectiveTenantId) { where = 'WHERE s.tenant_id = $1'; params.push(effectiveTenantId); }
+
+        // Monitoring effort: how much data has actually been examined.
+        const coverage = await client.query(`
+            SELECT COUNT(*)::bigint AS readings,
+                   MIN(mr.time) AS since,
+                   COUNT(DISTINCT mr.meter_id) AS meters
+            FROM meter_readings mr
+            JOIN meters m ON mr.meter_id = m.id
+            JOIN sites s ON m.site_id = s.id
+            ${where}
+        `, params);
+
+        // Findings raised by the assessment engine, deduplicated by risk type.
+        const findings = await client.query(`
+            SELECT risk->>'key' AS key,
+                   risk->>'title' AS title,
+                   risk->>'severity' AS severity,
+                   COUNT(*)::int AS times_seen,
+                   MIN(a.assessed_at) AS first_seen,
+                   MAX(a.assessed_at) AS last_seen
+            FROM pq_assessments a
+            JOIN sites s ON a.site_id = s.id
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(a.risks,'[]'::jsonb)) AS risk
+            ${where}
+            GROUP BY 1,2,3
+            ORDER BY MAX(a.assessed_at) DESC
+        `, params);
+
+        // Alerts the platform raised without being asked.
+        const alerts = await client.query(`
+            SELECT COUNT(*)::int AS total,
+                   COUNT(*) FILTER (WHERE severity IN ('CRITICAL','HIGH'))::int AS serious
+            FROM alerts a
+            ${effectiveTenantId ? 'WHERE a.tenant_id = $1' : ''}
+        `, params);
+
+        const assessments = await client.query(`
+            SELECT COUNT(*)::int AS total FROM pq_assessments a
+            JOIN sites s ON a.site_id = s.id ${where}
+        `, params);
+
+        const c = coverage.rows[0] || {};
+        res.json({
+            readings_analysed: Number(c.readings || 0),
+            monitoring_since:  c.since || null,
+            meters_monitored:  Number(c.meters || 0),
+            assessments_run:   assessments.rows[0]?.total ?? 0,
+            alerts_raised:     alerts.rows[0]?.total ?? 0,
+            serious_alerts:    alerts.rows[0]?.serious ?? 0,
+            findings:          findings.rows,
+        });
+    } catch (err) {
+        console.error('Value ledger error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// ── Report branding (white-label) ────────────────────────────────────────────
+app.get('/branding', authenticateToken, async (req: any, res) => {
+    const { tenantId } = req.user;
+    const client = await pool.connect();
+    try {
+        const r = await client.query(
+            `SELECT brand_name, brand_logo_url, brand_footer FROM tenants WHERE id = $1`, [tenantId]);
+        res.json(r.rows[0] || { brand_name: null, brand_logo_url: null, brand_footer: null });
+    } catch (err) {
+        console.error('Branding fetch error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+app.put('/branding', authenticateToken, async (req: any, res) => {
+    const { tenantId } = req.user;
+    const { brand_name, brand_logo_url, brand_footer } = req.body ?? {};
+    const clean = (v: any) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 512) : null);
+    const client = await pool.connect();
+    try {
+        const r = await client.query(
+            `UPDATE tenants SET brand_name = $2, brand_logo_url = $3, brand_footer = $4
+             WHERE id = $1 RETURNING brand_name, brand_logo_url, brand_footer`,
+            [tenantId, clean(brand_name), clean(brand_logo_url), clean(brand_footer)]
+        );
+        res.json(r.rows[0]);
+    } catch (err) {
+        console.error('Branding update error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
     }
 });
 

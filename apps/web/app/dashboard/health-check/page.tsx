@@ -33,6 +33,7 @@ interface ComplianceReport {
     has_baseline: boolean; trend_summary: string; degrading: string[];
 }
 interface Meter { id: string; name: string; site_id: string; is_active?: boolean; }
+interface Branding { brand_name: string | null; brand_logo_url: string | null; brand_footer: string | null; }
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
 
@@ -82,6 +83,7 @@ export default function HealthCheckPage() {
     const [meterId,  setMeterId]  = useState<string>("");
     const [days,     setDays]     = useState(7);
     const [report,   setReport]   = useState<ComplianceReport | null>(null);
+    const [brand,    setBrand]    = useState<Branding | null>(null);
     const [loading,  setLoading]  = useState(true);
     const [busy,     setBusy]     = useState(false);
 
@@ -112,6 +114,12 @@ export default function HealthCheckPage() {
                 const list: Meter[] = Array.isArray(data) ? data.filter(m => m.is_active !== false) : [];
                 setMeters(list);
                 if (list.length > 0) setMeterId(list[0].id);
+
+                // Optional white-label identity for resellers/installers.
+                fetch(`${API}/ingestion/branding`, { credentials: "include" })
+                    .then(r => r.ok ? r.json() : null)
+                    .then(b => { if (b) setBrand(b); })
+                    .catch(() => { /* falls back to Grid-IQ branding */ });
             } catch { /* offline — empty state */ }
             finally { setLoading(false); }
         })();
@@ -203,7 +211,20 @@ export default function HealthCheckPage() {
                     {/* ── Letterhead ─────────────────────────────────────── */}
                     <div className="flex items-start justify-between border-b-2 border-slate-800 pb-5">
                         <div>
-                            <p className="text-2xl font-bold tracking-tight text-slate-900">GRID-IQ</p>
+                            {/* White-label: a reseller's logo/name replaces ours on the
+                                document they hand to their own client. */}
+                            {brand?.brand_logo_url ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                    src={brand.brand_logo_url}
+                                    alt={brand.brand_name || "Report logo"}
+                                    className="h-10 max-w-[220px] object-contain object-left"
+                                />
+                            ) : (
+                                <p className="text-2xl font-bold tracking-tight text-slate-900">
+                                    {brand?.brand_name || "GRID-IQ"}
+                                </p>
+                            )}
                             <p className="text-[11px] uppercase tracking-[0.2em] text-slate-500 mt-0.5">
                                 Power Quality Engineering Report
                             </p>
@@ -414,8 +435,15 @@ export default function HealthCheckPage() {
                     {/* ── Footer ─────────────────────────────────────────── */}
                     <div className="mt-10 pt-4 border-t border-slate-300 flex items-end justify-between text-xs text-slate-500">
                         <div>
-                            <p className="font-semibold text-slate-700">Grid-IQ Power Quality Intelligence</p>
-                            <p>grid-iq.co.za · Confidential — prepared for {report.site_name}</p>
+                            <p className="font-semibold text-slate-700">
+                                {brand?.brand_name || "Grid-IQ"} Power Quality Intelligence
+                            </p>
+                            <p>
+                                {brand?.brand_footer || "grid-iq.co.za"} · Confidential — prepared for {report.site_name}
+                            </p>
+                            {brand?.brand_name && (
+                                <p className="text-[10px] text-slate-400 mt-0.5">Analysis powered by Grid-IQ</p>
+                            )}
                         </div>
                         <p>Continuous monitoring · next assessment in {report.period_days} days</p>
                     </div>

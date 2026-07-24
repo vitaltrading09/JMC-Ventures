@@ -6,6 +6,8 @@ import { useState, useEffect } from "react";
 import {
     LayoutDashboard,
     ShieldCheck,
+    ClipboardCheck,
+    Palette,
     Zap,
     PieChart,
     Settings,
@@ -70,6 +72,8 @@ export function Sidebar() {
         { name: "Overview",        href: "/dashboard",                  icon: LayoutDashboard },
         // Flagship deliverable — the standards-cited report clients buy.
         { name: "Health Check",    href: "/dashboard/health-check",     icon: ShieldCheck },
+        // The running record of what monitoring has caught — the renewal argument.
+        { name: "What We Caught",  href: "/dashboard/value",            icon: ClipboardCheck },
         { name: "Sites",           href: "/dashboard/sites",            icon: Building2 },
         { name: "SLD",             href: "/dashboard/sld",              icon: Network },
         { name: "Alerts",          href: "/dashboard/alerts",           icon: Bell },
@@ -194,6 +198,17 @@ export function Sidebar() {
                         >
                             <AlertCircle className="h-5 w-5 text-red-500 group-hover:text-red-400 transition-colors" />
                             <span className="font-medium text-sm">Alerts Config</span>
+                        </Link>
+
+                        <Link
+                            href="/dashboard/settings/branding"
+                            className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 group ${pathname === "/dashboard/settings/branding"
+                                ? "bg-purple-600/10 text-purple-400 border border-purple-500/20"
+                                : "text-slate-400 hover:bg-slate-900 hover:text-white"
+                                }`}
+                        >
+                            <Palette className="h-5 w-5 text-purple-500 group-hover:text-purple-400 transition-colors" />
+                            <span className="font-medium text-sm">Report Branding</span>
                         </Link>
                     </div>
                 </nav>
