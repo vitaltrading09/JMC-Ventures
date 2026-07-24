@@ -1277,20 +1277,40 @@ app.get('/meters/:id/monthly', authenticateToken, async (req: any, res) => {
             }
         }
 
+        // Energy (kWh) is integrated interval-independently: for each reading,
+        // power (kW) × the actual time to the NEXT reading. This is immune to
+        // sampling-rate changes (readings arrive anywhere from ~3s to ~60s apart)
+        // and to reading-density variation between months. The per-reading gap is
+        // capped at 900s so an offline period isn't billed as continuous power.
+        // If the meter reports a sane cumulative kWh register, that wins (a direct
+        // measurement beats an estimate); resets/rollovers are rejected by the bound.
         const result = await client.query(`
+            WITH r AS (
+                SELECT
+                    time,
+                    power_active_total,
+                    energy_import_total,
+                    LEAST(
+                        EXTRACT(EPOCH FROM (
+                            LEAD(time) OVER (PARTITION BY DATE_TRUNC('month', time) ORDER BY time) - time
+                        )),
+                        900
+                    ) AS dt_s
+                FROM meter_readings
+                WHERE meter_id = $1
+                  AND time >= DATE_TRUNC('month', NOW() - ($2 || ' months')::INTERVAL)
+                  AND power_active_total IS NOT NULL
+            )
             SELECT
                 TO_CHAR(DATE_TRUNC('month', time), 'Mon') AS month,
                 DATE_TRUNC('month', time) AS month_start,
                 CASE
                     WHEN MAX(energy_import_total) IS NOT NULL
-                         AND (MAX(energy_import_total) - MIN(energy_import_total)) > 0
+                         AND (MAX(energy_import_total) - MIN(energy_import_total)) BETWEEN 0 AND 10000000
                     THEN ROUND((MAX(energy_import_total) - MIN(energy_import_total))::numeric, 0)
-                    ELSE ROUND((SUM(power_active_total) * 5.0 / 60.0)::numeric, 0)
+                    ELSE ROUND(SUM(power_active_total * COALESCE(dt_s, 0) / 3600.0)::numeric, 0)
                 END AS kwh
-            FROM meter_readings
-            WHERE meter_id = $1
-              AND time >= DATE_TRUNC('month', NOW() - ($2 || ' months')::INTERVAL)
-              AND power_active_total IS NOT NULL
+            FROM r
             GROUP BY DATE_TRUNC('month', time)
             ORDER BY DATE_TRUNC('month', time) ASC
         `, [id, months - 1]);

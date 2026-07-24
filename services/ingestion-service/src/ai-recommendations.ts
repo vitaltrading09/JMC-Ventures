@@ -31,6 +31,52 @@ const VALID_TYPES = new Set([
 ]);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Deterministic standards guardrails, applied AFTER the model returns. The LLM
+// is not trusted to police physics/standards, so we enforce them in code:
+//  · drop recommendations that contradict the measured data (PF already ≥ 0.95,
+//    THD < 5%, or voltage sitting inside the 207–253 V NRS band)
+//  · drop "spend money, save nothing" items (a cost with no quantified saving)
+//  · recompute payback from saving + cost so it is always internally consistent
+//  · keep at most one recommendation per type (the highest-saving instance)
+// ─────────────────────────────────────────────────────────────────────────────
+function enforceStandards(
+    recs: Recommendation[],
+    m:    EnergyScoreResult['metrics'],
+): Recommendation[] {
+    const kept = recs.filter(r => {
+        if (r.type === 'POWER_FACTOR_CORRECTION' && m.avgPf  !== null && m.avgPf >= 0.95) return false;
+        if (r.type === 'HARMONIC_FILTER'         && m.avgThd !== null && m.avgThd < 5)    return false;
+        if (r.type === 'VOLTAGE_REGULATION'
+            && m.minV !== null && m.maxV !== null
+            && m.minV >= 207 && m.maxV <= 253) return false;
+        // "Pay to save nothing" — a costed upgrade with no quantified return is noise.
+        if (r.type !== 'ENERGY_AUDIT'
+            && r.estimated_monthly_saving_zar <= 0
+            && r.estimated_implementation_cost_zar > 0) return false;
+        return true;
+    });
+
+    // Recompute payback so it always agrees with the saving/cost we display.
+    for (const r of kept) {
+        r.payback_months = (r.estimated_monthly_saving_zar > 0 && r.estimated_implementation_cost_zar > 0)
+            ? Math.round(r.estimated_implementation_cost_zar / r.estimated_monthly_saving_zar)
+            : 0;
+    }
+
+    // De-duplicate by type — keep the highest-saving instance of each.
+    const bestByType = new Map<string, Recommendation>();
+    for (const r of kept) {
+        const cur = bestByType.get(r.type);
+        if (!cur || r.estimated_monthly_saving_zar > cur.estimated_monthly_saving_zar) {
+            bestByType.set(r.type, r);
+        }
+    }
+
+    return [...bestByType.values()]
+        .sort((a, b) => a.priority - b.priority || b.estimated_monthly_saving_zar - a.estimated_monthly_saving_zar);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Generate and store AI recommendations for a site
 // Called manually (via API endpoint) or automatically after score calculation.
 // Uses Claude to analyse real meter data and produce ranked, ROI-backed findings.
@@ -135,6 +181,11 @@ export async function generateAndStoreSiteRecommendations(
     const lf  = metrics.loadFactor !== null   ? metrics.loadFactor.toFixed(2)   : 'N/A';
     const unb = metrics.unbalancePct !== null ? metrics.unbalancePct.toFixed(2) + '%' : 'N/A (single-phase or insufficient data)';
     const vab = metrics.avgVa !== null ? `${metrics.avgVa.toFixed(1)}V / ${metrics.avgVb?.toFixed(1) ?? '—'}V / ${metrics.avgVc?.toFixed(1) ?? '—'}V` : 'N/A';
+    // Apparent power (kVA) for a like-for-like comparison against the contracted
+    // MDI, which utilities bill in kVA. Comparing raw kW to a kVA limit is wrong.
+    const peakKva = (metrics.peakKw !== null && metrics.avgPf && metrics.avgPf > 0)
+        ? metrics.peakKw / metrics.avgPf
+        : null;
 
     const prompt = `You are Grid-IQ's energy analysis engine for South African industrial and commercial sites.
 Analyse the data below and return ONLY a valid JSON object of the form:
@@ -158,7 +209,8 @@ ENERGY SCORE: ${totalScore}/100
 PERFORMANCE METRICS (last 7 days of available data):
   Avg Power Factor:   ${metrics.avgPf?.toFixed(3) ?? 'N/A'}   (SA target ≥0.95, penalty below 0.90)
   Avg THD (voltage):  ${metrics.avgThd?.toFixed(2) ?? 'N/A'}% (NRS 048 limit 8%, EN 50160 planning level 5%)
-  Peak Demand:        ${metrics.peakKw?.toFixed(1) ?? 'N/A'} kW
+  Peak Demand (real):     ${metrics.peakKw?.toFixed(1) ?? 'N/A'} kW
+  Peak Demand (apparent): ${peakKva?.toFixed(1) ?? 'N/A'} kVA  ← compare THIS to contracted MDI (kVA), never the kW figure
   Avg Demand:         ${metrics.avgKw?.toFixed(1) ?? 'N/A'} kW
   Load Factor:        ${lf}                                   (informational — ideal ≥0.80 on demand tariffs)
   Per-phase avg V:    ${vab}
@@ -184,6 +236,14 @@ INSTRUCTIONS:
 - Priority 1 = highest urgency / best ROI.
 - ONLY recommend retrofits/upgrades for loads that appear in DECLARED LOADS. Do not suggest VFD installation if no DOL motors are listed, do not suggest LED retrofits if lighting is already LED, etc. If a load type is not declared, do not assume it exists.
 - If load profile is incomplete or "not specified" for the main meter, flag this as an ENERGY_AUDIT recommendation so the site owner declares loads — better data → better recommendations.
+- STANDARDS DISCIPLINE — hard rules. A recommendation that breaks any of these is wrong and will be discarded:
+  • Power factor: recommend POWER_FACTOR_CORRECTION ONLY if Avg PF < 0.95. At or above 0.95 the SA target is already met — there is no reactive penalty to recover, so do not suggest it.
+  • Harmonics: recommend HARMONIC_FILTER ONLY if Avg THD ≥ 5%. Below 5% it is within the EN 50160 planning level and far under the NRS 048-2 8% limit — a filter is not justified.
+  • Voltage: recommend VOLTAGE_REGULATION ONLY if Min or Max Voltage is outside 207–253 V. A voltage inside that band is compliant — do not flag it as a problem.
+  • Demand vs MDI: compare demand to the contracted MDI in kVA using the "Peak Demand (apparent)" figure. Never compare a kW value to a kVA limit.
+  • Quantify or omit: every recommendation except ENERGY_AUDIT MUST carry estimated_monthly_saving_zar > 0, derived from the configured tariff rates. If you cannot compute a real rand saving from the data, OMIT the item — never output an upgrade that costs money but saves nothing.
+  • One per type: output at most one recommendation of each type; pick the single best.
+  • No hedging: state the finding plainly and cite the exact standard clause, or omit the reference entirely. Do not write "may", "possibly", "depending on billing rules", or tag a reference "(optional)".
 - Tariff handling: ${tariffsConfigured
     ? 'rates ARE configured (see TARIFF CONFIGURATION above). Use those exact rand values in every saving estimate. Do NOT recommend that the user "enter their tariffs" or "configure TOU rates" — that has already been done. You may recommend optimising tariff structure with their utility if the data supports it.'
     : 'rates are NOT yet configured. Include exactly ONE recommendation of type ENERGY_AUDIT asking the user to enter tariff rates on Settings → Tariffs so future analyses can quantify rand savings.'}
@@ -254,7 +314,11 @@ JSON schema for each item:
             }))
             .slice(0, 5); // max 5 per run
 
-        console.log(`[AI] OpenAI generated ${recommendations.length} recommendations for site ${siteId}`);
+        // Deterministic standards guardrails — enforce physics/standards in code,
+        // independent of whatever the model returned.
+        recommendations = enforceStandards(recommendations, metrics);
+
+        console.log(`[AI] OpenAI generated ${recommendations.length} standards-checked recommendations for site ${siteId}`);
     } catch (err: any) {
         console.error('[AI] OpenAI generation failed:', err.message || err);
         return [];
