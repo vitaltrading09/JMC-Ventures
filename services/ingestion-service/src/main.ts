@@ -870,21 +870,30 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
         const settingsList = settingsResult.rows;
 
 
-        // 4. Monthly usage aggregate
-        let monthlyQuery = `
-            SELECT
-                ROUND((SUM(mr.power_active_total) * (5.0/3600.0))::numeric, 1) as kwh_this_month,
-                ROUND(MAX(mr.power_active_total)::numeric, 1) as peak_kw_this_month
-            FROM meter_readings mr
-            JOIN meters m ON mr.meter_id = m.id
-            JOIN sites s ON m.site_id = s.id
-            WHERE mr.time >= date_trunc('month', NOW())
-        `;
+        // 4. Monthly usage aggregate — energy integrated time-weighted (power x the
+        //    actual seconds to the next reading per meter, capped at 900s for gaps),
+        //    so it matches the /monthly endpoint instead of assuming a fixed interval.
         const monthlyParams: any[] = [];
+        let monthlyWhere = `WHERE mr.time >= date_trunc('month', NOW()) AND mr.power_active_total IS NOT NULL`;
         if (effectiveTenantId) {
-            monthlyQuery += ` AND s.tenant_id = $1`;
+            monthlyWhere += ` AND s.tenant_id = $1`;
             monthlyParams.push(effectiveTenantId);
         }
+        const monthlyQuery = `
+            SELECT
+                ROUND(SUM(power_active_total * dt_s / 3600.0)::numeric, 1) as kwh_this_month,
+                ROUND(MAX(power_active_total)::numeric, 1) as peak_kw_this_month
+            FROM (
+                SELECT mr.power_active_total,
+                    LEAST(EXTRACT(EPOCH FROM (
+                        LEAD(mr.time) OVER (PARTITION BY mr.meter_id ORDER BY mr.time) - mr.time
+                    )), 900) AS dt_s
+                FROM meter_readings mr
+                JOIN meters m ON mr.meter_id = m.id
+                JOIN sites s ON m.site_id = s.id
+                ${monthlyWhere}
+            ) t
+        `;
         const monthlyResult = await client.query(monthlyQuery, monthlyParams);
         const monthly = monthlyResult.rows[0];
 
@@ -950,32 +959,44 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
         // 7-day historical summary per meter (wrapped in try/catch so it doesn't kill the whole context)
         let historyResult: any = { rows: [] };
         try {
-            let historyQuery = `
-                SELECT
-                    m.name as meter_name,
-                    COUNT(mr.time) as reading_count,
-                    ROUND(MIN(mr.power_active_total)::numeric, 1) as min_kw,
-                    ROUND(MAX(mr.power_active_total)::numeric, 1) as max_kw,
-                    ROUND(AVG(mr.power_active_total)::numeric, 1) as avg_kw,
-                    ROUND(MIN(mr.power_factor_total)::numeric, 3) as min_pf,
-                    ROUND(AVG(mr.power_factor_total)::numeric, 3) as avg_pf,
-                    ROUND(MIN(mr.voltage_a)::numeric, 1) as min_v,
-                    ROUND(MAX(mr.voltage_a)::numeric, 1) as max_v,
-                    ROUND(AVG(mr.voltage_a)::numeric, 1) as avg_v,
-                    ROUND(AVG(mr.thd_voltage_a)::numeric, 2) as avg_thd,
-                    ROUND(MAX(mr.thd_voltage_a)::numeric, 2) as max_thd_reading,
-                    ROUND((SUM(mr.power_active_total) * 5.0 / 3600.0)::numeric, 1) as est_kwh_7d
-                FROM meter_readings mr
-                JOIN meters m ON mr.meter_id = m.id
-                JOIN sites s ON m.site_id = s.id
-                WHERE mr.time >= NOW() - INTERVAL '7 days'
-            `;
+            // est_kwh_7d integrated time-weighted (see monthly aggregate above) so the
+            // AI context's energy figures match the report/analytics numbers.
             const historyParams: any[] = [];
+            let historyWhere = `WHERE mr.time >= NOW() - INTERVAL '7 days'`;
             if (effectiveTenantId) {
-                historyQuery += ` AND s.tenant_id = $1`;
+                historyWhere += ` AND s.tenant_id = $1`;
                 historyParams.push(effectiveTenantId);
             }
-            historyQuery += ` GROUP BY m.id, m.name ORDER BY max_kw DESC NULLS LAST LIMIT 10`;
+            const historyQuery = `
+                SELECT
+                    meter_name,
+                    COUNT(time) as reading_count,
+                    ROUND(MIN(power_active_total)::numeric, 1) as min_kw,
+                    ROUND(MAX(power_active_total)::numeric, 1) as max_kw,
+                    ROUND(AVG(power_active_total)::numeric, 1) as avg_kw,
+                    ROUND(MIN(power_factor_total)::numeric, 3) as min_pf,
+                    ROUND(AVG(power_factor_total)::numeric, 3) as avg_pf,
+                    ROUND(MIN(voltage_a)::numeric, 1) as min_v,
+                    ROUND(MAX(voltage_a)::numeric, 1) as max_v,
+                    ROUND(AVG(voltage_a)::numeric, 1) as avg_v,
+                    ROUND(AVG(thd_voltage_a)::numeric, 2) as avg_thd,
+                    ROUND(MAX(thd_voltage_a)::numeric, 2) as max_thd_reading,
+                    ROUND(SUM(power_active_total * dt_s / 3600.0)::numeric, 1) as est_kwh_7d
+                FROM (
+                    SELECT m.name as meter_name, mr.meter_id, mr.time,
+                           mr.power_active_total, mr.power_factor_total,
+                           mr.voltage_a, mr.thd_voltage_a,
+                           LEAST(EXTRACT(EPOCH FROM (
+                               LEAD(mr.time) OVER (PARTITION BY mr.meter_id ORDER BY mr.time) - mr.time
+                           )), 900) AS dt_s
+                    FROM meter_readings mr
+                    JOIN meters m ON mr.meter_id = m.id
+                    JOIN sites s ON m.site_id = s.id
+                    ${historyWhere}
+                ) t
+                GROUP BY meter_id, meter_name
+                ORDER BY max_kw DESC NULLS LAST LIMIT 10
+            `;
             historyResult = await client.query(historyQuery, historyParams);
         } catch (histErr) {
             console.error('History query error (non-fatal):', histErr);

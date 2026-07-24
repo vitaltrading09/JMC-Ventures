@@ -63,14 +63,36 @@ function calcTariffCost(readings: Reading[], settings: SiteSettings): TariffCost
     const rStd      = Number(settings.tariff_standard) || 2.00;
     const rOffpeak  = Number(settings.tariff_offpeak)  || 1.20;
 
-    // Each reading represents ~5 minutes of energy (5/60 hours)
-    const interval_h = 5 / 60;
+    // Time-weighted energy: hold each reading's power for the ACTUAL time until
+    // the next reading, rather than assuming a fixed interval. The readings API
+    // returns dynamically-bucketed data (the bucket width varies with the range),
+    // so a hardcoded 5-min step was wrong whenever the bucket wasn't 5 min. This
+    // matches the backend /monthly integration, keeping every kWh figure consistent.
+    const sorted = readings
+        .filter(r => r.power_active_total != null && r.time)
+        .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+
+    // Cap each gap at 1.5x the typical spacing so an offline period (a jump across
+    // missing buckets) isn't billed as continuous power, whatever the bucket width.
+    const gaps: number[] = [];
+    for (let i = 1; i < sorted.length; i++) {
+        gaps.push(new Date(sorted[i].time).getTime() - new Date(sorted[i - 1].time).getTime());
+    }
+    const median = gaps.length ? [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)] : 0;
+    const capMs = median > 0 ? median * 1.5 : Infinity;
 
     let peakKwh = 0, standardKwh = 0, offpeakKwh = 0;
 
-    for (const r of readings) {
-        if (r.power_active_total == null) continue;
-        const kwh = r.power_active_total * interval_h;
+    for (let i = 0; i < sorted.length; i++) {
+        const r = sorted[i];
+        const next = sorted[i + 1];
+        // Last reading has no following interval; give it the median step so the
+        // final bucket's energy isn't dropped.
+        const dtMs = next
+            ? Math.min(new Date(next.time).getTime() - new Date(r.time).getTime(), capMs)
+            : (median || 0);
+        if (dtMs <= 0) continue;
+        const kwh = (r.power_active_total as number) * (dtMs / 3_600_000);
         const hour = new Date(r.time).getHours();
         const band = getTouBand(hour, settings);
         if (band === "peak")     peakKwh     += kwh;
