@@ -56,6 +56,12 @@ function enforceStandards(
         return true;
     });
 
+    // An audit / data-declaration ask is a free action (enter data in the UI) —
+    // never attach a rand cost to it.
+    for (const r of kept) {
+        if (r.type === 'ENERGY_AUDIT') r.estimated_implementation_cost_zar = 0;
+    }
+
     // Recompute payback so it always agrees with the saving/cost we display.
     for (const r of kept) {
         r.payback_months = (r.estimated_monthly_saving_zar > 0 && r.estimated_implementation_cost_zar > 0)
