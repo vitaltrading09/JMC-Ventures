@@ -16,6 +16,8 @@ import { Pool } from 'pg';
 export type Status = 'PASS' | 'WARN' | 'FAIL' | 'NO_DATA';
 export type Severity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
 
+export type Trend = 'IMPROVING' | 'STABLE' | 'DEGRADING' | 'NO_BASELINE';
+
 export interface ComplianceParameter {
     key:      string;
     label:    string;
@@ -26,6 +28,9 @@ export interface ComplianceParameter {
     standard: string;          // which standard/clause this is judged against
     method:   string;          // how it was measured
     detail:   string;          // plain-language interpretation
+    previous: number | null;   // same metric, preceding window
+    trend:    Trend;
+    trend_note: string;        // e.g. "up from 12.1% last period"
 }
 
 export interface EquipmentRisk {
@@ -52,6 +57,10 @@ export interface ComplianceReport {
     risks:         EquipmentRisk[];
     supply_score:  number;   // 0-100, quality of the incoming supply (utility's responsibility)
     install_score: number;   // 0-100, quality of the client's installation (client's responsibility)
+    /** Period-over-period movement — what continuous monitoring buys you. */
+    has_baseline:  boolean;
+    trend_summary: string;
+    degrading:     string[]; // labels of parameters that got materially worse
 }
 
 // SA LV nominal: 230 V phase-neutral, ±10% → 207–253 V
@@ -81,6 +90,44 @@ export function windingTempRisePct(unbalancePct: number): number {
     return 2 * unbalancePct * unbalancePct;
 }
 
+/**
+ * Compare a metric against the same metric in the preceding window.
+ *
+ * `higherIsBetter` encodes the direction of "good" per metric (voltage-in-band %
+ * up is good; THD up is bad). A 10% relative change is required before calling a
+ * movement real — below that it is sampling noise, and crying wolf on noise is
+ * how a monitoring product loses credibility.
+ */
+function compareTrend(
+    current: number | null,
+    previous: number | null,
+    higherIsBetter: boolean,
+    unit: string,
+    decimals = 2,
+    // Names the quantity actually being compared. Needed where the displayed value
+    // differs from the compared statistic — the voltage row shows a range in volts
+    // but is judged on the percentage of readings inside the band, and quoting a
+    // percentage next to a voltage range reads as an error.
+    metricLabel = '',
+): { trend: Trend; note: string } {
+    if (current === null || previous === null || !isFinite(previous) || previous === 0) {
+        return { trend: 'NO_BASELINE', note: 'No comparable prior period yet — this reading becomes the baseline.' };
+    }
+    const delta = current - previous;
+    const relative = Math.abs(delta / previous);
+    const fmt = (v: number) => `${v.toFixed(decimals)}${unit}`;
+    const subject = metricLabel ? `${metricLabel} ` : '';
+
+    if (relative < 0.10) {
+        return { trend: 'STABLE', note: `${subject}${fmt(current)} — steady (was ${fmt(previous)} last period).` };
+    }
+    const improved = higherIsBetter ? delta > 0 : delta < 0;
+    return {
+        trend: improved ? 'IMPROVING' : 'DEGRADING',
+        note: `${subject}${fmt(current)} — ${improved ? 'improved' : 'worsened'} from ${fmt(previous)} last period.`,
+    };
+}
+
 export async function assessPowerQuality(
     pool:    Pool,
     meterId: string,
@@ -95,10 +142,11 @@ export async function assessPowerQuality(
         );
         if (meta.rows.length === 0) return null;
 
-        // Single pass: per-reading unbalance, then percentile aggregation.
-        // Unbalance uses the NEMA definition — max deviation from the mean,
-        // expressed as a percentage of the mean.
-        const q = await client.query(`
+        // Metrics for one observation window, expressed as an offset from now.
+        // Running this for the current window AND the one immediately before it is
+        // what turns a point-in-time audit into degradation tracking — the whole
+        // reason continuous monitoring is worth more than a one-off survey.
+        const windowMetrics = (startDaysAgo: number, endDaysAgo: number) => client.query(`
             WITH base AS (
                 SELECT time, voltage_a, voltage_b, voltage_c,
                        current_a, current_b, current_c,
@@ -106,7 +154,9 @@ export async function assessPowerQuality(
                        NULLIF((COALESCE(voltage_a,0)+COALESCE(voltage_b,0)+COALESCE(voltage_c,0))/3.0, 0) AS v_avg,
                        NULLIF((COALESCE(current_a,0)+COALESCE(current_b,0)+COALESCE(current_c,0))/3.0, 0) AS i_avg
                 FROM meter_readings
-                WHERE meter_id = $1 AND time >= NOW() - ($2 || ' days')::INTERVAL
+                WHERE meter_id = $1
+                  AND time >= NOW() - ($2 || ' days')::INTERVAL
+                  AND time <  NOW() - ($7 || ' days')::INTERVAL
             ), calc AS (
                 SELECT *,
                     CASE WHEN v_avg IS NOT NULL AND voltage_b IS NOT NULL AND voltage_c IS NOT NULL
@@ -142,10 +192,18 @@ export async function assessPowerQuality(
                 AVG(power_active_total)                                             AS avg_kw,
                 AVG(current_a) AS ia, AVG(current_b) AS ib, AVG(current_c) AS ic
             FROM calc
-        `, [meterId, days, V_MIN, V_MAX, F_MIN, F_MAX]);
+        `, [meterId, startDaysAgo, V_MIN, V_MAX, F_MIN, F_MAX, endDaysAgo]);
+
+        // Current window, and the equal-length window immediately preceding it.
+        const [q, qPrev] = await Promise.all([
+            windowMetrics(days, 0),
+            windowMetrics(days * 2, days),
+        ]);
 
         const r = q.rows[0];
+        const p = qPrev.rows[0];
         const n = Number(r.n) || 0;
+        const nPrev = Number(p?.n) || 0;
 
         const num = (v: any): number | null => (v === null || v === undefined ? null : Number(v));
 
@@ -167,6 +225,24 @@ export async function assessPowerQuality(
         const peakKw = num(r.peak_kw);
         const ia = num(r.ia), ib = num(r.ib), ic = num(r.ic);
 
+        // Preceding-window baselines. Require a reasonable sample count before
+        // treating the prior period as a valid comparison.
+        const hasBaseline = nPrev >= 100;
+        const prev = (col: string): number | null => (hasBaseline ? num(p[col]) : null);
+        const pvBand  = prev('v_in_band_pct');
+        const pThd    = prev('thd_p95');
+        const pVUnb   = prev('v_unb_p95');
+        const pIUnb   = prev('i_unb_p95');
+        const pPf     = prev('pf_avg');
+        const pFBand  = prev('f_in_band_pct');
+
+        const tVolt = compareTrend(vBand,  pvBand, true,  '%', 1, 'Readings inside band:');
+        const tThd  = compareTrend(thdP95, pThd,   false, '%', 2);
+        const tUnb  = compareTrend(vUnb,   pVUnb,  false, '%', 2);
+        const tFreq = compareTrend(fBand,  pFBand, true,  '%', 1, 'Readings inside band:');
+        const tPf   = compareTrend(pfAvg,  pPf,    true,  '', 3);
+        const tIUnb = compareTrend(iUnb,   pIUnb,  false, '%', 1, 'Current imbalance:');
+
         if (n < 100) {
             return {
                 meter_id: meterId,
@@ -177,6 +253,9 @@ export async function assessPowerQuality(
                 verdict: 'INSUFFICIENT_DATA',
                 verdict_note: `Only ${n} readings in the last ${days} days. A minimum of 100 is needed for a statistically meaningful assessment; a full 7-day observation window is recommended.`,
                 parameters: [], risks: [], supply_score: 0, install_score: 0,
+                has_baseline: false,
+                trend_summary: 'Not enough data to establish a baseline yet.',
+                degrading: [],
             };
         }
 
@@ -195,6 +274,7 @@ export async function assessPowerQuality(
             detail: vBand !== null && vBand >= 95
                 ? `${vBand.toFixed(1)}% of readings fell inside the statutory band. Supply voltage is compliant.`
                 : `Only ${vBand?.toFixed(1)}% of readings fell inside the statutory band — the supply is outside NRS 048-2 limits and is the utility's responsibility to correct.`,
+            previous: pvBand, trend: tVolt.trend, trend_note: tVolt.note,
         });
 
         parameters.push({
@@ -210,6 +290,7 @@ export async function assessPowerQuality(
                 : thdP95 <= 5 ? `Distortion is low. No harmonic mitigation is justified at this level.`
                 : thdP95 <= THD_LIMIT ? `Distortion is elevated but still within the ${THD_LIMIT}% limit. Worth monitoring, particularly if inverters or VSDs are added.`
                 : `Distortion exceeds the ${THD_LIMIT}% compatibility level. Expect additional heating in transformers, cables and capacitors.`,
+            previous: pThd, trend: tThd.trend, trend_note: tThd.note,
         });
 
         parameters.push({
@@ -224,6 +305,7 @@ export async function assessPowerQuality(
             detail: vUnb === null ? 'Three-phase voltage data unavailable.'
                 : vUnb <= UNBALANCE_LIMIT ? 'Phase voltages are well balanced at the point of supply.'
                 : `Voltage unbalance exceeds ${UNBALANCE_LIMIT}%. Motors on this supply are being derated and will run hot (see equipment risk).`,
+            previous: pVUnb, trend: tUnb.trend, trend_note: tUnb.note,
         });
 
         parameters.push({
@@ -238,6 +320,7 @@ export async function assessPowerQuality(
             detail: fBand !== null && fBand >= 99
                 ? 'Grid frequency held within the normal operating band throughout.'
                 : `Frequency left the ${F_MIN}–${F_MAX} Hz band during the period — an indicator of grid stress events.`,
+            previous: pFBand, trend: tFreq.trend, trend_note: tFreq.note,
         });
 
         parameters.push({
@@ -252,6 +335,7 @@ export async function assessPowerQuality(
             detail: pfAvg === null ? 'No power factor data.'
                 : pfAvg >= PF_TARGET ? 'Power factor meets the typical utility target; no reactive penalty exposure.'
                 : `Power factor is below the ${PF_TARGET} target — most SA utilities levy reactive energy or kVA demand charges at this level.`,
+            previous: pPf, trend: tPf.trend, trend_note: tPf.note,
         });
 
         // ── Equipment risk (the client's installation — where the money is) ──
@@ -276,7 +360,8 @@ export async function assessPowerQuality(
                 finding: `Current imbalance reaches ${iUnb.toFixed(1)}% at the 95th percentile`
                     + (iUnbAvg !== null ? ` (period average ${iUnbAvg.toFixed(1)}%)` : '')
                     + `, against a ${I_UNBALANCE_GUIDE}% guideline.${phases ? ` Period-average phase currents:${phases.replace(' (', ' ').replace(' average)', '')}.` : ''}`
-                    + ` Imbalance varies through the day — the peak figure is what determines thermal stress.`,
+                    + ` Imbalance varies through the day — the peak figure is what determines thermal stress.`
+                    + (tIUnb.trend !== 'NO_BASELINE' ? ` ${tIUnb.note}` : ''),
                 mechanism: loadSide
                     ? `Incoming voltage is balanced (${vUnb?.toFixed(2)}%) while current is not, which places the fault inside your installation: single-phase loads are unevenly distributed across the three phases. The most heavily loaded phase carries excess current, overheating that conductor and the corresponding motor windings, while the neutral carries the resulting return current.`
                     : `Both voltage and current are unbalanced, indicating the imbalance originates upstream of your installation and is being imposed by the supply.`,
@@ -373,6 +458,29 @@ export async function assessPowerQuality(
                 ? 'The incoming supply meets NRS 048-2. However, conditions inside your installation are placing measurable stress on connected equipment — these are within your control to correct.'
                 : 'Supply quality and installation conditions are both within accepted limits for the observation period. Continued monitoring will detect degradation before it causes failure.';
 
+        // ── Period-over-period movement — the case for staying subscribed ──
+        // Current imbalance is tracked here too (it drives the headline risk even
+        // though it isn't a compliance parameter).
+        const degradingItems: string[] = parameters
+            .filter(pm => pm.trend === 'DEGRADING')
+            .map(pm => pm.label);
+        if (tIUnb.trend === 'DEGRADING') degradingItems.push('Phase current imbalance');
+
+        const improvingItems: string[] = parameters
+            .filter(pm => pm.trend === 'IMPROVING')
+            .map(pm => pm.label);
+        if (tIUnb.trend === 'IMPROVING') improvingItems.push('Phase current imbalance');
+
+        const trend_summary = !hasBaseline
+            ? `This is the first full ${days}-day assessment for this meter. From the next report onward, every parameter will be tracked against this baseline so that gradual deterioration is caught long before it causes a failure.`
+            : degradingItems.length > 0
+                ? `${degradingItems.length} parameter${degradingItems.length > 1 ? 's have' : ' has'} deteriorated measurably versus the previous ${days} days: ${degradingItems.join(', ')}. Deterioration between periods is the earliest available warning of a developing fault — investigate before it becomes a failure.`
+            : improvingItems.length > 0
+                // Name what improved — a bare "conditions improved" next to a table of
+                // "stable" rows reads as a contradiction.
+                ? `Improved versus the previous ${days} days: ${improvingItems.join(', ')}. Nothing deteriorated. Where remedial work was carried out, this is the measured evidence that it worked.`
+                : `All parameters are holding steady against the previous ${days} days. No developing faults detected.`;
+
         return {
             meter_id: meterId,
             meter_name: meta.rows[0].meter_name,
@@ -390,6 +498,9 @@ export async function assessPowerQuality(
             }),
             supply_score: supplyScore,
             install_score: installScore,
+            has_baseline: hasBaseline,
+            trend_summary,
+            degrading: degradingItems,
         };
     } finally {
         client.release();

@@ -4,15 +4,19 @@ import { useState, useEffect, useCallback } from "react";
 import {
     ShieldCheck, ShieldAlert, ShieldX, Printer, Loader2,
     AlertTriangle, CheckCircle2, XCircle, MinusCircle, Activity,
+    TrendingUp, TrendingDown, Minus, History,
 } from "lucide-react";
 
 // ── Types (mirror of the backend assessment) ─────────────────────────────────
 type Status = "PASS" | "WARN" | "FAIL" | "NO_DATA";
 type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 
+type Trend = "IMPROVING" | "STABLE" | "DEGRADING" | "NO_BASELINE";
+
 interface ComplianceParameter {
     key: string; label: string; measured: number | null; display: string;
     limit: string; status: Status; standard: string; method: string; detail: string;
+    previous: number | null; trend: Trend; trend_note: string;
 }
 interface EquipmentRisk {
     key: string; severity: Severity; title: string;
@@ -26,6 +30,7 @@ interface ComplianceReport {
     parameters: ComplianceParameter[];
     risks: EquipmentRisk[];
     supply_score: number; install_score: number;
+    has_baseline: boolean; trend_summary: string; degrading: string[];
 }
 interface Meter { id: string; name: string; site_id: string; is_active?: boolean; }
 
@@ -50,6 +55,15 @@ const VERDICT: Record<string, { title: string; cls: string; icon: React.ElementT
     COMPLIANT_WITH_RISK: { title: "Compliant — with risk",  cls: "text-amber-700",   icon: ShieldAlert, ring: "border-amber-300 bg-amber-50" },
     NON_COMPLIANT:       { title: "Non-compliant",          cls: "text-red-700",     icon: ShieldX,     ring: "border-red-300 bg-red-50" },
     INSUFFICIENT_DATA:   { title: "Insufficient data",      cls: "text-slate-600",   icon: MinusCircle, ring: "border-slate-300 bg-slate-50" },
+};
+
+// Trend direction is about the *metric getting better or worse*, not the number
+// going up or down — the backend has already resolved that per parameter.
+const TREND_STYLE: Record<Trend, { icon: React.ElementType; cls: string; label: string }> = {
+    IMPROVING:   { icon: TrendingUp,   cls: "text-emerald-600", label: "Improving" },
+    DEGRADING:   { icon: TrendingDown, cls: "text-red-600",     label: "Degrading" },
+    STABLE:      { icon: Minus,        cls: "text-slate-400",   label: "Stable" },
+    NO_BASELINE: { icon: History,      cls: "text-slate-300",   label: "Baseline" },
 };
 
 function scoreColour(s: number) {
@@ -228,6 +242,26 @@ export default function HealthCheckPage() {
                         </div>
                     )}
 
+                    {/* ── What changed since last period ─────────────────── */}
+                    {/* This is the value a one-off survey cannot deliver: movement. */}
+                    <div className={`pq-break mt-5 rounded-xl border p-5 ${
+                        report.degrading.length > 0
+                            ? "border-red-200 bg-red-50"
+                            : report.has_baseline ? "border-slate-200 bg-slate-50" : "border-blue-200 bg-blue-50"
+                    }`}>
+                        <div className="flex items-start gap-3">
+                            {report.degrading.length > 0
+                                ? <TrendingDown className="h-5 w-5 text-red-600 shrink-0 mt-0.5" />
+                                : <History className="h-5 w-5 text-slate-500 shrink-0 mt-0.5" />}
+                            <div>
+                                <p className="text-[11px] uppercase tracking-wider text-slate-500">
+                                    Change since previous {report.period_days} days
+                                </p>
+                                <p className="text-sm text-slate-800 mt-1 leading-relaxed">{report.trend_summary}</p>
+                            </div>
+                        </div>
+                    </div>
+
                     {/* ── The two scores: whose problem is it? ───────────── */}
                     <div className="pq-break grid grid-cols-2 gap-5 mt-6">
                         {[
@@ -257,6 +291,7 @@ export default function HealthCheckPage() {
                                 <tr className="text-[11px] uppercase tracking-wider text-slate-500 border-b border-slate-200">
                                     <th className="text-left pb-2 font-medium">Parameter</th>
                                     <th className="text-right pb-2 font-medium">Measured</th>
+                                    <th className="text-right pb-2 font-medium">Trend</th>
                                     <th className="text-right pb-2 font-medium">Limit</th>
                                     <th className="text-right pb-2 font-medium">Result</th>
                                 </tr>
@@ -271,9 +306,26 @@ export default function HealthCheckPage() {
                                                 <p className="font-semibold text-slate-900">{p.label}</p>
                                                 <p className="text-xs text-slate-500 mt-0.5">{p.standard}</p>
                                                 <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">{p.detail}</p>
+                                                {/* Printed inline as well as the icon column — tooltips don't survive a PDF. */}
+                                                {p.trend !== "NO_BASELINE" && (
+                                                    <p className={`text-xs mt-1 font-medium ${TREND_STYLE[p.trend].cls}`}>
+                                                        {p.trend_note}
+                                                    </p>
+                                                )}
                                                 <p className="text-[11px] text-slate-400 mt-1 italic">Method: {p.method}</p>
                                             </td>
                                             <td className="py-3 px-2 text-right font-bold text-slate-900 whitespace-nowrap">{p.display}</td>
+                                            <td className="py-3 px-2 text-right whitespace-nowrap">
+                                                {(() => {
+                                                    const tr = TREND_STYLE[p.trend];
+                                                    const TIcon = tr.icon;
+                                                    return (
+                                                        <span className={`inline-flex items-center gap-1 text-xs font-medium ${tr.cls}`} title={p.trend_note}>
+                                                            <TIcon className="h-3.5 w-3.5" /> {tr.label}
+                                                        </span>
+                                                    );
+                                                })()}
+                                            </td>
                                             <td className="py-3 px-2 text-right text-slate-600 whitespace-nowrap text-xs">{p.limit}</td>
                                             <td className="py-3 pl-2 text-right">
                                                 <span className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-xs font-semibold ${st.cls}`}>
