@@ -1437,19 +1437,27 @@ app.get('/value-ledger', authenticateToken, async (req: any, res) => {
             ${where}
         `, params);
 
-        // Findings raised by the assessment engine, deduplicated by risk type.
+        // Findings raised by the assessment engine, grouped per meter. Grouping by
+        // severity alone made the same issue on two meters look like a duplicate
+        // row; the meter name is what distinguishes them. Severity is taken as the
+        // worst observed for that finding on that meter.
         const findings = await client.query(`
             SELECT risk->>'key' AS key,
                    risk->>'title' AS title,
-                   risk->>'severity' AS severity,
+                   m.name AS meter_name,
+                   (ARRAY_AGG(risk->>'severity' ORDER BY
+                        CASE risk->>'severity'
+                            WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1
+                            WHEN 'MEDIUM' THEN 2 ELSE 3 END))[1] AS severity,
                    COUNT(*)::int AS times_seen,
                    MIN(a.assessed_at) AS first_seen,
                    MAX(a.assessed_at) AS last_seen
             FROM pq_assessments a
             JOIN sites s ON a.site_id = s.id
+            LEFT JOIN meters m ON a.meter_id = m.id
             CROSS JOIN LATERAL jsonb_array_elements(COALESCE(a.risks,'[]'::jsonb)) AS risk
             ${where}
-            GROUP BY 1,2,3
+            GROUP BY 1, 2, 3
             ORDER BY MAX(a.assessed_at) DESC
         `, params);
 

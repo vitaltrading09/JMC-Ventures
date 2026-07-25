@@ -9,7 +9,7 @@ import {
 import { num } from "@/lib/format";
 
 interface Finding {
-    key: string; title: string; severity: string;
+    key: string; title: string; severity: string; meter_name: string | null;
     times_seen: number; first_seen: string; last_seen: string;
 }
 interface Ledger {
@@ -154,7 +154,7 @@ export default function ValueLedgerPage() {
                             <div className="space-y-3">
                                 {data.findings.map(f => (
                                     <div
-                                        key={`${f.key}-${f.severity}`}
+                                        key={`${f.key}-${f.meter_name ?? ""}`}
                                         className="flex items-start gap-4 p-4 rounded-lg bg-slate-900/50 border border-slate-800"
                                     >
                                         <span className={`shrink-0 px-2 py-0.5 rounded border text-[11px] font-semibold uppercase tracking-wide ${SEV_CLS[f.severity] ?? SEV_CLS.LOW}`}>
@@ -162,6 +162,11 @@ export default function ValueLedgerPage() {
                                         </span>
                                         <div className="flex-1 min-w-0">
                                             <p className="text-sm font-medium text-white">{f.title}</p>
+                                            {/* Naming the meter is what distinguishes the same finding
+                                                on two different meters — without it they read as duplicates. */}
+                                            {f.meter_name && (
+                                                <p className="text-xs text-blue-400 mt-0.5">{f.meter_name}</p>
+                                            )}
                                             <p className="text-xs text-slate-500 mt-1">
                                                 Detected in {f.times_seen} assessment{f.times_seen !== 1 ? "s" : ""}
                                                 {" · first seen "}
