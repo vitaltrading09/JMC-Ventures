@@ -8,6 +8,7 @@ import { initMqtt } from './mqtt';
 import { computeAndStoreSiteScore, getLatestSiteScore } from './energy-score';
 import { assessPowerQuality } from './power-quality';
 import { getOrCreateExecutiveSummary, answerReportQuestion } from './pq-narrative';
+import { forecastDegradation } from './pq-forecast';
 import {
     generateAndStoreSiteRecommendations,
     getSiteRecommendations,
@@ -1450,6 +1451,34 @@ app.post('/meters/:id/compliance/ask', authenticateToken, async (req: any, res) 
     } catch (err) {
         console.error('Report Q&A error:', err);
         res.status(500).json({ error: 'Question failed' });
+    }
+});
+
+// Degradation forecast — weekly trend regression and projected threshold crossing.
+app.get('/meters/:id/forecast', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const weeks = Math.min(Math.max(parseInt(String(req.query.weeks || '12')), 4), 52);
+    const { tenantId, role } = req.user;
+
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const authCheck = await client.query(
+                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
+                 WHERE m.id = $1 AND s.tenant_id = $2`, [id, tenantId]);
+            if (authCheck.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
+        }
+    } finally {
+        client.release();
+    }
+
+    try {
+        const forecast = await forecastDegradation(pool, id, weeks);
+        if (!forecast) return res.status(404).json({ error: 'Meter not found' });
+        res.json(forecast);
+    } catch (err) {
+        console.error('Forecast error:', err);
+        res.status(500).json({ error: 'Forecast failed' });
     }
 });
 

@@ -35,6 +35,21 @@ interface ComplianceReport {
 interface Meter { id: string; name: string; site_id: string; is_active?: boolean; }
 interface Branding { brand_name: string | null; brand_logo_url: string | null; brand_footer: string | null; }
 
+interface TrendPoint { week: string; value: number; samples: number; }
+interface MetricTrend {
+    key: string; label: string; unit: string; decimals: number;
+    threshold: number; threshold_label: string; higher_is_worse: boolean;
+    points: TrendPoint[]; current: number | null;
+    slope_per_week: number | null; r2: number | null;
+    direction: "WORSENING" | "IMPROVING" | "FLAT" | "INSUFFICIENT_DATA";
+    weeks_to_threshold: number | null; projected_date: string | null;
+    over_threshold: boolean; weeks_over: number; note: string;
+}
+interface Forecast {
+    meter_name: string; site_name: string; weeks: number;
+    metrics: MetricTrend[]; headline: string;
+}
+
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
 
 const STATUS_STYLE: Record<Status, { cls: string; icon: React.ElementType; label: string }> = {
@@ -84,6 +99,7 @@ export default function HealthCheckPage() {
     const [days,     setDays]     = useState(7);
     const [report,   setReport]   = useState<ComplianceReport | null>(null);
     const [brand,    setBrand]    = useState<Branding | null>(null);
+    const [forecast, setForecast] = useState<Forecast | null>(null);
     const [summary,     setSummary]     = useState<string | null>(null);
     const [summaryBusy, setSummaryBusy] = useState(false);
     const [question,    setQuestion]    = useState("");
@@ -143,6 +159,16 @@ export default function HealthCheckPage() {
     }, [meterId, days]);
 
     useEffect(() => { if (meterId) runCheck(); }, [meterId, days, runCheck]);
+
+    // Long-run trend and threshold projection.
+    useEffect(() => {
+        if (!meterId) return;
+        setForecast(null);
+        fetch(`${API}/ingestion/meters/${meterId}/forecast?weeks=12`, { credentials: "include" })
+            .then(r => r.ok ? r.json() : null)
+            .then(f => setForecast(f))
+            .catch(() => setForecast(null));
+    }, [meterId]);
 
     // Executive summary is fetched separately so a slow (or unavailable) AI call
     // never delays or blocks the engineering report, which stands on its own.
@@ -480,10 +506,91 @@ export default function HealthCheckPage() {
                         )}
                     </div>
 
+                    {/* ── Trend & forecast ───────────────────────────────── */}
+                    {forecast && forecast.metrics.some(m => m.points.length >= 4) && (
+                        <div className="mt-9">
+                            <h3 className="text-sm font-bold uppercase tracking-wider text-slate-900 border-b border-slate-300 pb-2">
+                                3. Trend and forecast
+                            </h3>
+
+                            <div className={`mt-4 rounded-lg border p-4 ${
+                                forecast.metrics.some(m => m.over_threshold) ? "border-red-200 bg-red-50"
+                                : forecast.metrics.some(m => m.direction === "WORSENING") ? "border-amber-200 bg-amber-50"
+                                : "border-slate-200 bg-slate-50"
+                            }`}>
+                                <p className="text-sm font-semibold text-slate-900">{forecast.headline}</p>
+                                <p className="text-xs text-slate-500 mt-1">
+                                    Based on weekly measurements over the last {forecast.weeks} weeks.
+                                </p>
+                            </div>
+
+                            <div className="grid sm:grid-cols-2 gap-5 mt-5">
+                                {forecast.metrics
+                                    .filter(m => m.points.length >= 4)
+                                    .map(m => {
+                                        const vals = m.points.map(p => p.value);
+                                        // Keep the limit line inside the plotted range so
+                                        // "how far over/under" is readable at a glance.
+                                        const lo = Math.min(...vals, m.threshold);
+                                        const hi = Math.max(...vals, m.threshold);
+                                        const pad = (hi - lo) * 0.15 || 1;
+                                        const yMin = lo - pad, yMax = hi + pad;
+                                        const scaleY = (v: number) => 60 - ((v - yMin) / (yMax - yMin)) * 55;
+                                        const stepX = m.points.length > 1 ? 240 / (m.points.length - 1) : 0;
+                                        const path = m.points
+                                            .map((p, i) => `${i === 0 ? "M" : "L"} ${(i * stepX).toFixed(1)} ${scaleY(p.value).toFixed(1)}`)
+                                            .join(" ");
+                                        const thresholdY = scaleY(m.threshold);
+                                        const bad = m.over_threshold || m.direction === "WORSENING";
+
+                                        return (
+                                            <div key={m.key} className="pq-break rounded-lg border border-slate-200 p-4">
+                                                <div className="flex items-baseline justify-between gap-2">
+                                                    <p className="text-sm font-semibold text-slate-900">{m.label}</p>
+                                                    <p className={`text-lg font-bold ${bad ? "text-red-600" : "text-emerald-600"}`}>
+                                                        {m.current?.toFixed(m.decimals)}{m.unit}
+                                                    </p>
+                                                </div>
+
+                                                <svg viewBox="0 0 240 65" className="w-full h-[70px] mt-2 overflow-visible">
+                                                    {/* Published limit */}
+                                                    <line x1="0" y1={thresholdY} x2="240" y2={thresholdY}
+                                                          stroke="#dc2626" strokeWidth="1" strokeDasharray="4 3" />
+                                                    <text x="240" y={thresholdY - 3} textAnchor="end"
+                                                          fontSize="7" fill="#dc2626">
+                                                        limit {m.threshold}{m.unit}
+                                                    </text>
+                                                    <path d={path} fill="none"
+                                                          stroke={bad ? "#dc2626" : "#059669"} strokeWidth="1.8"
+                                                          strokeLinejoin="round" strokeLinecap="round" />
+                                                    {m.points.map((p, i) => (
+                                                        <circle key={i} cx={i * stepX} cy={scaleY(p.value)} r="1.8"
+                                                                fill={bad ? "#dc2626" : "#059669"} />
+                                                    ))}
+                                                </svg>
+
+                                                <div className="flex justify-between text-[10px] text-slate-400 -mt-1">
+                                                    <span>{m.points[0].week}</span>
+                                                    <span>{m.points[m.points.length - 1].week}</span>
+                                                </div>
+
+                                                <p className="text-xs text-slate-700 mt-2 leading-relaxed">{m.note}</p>
+                                                <p className="text-[10px] text-slate-400 mt-1.5 italic">
+                                                    Limit: {m.threshold_label}
+                                                    {m.r2 !== null && m.direction !== "FLAT" && m.direction !== "INSUFFICIENT_DATA"
+                                                        ? ` · trend fit R²=${m.r2.toFixed(2)}` : ""}
+                                                </p>
+                                            </div>
+                                        );
+                                    })}
+                            </div>
+                        </div>
+                    )}
+
                     {/* ── Method note — what makes this defensible ───────── */}
                     <div className="pq-break mt-9">
                         <h3 className="text-sm font-bold uppercase tracking-wider text-slate-900 border-b border-slate-300 pb-2">
-                            3. Assessment method
+                            {forecast && forecast.metrics.some(m => m.points.length >= 4) ? "4" : "3"}. Assessment method
                         </h3>
                         <p className="text-xs text-slate-600 mt-3 leading-relaxed">
                             Measurements were taken continuously at the point of supply over the stated observation
@@ -495,6 +602,15 @@ export default function HealthCheckPage() {
                             derating and winding temperature effects are taken from NEMA MG-1. Nominal supply is
                             taken as 230 V phase-to-neutral with a statutory tolerance of ±10%.
                         </p>
+                        {forecast && forecast.metrics.some(m => m.points.length >= 4) && (
+                            <p className="text-xs text-slate-600 mt-3 leading-relaxed">
+                                Trends are calculated by ordinary least-squares regression on weekly values. A direction
+                                is only reported where the fit is strong enough to distinguish a real trend from normal
+                                variation (R² ≥ 0.35); otherwise the parameter is reported as steady. Projected threshold
+                                crossings assume the present rate of change continues, are limited to a 26-week horizon,
+                                and are indicative rather than a prediction of failure on a specific date.
+                            </p>
+                        )}
                         <p className="text-xs text-slate-500 mt-3 leading-relaxed">
                             All figures in this report are derived directly from measured data. Cost and equipment-life
                             implications are engineering estimates based on the cited standards and should be confirmed
