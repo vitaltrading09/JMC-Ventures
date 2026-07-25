@@ -7,6 +7,7 @@ import IORedis from 'ioredis';
 import { initMqtt } from './mqtt';
 import { computeAndStoreSiteScore, getLatestSiteScore } from './energy-score';
 import { assessPowerQuality } from './power-quality';
+import { getOrCreateExecutiveSummary, answerReportQuestion } from './pq-narrative';
 import {
     generateAndStoreSiteRecommendations,
     getSiteRecommendations,
@@ -202,6 +203,11 @@ const pool = new Pool({
             );
             CREATE INDEX IF NOT EXISTS idx_pq_meter_time ON pq_assessments (meter_id, assessed_at DESC);
             CREATE INDEX IF NOT EXISTS idx_pq_tenant_time ON pq_assessments (tenant_id, assessed_at DESC);
+        `);
+        // Cached AI narrative, stored against the snapshot so the wording stays
+        // stable for a given assessment and isn't re-billed on every page view.
+        await client.query(`
+            ALTER TABLE pq_assessments ADD COLUMN IF NOT EXISTS ai_summary TEXT;
         `);
         console.log("DB Schema initialized: pq_assessments verified");
 
@@ -1378,6 +1384,72 @@ app.get('/meters/:id/compliance', authenticateToken, async (req: any, res) => {
     } catch (err) {
         console.error('Compliance assessment error:', err);
         res.status(500).json({ error: 'Assessment failed' });
+    }
+});
+
+// AI executive summary for an assessment — plain-language interpretation of the
+// measured findings. Cached against the latest snapshot.
+app.get('/meters/:id/compliance/summary', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const days = Math.min(Math.max(parseInt(String(req.query.days || '7')), 1), 90);
+    const { tenantId, role } = req.user;
+
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const authCheck = await client.query(
+                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
+                 WHERE m.id = $1 AND s.tenant_id = $2`, [id, tenantId]);
+            if (authCheck.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
+        }
+    } finally {
+        client.release();
+    }
+
+    try {
+        const report = await assessPowerQuality(pool, id, days);
+        if (!report) return res.status(404).json({ error: 'Meter not found' });
+        if (report.verdict === 'INSUFFICIENT_DATA') {
+            return res.json({ summary: null, reason: 'insufficient_data' });
+        }
+        const summary = await getOrCreateExecutiveSummary(pool, id, report);
+        res.json({ summary, reason: summary ? null : 'ai_unavailable' });
+    } catch (err) {
+        console.error('Executive summary error:', err);
+        res.status(500).json({ error: 'Summary failed' });
+    }
+});
+
+// Ask a question about one specific assessment — scoped to its measured findings.
+app.post('/meters/:id/compliance/ask', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const days = Math.min(Math.max(parseInt(String(req.body?.days || '7')), 1), 90);
+    const question = String(req.body?.question || '').slice(0, 1000).trim();
+    const history = Array.isArray(req.body?.history) ? req.body.history.slice(-6) : [];
+    const { tenantId, role } = req.user;
+
+    if (!question) return res.status(400).json({ error: 'Question required' });
+
+    const client = await pool.connect();
+    try {
+        if (role !== 'super_admin') {
+            const authCheck = await client.query(
+                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
+                 WHERE m.id = $1 AND s.tenant_id = $2`, [id, tenantId]);
+            if (authCheck.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
+        }
+    } finally {
+        client.release();
+    }
+
+    try {
+        const report = await assessPowerQuality(pool, id, days);
+        if (!report) return res.status(404).json({ error: 'Meter not found' });
+        const answer = await answerReportQuestion(report, question, history);
+        res.json({ answer, reason: answer ? null : 'ai_unavailable' });
+    } catch (err) {
+        console.error('Report Q&A error:', err);
+        res.status(500).json({ error: 'Question failed' });
     }
 });
 

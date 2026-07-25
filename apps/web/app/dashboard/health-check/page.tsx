@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
     ShieldCheck, ShieldAlert, ShieldX, Printer, Loader2,
     AlertTriangle, CheckCircle2, XCircle, MinusCircle, Activity,
-    TrendingUp, TrendingDown, Minus, History,
+    TrendingUp, TrendingDown, Minus, History, Sparkles, Send,
 } from "lucide-react";
 
 // ── Types (mirror of the backend assessment) ─────────────────────────────────
@@ -84,6 +84,11 @@ export default function HealthCheckPage() {
     const [days,     setDays]     = useState(7);
     const [report,   setReport]   = useState<ComplianceReport | null>(null);
     const [brand,    setBrand]    = useState<Branding | null>(null);
+    const [summary,     setSummary]     = useState<string | null>(null);
+    const [summaryBusy, setSummaryBusy] = useState(false);
+    const [question,    setQuestion]    = useState("");
+    const [qaLog,       setQaLog]       = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+    const [asking,      setAsking]      = useState(false);
     const [loading,  setLoading]  = useState(true);
     const [busy,     setBusy]     = useState(false);
 
@@ -138,6 +143,46 @@ export default function HealthCheckPage() {
     }, [meterId, days]);
 
     useEffect(() => { if (meterId) runCheck(); }, [meterId, days, runCheck]);
+
+    // Executive summary is fetched separately so a slow (or unavailable) AI call
+    // never delays or blocks the engineering report, which stands on its own.
+    useEffect(() => {
+        if (!meterId) return;
+        setSummary(null);
+        setQaLog([]);
+        setSummaryBusy(true);
+        fetch(`${API}/ingestion/meters/${meterId}/compliance/summary?days=${days}`, { credentials: "include" })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => setSummary(d?.summary ?? null))
+            .catch(() => setSummary(null))
+            .finally(() => setSummaryBusy(false));
+    }, [meterId, days]);
+
+    const askQuestion = async (q: string) => {
+        const text = q.trim();
+        if (!text || asking || !meterId) return;
+        setQuestion("");
+        const history = qaLog.slice(-6);
+        setQaLog(prev => [...prev, { role: "user", content: text }]);
+        setAsking(true);
+        try {
+            const res = await fetch(`${API}/ingestion/meters/${meterId}/compliance/ask`, {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ question: text, days, history }),
+            });
+            const data = res.ok ? await res.json() : null;
+            setQaLog(prev => [...prev, {
+                role: "assistant",
+                content: data?.answer ?? "I couldn't answer that just now — the analysis service is unavailable.",
+            }]);
+        } catch {
+            setQaLog(prev => [...prev, { role: "assistant", content: "Connection failed. Please try again." }]);
+        } finally {
+            setAsking(false);
+        }
+    };
 
     if (loading) return (
         <div className="flex items-center justify-center h-64">
@@ -260,6 +305,31 @@ export default function HealthCheckPage() {
                                     <p className="text-sm text-slate-700 mt-2 leading-relaxed">{report.verdict_note}</p>
                                 </div>
                             </div>
+                        </div>
+                    )}
+
+                    {/* ── Executive summary ──────────────────────────────── */}
+                    {/* Plain-language interpretation of the measured findings. The
+                        engineering below stands on its own if this is unavailable. */}
+                    {(summaryBusy || summary) && (
+                        <div className="pq-break mt-6 rounded-xl border border-slate-200 bg-slate-50 p-5">
+                            <div className="flex items-center gap-2 mb-3">
+                                <Sparkles className="h-4 w-4 text-blue-600" />
+                                <p className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold">
+                                    Executive summary
+                                </p>
+                            </div>
+                            {summaryBusy ? (
+                                <div className="flex items-center gap-2 text-sm text-slate-500 py-2">
+                                    <Loader2 className="h-4 w-4 animate-spin" /> Interpreting the findings…
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {summary!.split(/\n\s*\n/).map((para, i) => (
+                                        <p key={i} className="text-sm text-slate-800 leading-relaxed">{para}</p>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -430,6 +500,82 @@ export default function HealthCheckPage() {
                             implications are engineering estimates based on the cited standards and should be confirmed
                             on site before capital expenditure is committed.
                         </p>
+                    </div>
+
+                    {/* ── Ask about this report (screen only) ────────────── */}
+                    <div data-noprint="true" className="mt-9 rounded-xl border border-slate-200 bg-slate-50 p-5">
+                        <div className="flex items-center gap-2">
+                            <Sparkles className="h-4 w-4 text-blue-600" />
+                            <p className="text-sm font-semibold text-slate-900">Ask about this report</p>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-1">
+                            Answers come only from the measurements above — if something wasn&apos;t measured, it will say so.
+                        </p>
+
+                        {qaLog.length === 0 && !asking && (
+                            <div className="flex flex-wrap gap-2 mt-4">
+                                {[
+                                    "Is this the municipality's fault or mine?",
+                                    "What should I fix first?",
+                                    "What is this costing me?",
+                                    "Is my equipment in danger?",
+                                ].map(s => (
+                                    <button
+                                        key={s}
+                                        onClick={() => askQuestion(s)}
+                                        className="px-3 py-1.5 rounded-full border border-slate-300 bg-white text-xs text-slate-700 hover:border-blue-400 hover:text-blue-700 transition-colors"
+                                    >
+                                        {s}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+
+                        {qaLog.length > 0 && (
+                            <div className="mt-4 space-y-3 max-h-[420px] overflow-y-auto">
+                                {qaLog.map((m, i) => (
+                                    <div
+                                        key={i}
+                                        className={m.role === "user"
+                                            ? "ml-auto max-w-[85%] rounded-lg bg-blue-600 text-white px-3 py-2 text-sm"
+                                            : "mr-auto max-w-[92%] rounded-lg bg-white border border-slate-200 px-3 py-2 text-sm text-slate-800 whitespace-pre-wrap"}
+                                    >
+                                        {/* The model uses ** for emphasis; render it as bold rather
+                                            than leaking raw markdown into a client-facing document. */}
+                                        {m.role === "assistant"
+                                            ? m.content.split(/(\*\*[^*]+\*\*)/g).map((chunk, j) =>
+                                                chunk.startsWith("**") && chunk.endsWith("**")
+                                                    ? <strong key={j}>{chunk.slice(2, -2)}</strong>
+                                                    : <span key={j}>{chunk}</span>)
+                                            : m.content}
+                                    </div>
+                                ))}
+                                {asking && (
+                                    <div className="mr-auto flex items-center gap-2 text-sm text-slate-500 px-3 py-2">
+                                        <Loader2 className="h-4 w-4 animate-spin" /> Checking the measurements…
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        <form
+                            onSubmit={e => { e.preventDefault(); askQuestion(question); }}
+                            className="flex gap-2 mt-4"
+                        >
+                            <input
+                                value={question}
+                                onChange={e => setQuestion(e.target.value)}
+                                placeholder="Ask anything about these findings…"
+                                className="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                            <button
+                                type="submit"
+                                disabled={asking || !question.trim()}
+                                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium"
+                            >
+                                <Send className="h-4 w-4" /> Ask
+                            </button>
+                        </form>
                     </div>
 
                     {/* ── Footer ─────────────────────────────────────────── */}
