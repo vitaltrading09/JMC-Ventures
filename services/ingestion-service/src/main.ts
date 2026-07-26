@@ -10,6 +10,7 @@ import { assessPowerQuality } from './power-quality';
 import { getOrCreateExecutiveSummary, getCachedExecutiveSummary, answerReportQuestion } from './pq-narrative';
 import { forecastDegradation } from './pq-forecast';
 import { buildRiskProfile } from './risk-profile';
+import { maxDemand, DEFAULT_DEMAND_INTERVAL_MIN } from './demand';
 import { randomBytes, createHash } from 'crypto';
 import {
     generateAndStoreSiteRecommendations,
@@ -77,7 +78,11 @@ const pool = new Pool({
             ADD COLUMN IF NOT EXISTS alert_min_freq DECIMAL(6,2),
             ADD COLUMN IF NOT EXISTS alert_max_freq DECIMAL(6,2),
             ADD COLUMN IF NOT EXISTS contracted_mdi_kva DECIMAL(10,2),
-            ADD COLUMN IF NOT EXISTS tariff_demand DECIMAL(10,2);
+            ADD COLUMN IF NOT EXISTS tariff_demand DECIMAL(10,2),
+            -- Utility demand integration window. Eskom Megaflex/Miniflex use 30
+            -- minutes; some municipal tariffs use 15. Per-site because it must
+            -- match the client's actual tariff to reconcile against their bill.
+            ADD COLUMN IF NOT EXISTS demand_interval_min INTEGER;
         `);
 
         // Energy scores table
@@ -958,12 +963,16 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
             monthlyWhere += ` AND s.tenant_id = $1`;
             monthlyParams.push(effectiveTenantId);
         }
+        // Billed maximum demand is the highest TIME-WEIGHTED AVERAGE over the
+        // utility's integration interval (30 min on Eskom Megaflex/Miniflex) —
+        // not the highest instantaneous reading. Both are supplied: the model
+        // needs the billed figure to answer correctly, and the instantaneous one
+        // to explain why the two differ when a client asks.
         const monthlyQuery = `
-            SELECT
-                ROUND(SUM(power_active_total * dt_s / 3600.0)::numeric, 1) as kwh_this_month,
-                ROUND(MAX(power_active_total)::numeric, 1) as peak_kw_this_month
-            FROM (
-                SELECT mr.power_active_total,
+            WITH r AS (
+                SELECT mr.meter_id,
+                    time_bucket('30 minutes', mr.time) AS bucket,
+                    mr.power_active_total, mr.power_apparent_total,
                     LEAST(EXTRACT(EPOCH FROM (
                         LEAD(mr.time) OVER (PARTITION BY mr.meter_id ORDER BY mr.time) - mr.time
                     )), 900) AS dt_s
@@ -971,7 +980,20 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
                 JOIN meters m ON mr.meter_id = m.id
                 JOIN sites s ON m.site_id = s.id
                 ${monthlyWhere}
-            ) t
+            ), per_interval AS (
+                SELECT bucket,
+                    SUM(power_active_total   * COALESCE(dt_s,0)) / NULLIF(SUM(COALESCE(dt_s,0)),0) AS iv_kw,
+                    SUM(power_apparent_total * COALESCE(dt_s,0)) / NULLIF(SUM(COALESCE(dt_s,0)),0) AS iv_kva,
+                    SUM(COALESCE(dt_s,0)) AS covered_s
+                FROM r GROUP BY bucket
+            )
+            SELECT
+                (SELECT ROUND(SUM(power_active_total * dt_s / 3600.0)::numeric, 1) FROM r) AS kwh_this_month,
+                (SELECT ROUND(MAX(power_active_total)::numeric, 1) FROM r)                 AS peak_instant_kw,
+                ROUND(MAX(iv_kw)::numeric, 1)  AS demand_kw_30min,
+                ROUND(MAX(iv_kva)::numeric, 1) AS demand_kva_30min
+            FROM per_interval
+            WHERE covered_s >= 0.8 * 30 * 60
         `;
         const monthlyResult = await client.query(monthlyQuery, monthlyParams);
         const monthly = monthlyResult.rows[0];
@@ -1005,7 +1027,12 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
         // Monthly summary
         contextString += `\nMONTHLY USAGE (current month):\n`;
         contextString += `• Estimated Energy: ${monthly?.kwh_this_month ?? 'N/A'} kWh\n`;
-        contextString += `• Peak Demand: ${monthly?.peak_kw_this_month ?? 'N/A'} kW\n`;
+        contextString += `• Maximum demand (BILLED BASIS — highest 30-min time-weighted average, matches the utility's method): `
+            + `${monthly?.demand_kw_30min ?? 'N/A'} kW / ${monthly?.demand_kva_30min ?? 'N/A'} kVA\n`;
+        contextString += `• Highest instantaneous reading (NOT what is billed — a brief spike does not move a 30-min average): `
+            + `${monthly?.peak_instant_kw ?? 'N/A'} kW\n`;
+        contextString += `  When asked about peak or maximum demand, quote the BILLED BASIS figure. Only mention the `
+            + `instantaneous value to explain why it differs from the billed one.\n`;
 
         // Alert thresholds
         if (settingsList && settingsList.length > 0) {
@@ -1084,7 +1111,7 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
         if (historyResult.rows.length > 0) {
             contextString += `\n7-DAY HISTORICAL SUMMARY (last 7 days):\n`;
             historyResult.rows.forEach((h: any) => {
-                contextString += `• ${h.meter_name}: ${h.reading_count} readings | P: min ${h.min_kw} / avg ${h.avg_kw} / max ${h.max_kw} kW | Est. Energy: ${h.est_kwh_7d || 'N/A'} kWh`;
+                contextString += `• ${h.meter_name}: ${h.reading_count} readings | P: min ${h.min_kw} / avg ${h.avg_kw} / max ${h.max_kw} kW (max here is instantaneous, not billed demand) | Est. Energy: ${h.est_kwh_7d || 'N/A'} kWh`;
                 if (h.avg_pf) contextString += ` | PF avg: ${h.avg_pf} (min: ${h.min_pf})`;
                 if (h.avg_v) contextString += ` | V avg: ${h.avg_v} (range: ${h.min_v}-${h.max_v} V)`;
                 if (h.avg_thd) contextString += ` | THD avg: ${h.avg_thd}% (max: ${h.max_thd_reading}%)`;
@@ -1565,6 +1592,60 @@ app.get('/meters/:id/compliance/history', authenticateToken, async (req: any, re
 // Value ledger — what Grid-IQ has caught for this client. Shown when the
 // invoice lands: the running record of monitoring actually earning its keep.
 // ─────────────────────────────────────────────────────────────────────────────
+// ── Maximum demand, on the basis the utility actually bills ──────────────────
+// GET /meters/:id/demand?days=30[&interval=30]
+app.get('/meters/:id/demand', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+    const days = Math.min(Math.max(parseInt(String(req.query.days || '30')), 1), 365);
+
+    const client = await pool.connect();
+    let intervalMin = DEFAULT_DEMAND_INTERVAL_MIN;
+    try {
+        const own = await client.query(`
+            SELECT m.id, ss.demand_interval_min, ss.contracted_mdi_kva, ss.tariff_demand
+            FROM meters m
+            JOIN sites s ON m.site_id = s.id
+            LEFT JOIN site_settings ss ON s.id = ss.site_id
+            WHERE m.id = $1 ${role === 'super_admin' ? '' : 'AND s.tenant_id = $2'}
+        `, role === 'super_admin' ? [id] : [id, tenantId]);
+
+        if (own.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
+
+        const cfg = own.rows[0];
+        // Query override wins, then the site's configured tariff window, then Eskom's 30 min.
+        const requested = parseInt(String(req.query.interval || ''), 10);
+        intervalMin = [5, 10, 15, 30, 60].includes(requested) ? requested
+            : Number(cfg.demand_interval_min) || DEFAULT_DEMAND_INTERVAL_MIN;
+
+        const to = new Date();
+        const from = new Date(to.getTime() - days * 86_400_000);
+        const result = await maxDemand(pool, id, from, to, intervalMin);
+
+        const contracted = cfg.contracted_mdi_kva === null || cfg.contracted_mdi_kva === undefined
+            ? null : Number(cfg.contracted_mdi_kva);
+        const tariffDemand = cfg.tariff_demand === null || cfg.tariff_demand === undefined
+            ? null : Number(cfg.tariff_demand);
+
+        res.json({
+            ...result,
+            contracted_mdi_kva: contracted,
+            utilisation_pct: contracted && result.max_kva ? (result.max_kva / contracted) * 100 : null,
+            // Only stated where a demand rate is actually configured — an
+            // invented rate would produce a number the client cannot reconcile.
+            estimated_demand_charge_zar:
+                tariffDemand !== null && result.max_kva !== null
+                    ? Math.round(result.max_kva * tariffDemand)
+                    : null,
+        });
+    } catch (err) {
+        console.error('Max demand error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Read-only report sharing.
 //

@@ -434,17 +434,24 @@ async function evaluateAlerts(client: any, p: AlertParams): Promise<void> {
     // ── Contracted MDI (kVA) ───────────────────────────────────────────────────
     if (p.contractedMdi !== null && p.apparent !== null) {
         const pct = (p.apparent / Number(p.contractedMdi)) * 100;
+        // This is a single instantaneous sample, NOT billed demand — utilities
+        // bill the highest 30-minute average, and a brief spike does not move
+        // one. It is still worth alerting on as an early warning, but the
+        // wording must not imply a penalty has been incurred; the client would
+        // check their bill and find it did not happen. /meters/:id/demand
+        // carries the billed figure.
         if (pct >= 100) {
             await maybeInsertAlert(
                 client, p.tenantId, p.meterId,
                 'MDI_EXCEEDED', 'CRITICAL',
-                `Contracted MDI exceeded: ${p.apparent.toFixed(1)} kVA (contracted: ${p.contractedMdi} kVA / ${pct.toFixed(0)}%) — tariff penalty will apply`
+                `Instantaneous load reached ${p.apparent.toFixed(1)} kVA — above the ${p.contractedMdi} kVA contracted MDI (${pct.toFixed(0)}%). `
+                + `Billed demand is the highest 30-minute average, so check whether this was sustained.`
             );
         } else if (pct >= 90) {
             await maybeInsertAlert(
                 client, p.tenantId, p.meterId,
                 'MDI_WARNING', 'WARNING',
-                `Approaching contracted MDI: ${p.apparent.toFixed(1)} kVA = ${pct.toFixed(0)}% of ${p.contractedMdi} kVA limit`
+                `Instantaneous load at ${p.apparent.toFixed(1)} kVA = ${pct.toFixed(0)}% of the ${p.contractedMdi} kVA contracted MDI`
             );
         }
     }
