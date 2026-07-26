@@ -136,6 +136,33 @@ export async function getOrCreateExecutiveSummary(
 }
 
 /**
+ * Read-only variant: returns a summary ONLY if one is already cached, and never
+ * generates. Used by the public share endpoint, which is unauthenticated — an
+ * anonymous visitor must never be able to trigger a billable model call, no
+ * matter how often the link is opened.
+ */
+export async function getCachedExecutiveSummary(
+    pool:    Pool,
+    meterId: string,
+): Promise<string | null> {
+    const client = await pool.connect();
+    try {
+        const existing = await client.query(
+            `SELECT ai_summary FROM pq_assessments
+             WHERE meter_id = $1 AND ai_summary IS NOT NULL
+             ORDER BY assessed_at DESC LIMIT 1`,
+            [meterId]
+        );
+        return (existing.rows[0]?.ai_summary as string) ?? null;
+    } catch (err: any) {
+        console.error('[AI] Cached summary lookup failed:', err?.message || err);
+        return null;
+    } finally {
+        client.release();
+    }
+}
+
+/**
  * Answer a question about one specific assessment. Scoped deliberately: the
  * model may only reason over this report's measured findings, which keeps
  * answers verifiable and stops it drifting into general energy chit-chat.

@@ -7,8 +7,10 @@ import IORedis from 'ioredis';
 import { initMqtt } from './mqtt';
 import { computeAndStoreSiteScore, getLatestSiteScore } from './energy-score';
 import { assessPowerQuality } from './power-quality';
-import { getOrCreateExecutiveSummary, answerReportQuestion } from './pq-narrative';
+import { getOrCreateExecutiveSummary, getCachedExecutiveSummary, answerReportQuestion } from './pq-narrative';
 import { forecastDegradation } from './pq-forecast';
+import { buildRiskProfile } from './risk-profile';
+import { randomBytes, createHash } from 'crypto';
 import {
     generateAndStoreSiteRecommendations,
     getSiteRecommendations,
@@ -220,6 +222,43 @@ const pool = new Pool({
             ALTER TABLE tenants ADD COLUMN IF NOT EXISTS brand_footer TEXT;
         `);
         console.log("DB Schema initialized: tenant branding verified");
+
+        // Read-only report share links. Only the SHA-256 of the token is stored —
+        // a leaked database must not yield working links. The raw token exists
+        // exactly once, in the response to the issuing request.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS report_shares (
+                id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tenant_id      UUID REFERENCES tenants(id) ON DELETE CASCADE,
+                site_id        UUID REFERENCES sites(id)   ON DELETE CASCADE,
+                meter_id       UUID REFERENCES meters(id)  ON DELETE CASCADE,
+                token_hash     CHAR(64) NOT NULL UNIQUE,
+                label          TEXT,
+                period_days    INTEGER NOT NULL DEFAULT 7,
+                expires_at     TIMESTAMPTZ NOT NULL,
+                revoked_at     TIMESTAMPTZ,
+                view_count     INTEGER NOT NULL DEFAULT 0,
+                last_viewed_at TIMESTAMPTZ,
+                created_by     UUID REFERENCES users(id) ON DELETE SET NULL,
+                created_at     TIMESTAMPTZ DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_shares_meter ON report_shares (meter_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_shares_live  ON report_shares (expires_at) WHERE revoked_at IS NULL;
+        `);
+
+        // Every view of a shared report is logged. A link handed to an outside
+        // party is only defensible if the owner can see how it was used.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS report_share_access (
+                id          BIGSERIAL PRIMARY KEY,
+                share_id    UUID REFERENCES report_shares(id) ON DELETE CASCADE,
+                accessed_at TIMESTAMPTZ DEFAULT NOW(),
+                ip_address  TEXT,
+                user_agent  TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_share_access ON report_share_access (share_id, accessed_at DESC);
+        `);
+        console.log("DB Schema initialized: report_shares verified");
     } catch (e) {
         console.error("DB Schema initialization failed", e);
     } finally {
@@ -1381,7 +1420,16 @@ app.get('/meters/:id/compliance', authenticateToken, async (req: any, res) => {
             }
         }
 
-        res.json(report);
+        // Restates the same findings in insurer/broker categories. Additive only —
+        // it introduces no new judgement, so a failure here must not lose the report.
+        let risk_profile = null;
+        try {
+            risk_profile = await buildRiskProfile(pool, report);
+        } catch (e: any) {
+            console.error('Risk profile build failed:', e.message || e);
+        }
+
+        res.json({ ...report, risk_profile });
     } catch (err) {
         console.error('Compliance assessment error:', err);
         res.status(500).json({ error: 'Assessment failed' });
@@ -1517,6 +1565,250 @@ app.get('/meters/:id/compliance/history', authenticateToken, async (req: any, re
 // Value ledger — what Grid-IQ has caught for this client. Shown when the
 // invoice lands: the running record of monitoring actually earning its keep.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Read-only report sharing.
+//
+// The owner issues a time-limited link; anyone holding it can read that one
+// report and nothing else. This exists because the report is most valuable when
+// it leaves the building — to a broker, an underwriter, a landlord, a head
+// office — and asking those people to create an account kills that entirely.
+//
+// Security posture:
+//   · 256-bit token, generated server-side, shown to the issuer exactly once
+//   · only the SHA-256 of the token is persisted
+//   · expiry and revocation enforced on every read
+//   · scope is one meter, read-only; no tenant, site list or account data leaks
+//   · every view is logged with IP and user agent
+// ─────────────────────────────────────────────────────────────────────────────
+
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+
+/** Confirm the caller's tenant owns this meter. Returns site_id, or null. */
+async function meterOwnedBy(
+    meterId: string, tenantId: string, role: string
+): Promise<{ site_id: string; tenant_id: string } | null> {
+    const client = await pool.connect();
+    try {
+        const q = role === 'super_admin'
+            ? await client.query(
+                `SELECT m.site_id, s.tenant_id FROM meters m
+                 JOIN sites s ON m.site_id = s.id WHERE m.id = $1`, [meterId])
+            : await client.query(
+                `SELECT m.site_id, s.tenant_id FROM meters m
+                 JOIN sites s ON m.site_id = s.id
+                 WHERE m.id = $1 AND s.tenant_id = $2`, [meterId, tenantId]);
+        return q.rows[0] ?? null;
+    } finally {
+        client.release();
+    }
+}
+
+// Issue a share link. The raw token is returned once and never stored.
+app.post('/meters/:id/shares', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role, id: userId } = req.user;
+
+    const daysValid  = Math.min(Math.max(parseInt(String(req.body?.days_valid  ?? 30)), 1), 365);
+    const periodDays = Math.min(Math.max(parseInt(String(req.body?.period_days ?? 7)),  1), 90);
+    const label      = String(req.body?.label ?? '').slice(0, 200).trim() || null;
+
+    const owned = await meterOwnedBy(id, tenantId, role);
+    if (!owned) return res.status(403).json({ error: 'Forbidden' });
+
+    const token = randomBytes(32).toString('base64url');
+
+    const client = await pool.connect();
+    try {
+        const result = await client.query(`
+            INSERT INTO report_shares
+                (tenant_id, site_id, meter_id, token_hash, label, period_days, expires_at, created_by)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW() + ($7 || ' days')::INTERVAL, $8)
+            RETURNING id, expires_at, created_at
+        `, [owned.tenant_id, owned.site_id, id, sha256(token), label, periodDays, daysValid, userId ?? null]);
+
+        const row = result.rows[0];
+        res.status(201).json({
+            id: row.id,
+            token,                              // shown once — not recoverable later
+            path: `/report/${token}`,
+            expires_at: row.expires_at,
+            created_at: row.created_at,
+            label,
+            period_days: periodDays,
+        });
+    } catch (err) {
+        console.error('Share creation error:', err);
+        res.status(500).json({ error: 'Could not create share link' });
+    } finally {
+        client.release();
+    }
+});
+
+// List share links for a meter. Never returns tokens — they are unrecoverable.
+app.get('/meters/:id/shares', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { tenantId, role } = req.user;
+
+    const owned = await meterOwnedBy(id, tenantId, role);
+    if (!owned) return res.status(403).json({ error: 'Forbidden' });
+
+    const client = await pool.connect();
+    try {
+        const result = await client.query(`
+            SELECT id, label, period_days, expires_at, revoked_at,
+                   view_count, last_viewed_at, created_at,
+                   (revoked_at IS NULL AND expires_at > NOW()) AS is_live
+            FROM report_shares
+            WHERE meter_id = $1
+            ORDER BY created_at DESC
+            LIMIT 50
+        `, [id]);
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Share list error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// Revoke a share link immediately.
+app.delete('/shares/:shareId', authenticateToken, async (req: any, res) => {
+    const { shareId } = req.params;
+    const { tenantId, role } = req.user;
+
+    const client = await pool.connect();
+    try {
+        const result = role === 'super_admin'
+            ? await client.query(
+                `UPDATE report_shares SET revoked_at = NOW()
+                 WHERE id = $1 AND revoked_at IS NULL RETURNING id`, [shareId])
+            : await client.query(
+                `UPDATE report_shares SET revoked_at = NOW()
+                 WHERE id = $1 AND tenant_id = $2 AND revoked_at IS NULL RETURNING id`,
+                [shareId, tenantId]);
+
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+        res.json({ revoked: true });
+    } catch (err) {
+        console.error('Share revoke error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// ── Public report read — NO AUTHENTICATION ───────────────────────────────────
+// The only unauthenticated data route in the service. Treat every change here
+// as security-sensitive: it must return one report and expose nothing else.
+
+// Assessments are DB-heavy, so the public path gets its own limiter regardless
+// of the gateway's global allowance. In-memory is adequate for a single
+// instance; move to Redis if this ever runs multi-node.
+const publicHits = new Map<string, { count: number; resetAt: number }>();
+function publicRateLimited(ip: string): boolean {
+    const now = Date.now();
+    const entry = publicHits.get(ip);
+    if (!entry || now > entry.resetAt) {
+        publicHits.set(ip, { count: 1, resetAt: now + 60_000 });
+        if (publicHits.size > 5_000) {            // bound memory
+            for (const [k, v] of publicHits) if (now > v.resetAt) publicHits.delete(k);
+        }
+        return false;
+    }
+    entry.count += 1;
+    return entry.count > 30;                       // 30 views/minute/IP
+}
+
+app.get('/public/report/:token', async (req: any, res) => {
+    const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '')
+        .split(',')[0].trim();
+
+    if (publicRateLimited(ip)) {
+        return res.status(429).json({ error: 'Too many requests' });
+    }
+
+    const token = String(req.params.token || '');
+    // Cheap shape check before touching the database.
+    if (!token || token.length < 20 || token.length > 200) {
+        return res.status(404).json({ error: 'not_found' });
+    }
+
+    const client = await pool.connect();
+    let share: any;
+    try {
+        const q = await client.query(`
+            SELECT s.id, s.meter_id, s.period_days, s.expires_at, s.revoked_at,
+                   t.brand_name, t.brand_logo_url, t.brand_footer
+            FROM report_shares s
+            LEFT JOIN tenants t ON s.tenant_id = t.id
+            WHERE s.token_hash = $1
+        `, [sha256(token)]);
+        share = q.rows[0];
+    } catch (err) {
+        console.error('Public report lookup error:', err);
+        return res.status(500).json({ error: 'server_error' });
+    } finally {
+        client.release();
+    }
+
+    if (!share)             return res.status(404).json({ error: 'not_found' });
+    if (share.revoked_at)   return res.status(410).json({ error: 'revoked' });
+    if (new Date(share.expires_at) < new Date()) {
+        return res.status(410).json({ error: 'expired', expires_at: share.expires_at });
+    }
+
+    try {
+        const report = await assessPowerQuality(pool, share.meter_id, share.period_days);
+        if (!report) return res.status(404).json({ error: 'not_found' });
+
+        let risk_profile = null;
+        try { risk_profile = await buildRiskProfile(pool, report); }
+        catch (e: any) { console.error('Public risk profile failed:', e.message || e); }
+
+        // Best-effort extras — a shared report must still render without them.
+        // The summary is read from cache only and never generated here: this
+        // route is unauthenticated, so it must not be a route to billable
+        // model calls. If the owner has not yet viewed the report, the shared
+        // copy simply omits the summary; the engineering stands on its own.
+        const [summary, forecast] = await Promise.all([
+            getCachedExecutiveSummary(pool, share.meter_id).catch(() => null),
+            forecastDegradation(pool, share.meter_id, 12).catch(() => null),
+        ]);
+
+        // Record the view. Never let logging failure block the reader.
+        pool.connect().then(async c => {
+            try {
+                await c.query(
+                    `UPDATE report_shares
+                     SET view_count = view_count + 1, last_viewed_at = NOW()
+                     WHERE id = $1`, [share.id]);
+                await c.query(
+                    `INSERT INTO report_share_access (share_id, ip_address, user_agent)
+                     VALUES ($1, $2, $3)`,
+                    [share.id, ip || null, String(req.headers['user-agent'] || '').slice(0, 500)]);
+            } catch (e: any) {
+                console.error('Share access log failed:', e.message || e);
+            } finally { c.release(); }
+        }).catch(() => { /* pool exhausted — reader is unaffected */ });
+
+        res.json({
+            report: { ...report, risk_profile },
+            summary,
+            forecast,
+            branding: {
+                brand_name:     share.brand_name,
+                brand_logo_url: share.brand_logo_url,
+                brand_footer:   share.brand_footer,
+            },
+            share: { expires_at: share.expires_at },
+        });
+    } catch (err) {
+        console.error('Public report error:', err);
+        res.status(500).json({ error: 'server_error' });
+    }
+});
+
 app.get('/value-ledger', authenticateToken, async (req: any, res) => {
     const { tenantId, role } = req.user;
     const effectiveTenantId = role === 'super_admin' ? (req.query.tenant_id || null) : tenantId;
