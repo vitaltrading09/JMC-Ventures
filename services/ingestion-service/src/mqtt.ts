@@ -340,7 +340,13 @@ export async function initMqtt(pool: Pool) {
 // provenance of every timestamp has to be answerable.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MAX_BACKFILL_DAYS  = 30;       // store-and-forward buffers hold hours, not weeks
+// Store-and-forward buffers hold hours, not weeks. This bound is also a hard
+// constraint on the compression policy in main.ts: compression must start
+// strictly LATER than this, because TimescaleDB does not enforce unique indexes
+// on compressed chunks and a backfilled reading landing in one would bypass the
+// ON CONFLICT guard and silently duplicate. Raising this without raising the
+// compression interval to match reintroduces that corruption.
+const MAX_BACKFILL_DAYS  = 30;
 const MAX_CLOCK_SKEW_MS  = 120_000;  // tolerate 2 min of forward drift
 
 export function parseDeviceTime(v: unknown): Date | null {
