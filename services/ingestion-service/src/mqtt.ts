@@ -131,16 +131,34 @@ export async function initMqtt(pool: Pool) {
         // Two supported formats:
         //   1. Direct dict:  { V1: 243.5, I1: 45.2, Psum_kW: 12.5, … }
         //   2. AXM-WEB2:     { device: { readings: [{ param:"V1", value:"243.5" }] } }
-        let data: Record<string, number | null> = payload.Data ?? payload;
+        let raw: Record<string, unknown> = payload.Data ?? payload;
 
         if (payload.device && Array.isArray(payload.device.readings)) {
-            data = {};
+            raw = {};
             for (const reading of payload.device.readings) {
                 if (reading?.param) {
-                    data[reading.param] = parseFloat(reading.value);
+                    raw[reading.param] = reading.value;
                 }
             }
         }
+
+        // Firmware variants send numeric fields as JSON strings ("243.5") as
+        // well as numbers. Only the AXM-WEB2 branch ever parsed them, so a
+        // direct-dict meter sending strings reached evaluateAlerts and threw on
+        // .toFixed() — readings still inserted, but EVERY alert for that meter
+        // was silently skipped. Coerce once here so extraction, alert
+        // evaluation and the DB driver all see real numbers.
+        const toNum = (v: unknown): number | null => {
+            if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+            if (typeof v === 'string') {
+                const n = parseFloat(v.trim());
+                return Number.isFinite(n) ? n : null;   // also rejects NaN
+            }
+            return null;
+        };
+
+        const data: Record<string, number | null> = {};
+        for (const [k, v] of Object.entries(raw)) data[k] = toNum(v);
 
         // ── Parameter extraction (Acuvim II key variants) ──────────────────
         const v_a     = data.V1        ?? data.Va          ?? data.Vavg        ?? data.Vnavg_V     ?? data.V_A            ?? data.Voltage_LN          ?? data.voltage_a          ?? null;
@@ -258,13 +276,17 @@ export async function initMqtt(pool: Pool) {
                 voltage:        v_a     as number | null,
                 thd:            thd_v   as number | null,
                 freq:           freq    as number | null,
-                maxKw:          meter.alert_max_kw,
-                minV:           meter.alert_min_v        ?? 207,   // NRS 048: 230V − 10%
-                maxV:           meter.alert_max_v        ?? 253,   // NRS 048: 230V + 10%
-                maxThd:         meter.alert_max_thd      ?? 8.0,   // NRS 048-2 THD limit
-                minFreq:        meter.alert_min_freq     ?? 49.0,  // NRS 048: 50Hz − 2%
-                maxFreq:        meter.alert_max_freq     ?? 51.0,  // NRS 048: 50Hz + 2%
-                contractedMdi:  meter.contracted_mdi_kva ?? null,
+                // These are DECIMAL columns, which node-postgres returns as
+                // STRINGS. Comparisons happened to work through JS coercion, but
+                // the values must be real numbers before they reach any
+                // arithmetic or .toFixed() in the message text.
+                maxKw:          toNum(meter.alert_max_kw),
+                minV:           toNum(meter.alert_min_v)        ?? 207,   // NRS 048: 230V − 10%
+                maxV:           toNum(meter.alert_max_v)        ?? 253,   // NRS 048: 230V + 10%
+                maxThd:         toNum(meter.alert_max_thd)      ?? 8.0,   // NRS 048-2 THD limit
+                minFreq:        toNum(meter.alert_min_freq)     ?? 49.0,  // NRS 048: 50Hz − 2%
+                maxFreq:        toNum(meter.alert_max_freq)     ?? 51.0,  // NRS 048: 50Hz + 2%
+                contractedMdi:  toNum(meter.contracted_mdi_kva),
             });
 
         } catch (dbErr) {
