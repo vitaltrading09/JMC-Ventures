@@ -11,6 +11,7 @@ import { getOrCreateExecutiveSummary, getCachedExecutiveSummary, answerReportQue
 import { forecastDegradation } from './pq-forecast';
 import { buildRiskProfile } from './risk-profile';
 import { maxDemand, DEFAULT_DEMAND_INTERVAL_MIN } from './demand';
+import { buildRenewalReview, runRenewalSweep } from './renewal';
 import { randomBytes, createHash } from 'crypto';
 import {
     generateAndStoreSiteRecommendations,
@@ -292,6 +293,27 @@ const pool = new Pool({
         `);
         console.log("DB Schema initialized: broker_client_access verified");
 
+        // Pre-renewal reviews. The renewal date lives on the tenant because a
+        // policy renews per client, not per site.
+        await client.query(`
+            ALTER TABLE tenants ADD COLUMN IF NOT EXISTS renewal_date DATE;
+
+            CREATE TABLE IF NOT EXISTS renewal_reviews (
+                id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                tenant_id    UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                renewal_date DATE NOT NULL,
+                days_before  INTEGER NOT NULL,
+                summary      JSONB NOT NULL,
+                generated_at TIMESTAMPTZ DEFAULT NOW(),
+                -- One review per milestone per renewal: the sweep is idempotent
+                -- and safe to re-run after downtime.
+                UNIQUE (tenant_id, renewal_date, days_before)
+            );
+            CREATE INDEX IF NOT EXISTS idx_renewal_reviews_tenant
+                ON renewal_reviews (tenant_id, renewal_date DESC, days_before ASC);
+        `);
+        console.log("DB Schema initialized: renewal_reviews verified");
+
         // ── Compression ──────────────────────────────────────────────────
         // Measured ~93% saving on this telemetry. The boundary is deliberately
         // set BEYOND the MQTT backfill window (MAX_BACKFILL_DAYS = 30 in
@@ -481,6 +503,15 @@ cron.schedule('*/5 * * * *', async () => {
 // evaluateAlerts function — no need to duplicate them here.
 // One alert per meter per 24 hours to prevent notification spam.
 // -----------------------------------------------------------------------------
+// Pre-renewal review sweep. Daily at 06:00 — renewals move on a calendar, not
+// a clock, so anything more frequent is wasted work. The sweep is idempotent
+// and catches up on missed milestones, so a restart or an outage cannot cause a
+// client's renewal to be skipped silently.
+cron.schedule('0 6 * * *', async () => {
+    const n = await runRenewalSweep(pool);
+    if (n > 0) console.log(`[renewal] sweep produced ${n} review(s)`);
+});
+
 cron.schedule('*/30 * * * *', async () => {
     const client = await pool.connect();
     try {
@@ -1750,6 +1781,8 @@ app.get('/broker/clients', authenticateToken, async (req: any, res) => {
             SELECT
                 t.id   AS tenant_id,
                 t.name AS client_name,
+                t.renewal_date,
+                (t.renewal_date - CURRENT_DATE) AS renewal_days_out,
                 (SELECT COUNT(*) FROM sites s WHERE s.tenant_id = t.id)::int AS site_count,
                 (SELECT COUNT(*) FROM meters m JOIN sites s ON m.site_id = s.id
                   WHERE s.tenant_id = t.id AND m.is_active)::int             AS meter_count,
@@ -1822,6 +1855,100 @@ app.get('/broker/clients/:tenantId/meters', authenticateToken, async (req: any, 
         res.json(result.rows);
     } catch (err) {
         console.error('Broker client drill-down error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// Set or clear a client's insurance renewal date. The broker knows this date —
+// it comes off the policy schedule, not from anything the platform can measure.
+app.put('/broker/clients/:tenantId/renewal', authenticateToken, async (req: any, res) => {
+    if (!requireBroker(req, res)) return;
+
+    const raw = req.body?.renewal_date;
+    // Explicit null clears the date; anything else must be a real calendar date.
+    if (raw !== null && !/^\d{4}-\d{2}-\d{2}$/.test(String(raw ?? ''))) {
+        return res.status(400).json({ error: 'renewal_date must be YYYY-MM-DD, or null to clear' });
+    }
+    if (raw !== null && isNaN(new Date(raw).getTime())) {
+        return res.status(400).json({ error: 'renewal_date is not a valid date' });
+    }
+
+    const client = await pool.connect();
+    try {
+        const tenants = await grantedTenantIds(client, req.user);
+        if (!tenants.includes(req.params.tenantId)) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+        const result = await client.query(
+            `UPDATE tenants SET renewal_date = $2 WHERE id = $1 RETURNING id, name, renewal_date`,
+            [req.params.tenantId, raw ?? null]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('Set renewal date error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// Upcoming renewals across the book, soonest first, with the latest review.
+app.get('/broker/renewals', authenticateToken, async (req: any, res) => {
+    if (!requireBroker(req, res)) return;
+
+    const client = await pool.connect();
+    try {
+        const tenants = await grantedTenantIds(client, req.user);
+        if (tenants.length === 0) return res.json([]);
+
+        const result = await client.query(`
+            SELECT t.id AS tenant_id, t.name AS client_name, t.renewal_date,
+                   (t.renewal_date - CURRENT_DATE) AS days_out,
+                   r.days_before, r.generated_at, r.summary
+            FROM tenants t
+            LEFT JOIN LATERAL (
+                SELECT days_before, generated_at, summary
+                FROM renewal_reviews rr
+                WHERE rr.tenant_id = t.id AND rr.renewal_date = t.renewal_date
+                ORDER BY days_before ASC     -- the most recent milestone reached
+                LIMIT 1
+            ) r ON true
+            WHERE t.id = ANY($1::uuid[]) AND t.renewal_date IS NOT NULL
+            ORDER BY t.renewal_date ASC
+        `, [tenants]);
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Broker renewals error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// Generate a review on demand, for a broker who wants the comparison now rather
+// than waiting for the next milestone. Not persisted — the sweep owns the record.
+app.get('/broker/clients/:tenantId/renewal-review', authenticateToken, async (req: any, res) => {
+    if (!requireBroker(req, res)) return;
+
+    const client = await pool.connect();
+    try {
+        const tenants = await grantedTenantIds(client, req.user);
+        if (!tenants.includes(req.params.tenantId)) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+        const t = await client.query(`SELECT renewal_date FROM tenants WHERE id = $1`, [req.params.tenantId]);
+        const date = t.rows[0]?.renewal_date
+            ? new Date(t.rows[0].renewal_date).toISOString().slice(0, 10)
+            : new Date().toISOString().slice(0, 10);   // no date set: compare to today
+
+        const review = await buildRenewalReview(pool, req.params.tenantId, date);
+        if (!review) return res.status(404).json({ error: 'Not found' });
+        res.json(review);
+    } catch (err) {
+        console.error('Renewal review error:', err);
         res.status(500).json({ error: 'Database error' });
     } finally {
         client.release();
