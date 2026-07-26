@@ -24,6 +24,16 @@ export async function initMqtt(pool: Pool) {
             ON meter_readings (meter_id, time);
         `);
 
+        // Timestamp provenance. `time` carries the authoritative timestamp used
+        // for all analysis; these record where it came from, so a reading's
+        // origin is always auditable rather than assumed.
+        await schemaClient.query(`
+            ALTER TABLE meter_readings
+            ADD COLUMN IF NOT EXISTS device_time TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW(),
+            ADD COLUMN IF NOT EXISTS time_source VARCHAR(10);
+        `);
+
         // Dead-letter table: captures payloads we cannot parse or map
         // so no telemetry is ever silently discarded.
         await schemaClient.query(`
@@ -160,6 +170,15 @@ export async function initMqtt(pool: Pool) {
         const data: Record<string, number | null> = {};
         for (const [k, v] of Object.entries(raw)) data[k] = toNum(v);
 
+        // Read the device clock from the PRE-coercion values: an ISO-8601
+        // timestamp is a string, and coercion would have flattened it to null.
+        const rawTimestamp =
+            raw.timestamp ?? raw.Timestamp ?? raw.ts   ?? raw.time ??
+            raw.datetime  ?? raw.DateTime  ?? raw.Time ??
+            payload?.timestamp ?? payload?.device?.timestamp ?? payload?.gateway?.timestamp ?? null;
+
+        const stamp = resolveReadingTime(rawTimestamp);
+
         // ── Parameter extraction (Acuvim II key variants) ──────────────────
         const v_a     = data.V1        ?? data.Va          ?? data.Vavg        ?? data.Vnavg_V     ?? data.V_A            ?? data.Voltage_LN          ?? data.voltage_a          ?? null;
         const v_b     = data.V2        ?? data.Vb          ?? data.voltage_b                                                                                               ?? null;
@@ -232,34 +251,43 @@ export async function initMqtt(pool: Pool) {
             // ON CONFLICT (meter_id, time) DO NOTHING prevents duplicate rows
             // if the AXM-WEB2 store-and-forward replays the same packet after
             // an internet outage.
-            await dbClient.query(`
+            const ins = await dbClient.query(`
                 INSERT INTO meter_readings (
                     time,       meter_id,
                     voltage_a,  voltage_b,  voltage_c,
                     current_a,  current_b,  current_c,
                     power_active_total,   power_reactive_total,   power_apparent_total,
                     power_factor_total,   frequency,
-                    energy_import_total,  thd_voltage_a,  thd_current_a
+                    energy_import_total,  thd_voltage_a,  thd_current_a,
+                    device_time, ingested_at, time_source
                 ) VALUES (
-                    NOW(), $1,
-                    $2,  $3,  $4,
-                    $5,  $6,  $7,
-                    $8,  $9,  $10,
-                    $11, $12,
-                    $13, $14, $15
+                    $1,  $2,
+                    $3,  $4,  $5,
+                    $6,  $7,  $8,
+                    $9,  $10, $11,
+                    $12, $13,
+                    $14, $15, $16,
+                    $17, NOW(), $18
                 )
                 ON CONFLICT (meter_id, time) DO NOTHING
+                RETURNING time
             `, [
-                actualId,
+                stamp.time, actualId,
                 v_a,  v_b,  v_c,
                 i_a,  i_b,  i_c,
                 p_total, q_total, s_total,
                 pf,   freq,
                 energy, thd_v, thd_i,
+                stamp.deviceTime, stamp.source,
             ]);
 
+            // No row back means the timestamp already existed. Legitimate for a
+            // replayed packet; a rising count points at a stalled meter clock.
+            if (ins.rowCount === 0) noteConflict(actualId);
+
             console.log(
-                `[MQTT ✓] ${actualId} | Va: ${v_a} Vb: ${v_b} Vc: ${v_c} V` +
+                `[MQTT ✓] ${actualId} | t=${stamp.time.toISOString()} (${stamp.source}${stamp.reason ? `: ${stamp.reason}` : ''})` +
+                ` | Va: ${v_a} Vb: ${v_b} Vc: ${v_c} V` +
                 ` | Ia: ${i_a} Ib: ${i_b} Ic: ${i_c} A` +
                 ` | P: ${p_total} kW | Q: ${q_total} kvar` +
                 ` | PF: ${pf} | THD_V: ${thd_v}% | THD_I: ${thd_i}% | E: ${energy} kWh`
@@ -295,6 +323,80 @@ export async function initMqtt(pool: Pool) {
             dbClient.release();
         }
     });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reading timestamp resolution
+//
+// The device's own clock is preferred. AXM-WEB2 store-and-forward buffers
+// telemetry through an internet outage and replays it on reconnect; stamping
+// that batch with arrival time collapses hours of history into a burst at the
+// wrong point on the timeline, and defeats the ON CONFLICT (meter_id, time)
+// guard because every replayed packet looks new.
+//
+// But an unsynchronised meter clock is worse than no clock at all, so a device
+// value is only trusted inside a sanity window. Outside it we fall back to
+// arrival time and record which was used — the report is evidence, so the
+// provenance of every timestamp has to be answerable.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MAX_BACKFILL_DAYS  = 30;       // store-and-forward buffers hold hours, not weeks
+const MAX_CLOCK_SKEW_MS  = 120_000;  // tolerate 2 min of forward drift
+
+export function parseDeviceTime(v: unknown): Date | null {
+    if (v === null || v === undefined) return null;
+
+    // Epoch value, as a number or a digit string
+    if (typeof v === 'number' || (typeof v === 'string' && /^\d{9,14}$/.test(v.trim()))) {
+        const n = typeof v === 'number' ? v : parseInt(v.trim(), 10);
+        if (!Number.isFinite(n) || n <= 0) return null;
+        // Below 1e11 the value cannot plausibly be milliseconds (that would be
+        // 1973), so treat it as seconds.
+        const d = new Date(n < 1e11 ? n * 1000 : n);
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    // ISO-8601 or any other Date-parseable string
+    if (typeof v === 'string' && v.trim() !== '') {
+        const d = new Date(v.trim());
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    return null;
+}
+
+export function resolveReadingTime(rawTs: unknown, now: number = Date.now()): {
+    time: Date; deviceTime: Date | null; source: 'DEVICE' | 'ARRIVAL'; reason?: string;
+} {
+    const parsed = parseDeviceTime(rawTs);
+    if (parsed === null) {
+        return { time: new Date(now), deviceTime: null, source: 'ARRIVAL', reason: 'no device timestamp' };
+    }
+
+    const ms = parsed.getTime();
+    if (ms < now - MAX_BACKFILL_DAYS * 86_400_000) {
+        return { time: new Date(now), deviceTime: parsed, source: 'ARRIVAL', reason: 'device clock too far behind' };
+    }
+    if (ms > now + MAX_CLOCK_SKEW_MS) {
+        return { time: new Date(now), deviceTime: parsed, source: 'ARRIVAL', reason: 'device clock ahead of real time' };
+    }
+    return { time: parsed, deviceTime: parsed, source: 'DEVICE' };
+}
+
+// A meter whose clock is frozen would emit the same timestamp forever, and
+// ON CONFLICT would silently discard everything after the first reading. Count
+// conflicts per meter and warn, so silent data loss cannot go unnoticed.
+const conflictCounts = new Map<string, number>();
+function noteConflict(meterId: string): void {
+    const n = (conflictCounts.get(meterId) ?? 0) + 1;
+    conflictCounts.set(meterId, n);
+    // Powers of ten keep the log readable while still escalating visibly.
+    if (n === 10 || n === 100 || n === 1_000 || n % 10_000 === 0) {
+        console.warn(
+            `[MQTT] ${meterId}: ${n} readings dropped as duplicate timestamps. ` +
+            `Expected after a store-and-forward replay; if it keeps climbing the meter clock is likely frozen.`
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

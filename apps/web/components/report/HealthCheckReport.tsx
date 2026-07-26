@@ -37,6 +37,7 @@ export interface PerilExposure {
 export interface MonitoringEvidence {
     monitored_since: string | null; assessments_on_record: number;
     days_covered: number; coverage_pct: number | null; continuous: boolean;
+    device_clock_pct: number | null;
 }
 export interface RiskProfile {
     perils: PerilExposure[];
@@ -545,6 +546,19 @@ export default function HealthCheckReport({
                                 </p>
                             </div>
                         </div>
+
+                        {/* Timestamp provenance. Stated because a reviewer is entitled
+                            to ask whether the timeline behind these figures is the
+                            meter's or merely the server's. */}
+                        {profile.monitoring.device_clock_pct !== null && (
+                            <p className="text-[11px] text-slate-500 mt-4 pt-3 border-t border-slate-100 leading-relaxed">
+                                <span className="font-medium text-slate-600">Timestamp integrity:</span>{" "}
+                                {profile.monitoring.device_clock_pct.toFixed(0)}% of readings in this period are
+                                timestamped by the meter&apos;s own clock rather than by server arrival time. Data
+                                buffered by the meter during a connectivity outage is therefore placed on the
+                                timeline at the moment it was measured, not the moment it was received.
+                            </p>
+                        )}
                     </div>
 
                     {/* Scope limits. An underwriter who discovers an unstated limit

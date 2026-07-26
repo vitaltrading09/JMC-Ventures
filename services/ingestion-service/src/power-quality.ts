@@ -71,6 +71,17 @@ const F_MIN = 49, F_MAX = 51;
 const PF_TARGET = 0.95;     // typical SA utility target before reactive charges
 const I_UNBALANCE_GUIDE = 10; // NEMA guidance: investigate current unbalance >10%
 
+// Current distortion is judged on IEEE 519, not NRS 048-2 — NRS 048-2 sets
+// VOLTAGE compatibility levels; current distortion limits are IEEE 519's.
+// IEEE 519 limits TDD by the short-circuit ratio (Isc/IL) at the point of common
+// coupling, ranging 5% (stiff supply) to 20% (weak supply). Isc requires the
+// transformer impedance and the utility fault level, neither of which is
+// knowable from telemetry — so we only assert non-compliance above 20%, where
+// the site breaches the most permissive band whatever the ratio turns out to be.
+const TDD_STRICTEST = 5;    // IEEE 519 limit at Isc/IL < 20
+const TDD_LOOSEST   = 20;   // IEEE 519 limit at Isc/IL > 1000
+const I_LOAD_FLOOR  = 0.25; // assess THD-I only above 25% of peak load current
+
 /**
  * NEMA MG-1 motor derating for voltage unbalance. Winding temperature rise is
  * approximately 2 x (% unbalance)^2, so even small unbalance is disproportionately
@@ -150,7 +161,7 @@ export async function assessPowerQuality(
             WITH base AS (
                 SELECT time, voltage_a, voltage_b, voltage_c,
                        current_a, current_b, current_c,
-                       power_factor_total, thd_voltage_a, frequency, power_active_total,
+                       power_factor_total, thd_voltage_a, thd_current_a, frequency, power_active_total,
                        NULLIF((COALESCE(voltage_a,0)+COALESCE(voltage_b,0)+COALESCE(voltage_c,0))/3.0, 0) AS v_avg,
                        NULLIF((COALESCE(current_a,0)+COALESCE(current_b,0)+COALESCE(current_c,0))/3.0, 0) AS i_avg
                 FROM meter_readings
@@ -162,7 +173,10 @@ export async function assessPowerQuality(
                     CASE WHEN v_avg IS NOT NULL AND voltage_b IS NOT NULL AND voltage_c IS NOT NULL
                          THEN GREATEST(ABS(voltage_a-v_avg),ABS(voltage_b-v_avg),ABS(voltage_c-v_avg))/v_avg*100 END AS v_unb,
                     CASE WHEN i_avg IS NOT NULL AND current_b IS NOT NULL AND current_c IS NOT NULL
-                         THEN GREATEST(ABS(current_a-i_avg),ABS(current_b-i_avg),ABS(current_c-i_avg))/i_avg*100 END AS i_unb
+                         THEN GREATEST(ABS(current_a-i_avg),ABS(current_b-i_avg),ABS(current_c-i_avg))/i_avg*100 END AS i_unb,
+                    -- Peak load current over the window. Stands in for maximum
+                    -- demand current when estimating TDD below.
+                    MAX(i_avg) OVER () AS i_peak
                 FROM base
             )
             SELECT
@@ -190,9 +204,20 @@ export async function assessPowerQuality(
                     / NULLIF(COUNT(frequency),0)                                    AS f_in_band_pct,
                 MAX(power_active_total)                                             AS peak_kw,
                 AVG(power_active_total)                                             AS avg_kw,
-                AVG(current_a) AS ia, AVG(current_b) AS ib, AVG(current_c) AS ic
+                AVG(current_a) AS ia, AVG(current_b) AS ib, AVG(current_c) AS ic,
+                -- Current distortion. THD-I is misleading at light load: a small
+                -- absolute harmonic content is a large fraction of a small
+                -- fundamental, so an idling site reads as badly distorted. It is
+                -- therefore only assessed above a load floor. TDD rescales it
+                -- against peak demand current, which is what IEEE 519 limits.
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY thd_current_a)
+                    FILTER (WHERE i_avg >= $8 * i_peak)                              AS thd_i_p95,
+                COUNT(thd_current_a) FILTER (WHERE i_avg >= $8 * i_peak)             AS thd_i_n,
+                percentile_cont(0.95) WITHIN GROUP (
+                    ORDER BY thd_current_a * i_avg / NULLIF(i_peak, 0))               AS tdd_p95,
+                MAX(i_peak)                                                          AS i_peak
             FROM calc
-        `, [meterId, startDaysAgo, V_MIN, V_MAX, F_MIN, F_MAX, endDaysAgo]);
+        `, [meterId, startDaysAgo, V_MIN, V_MAX, F_MIN, F_MAX, endDaysAgo, I_LOAD_FLOOR]);
 
         // Current window, and the equal-length window immediately preceding it.
         const [q, qPrev] = await Promise.all([
@@ -224,6 +249,10 @@ export async function assessPowerQuality(
         const swells = Number(r.swell_count) || 0;
         const peakKw = num(r.peak_kw);
         const ia = num(r.ia), ib = num(r.ib), ic = num(r.ic);
+        const thdIP95 = num(r.thd_i_p95);
+        const tddP95  = num(r.tdd_p95);
+        const thdIN   = Number(r.thd_i_n) || 0;
+        const iPeak   = num(r.i_peak);
 
         // Preceding-window baselines. Require a reasonable sample count before
         // treating the prior period as a valid comparison.
@@ -231,6 +260,7 @@ export async function assessPowerQuality(
         const prev = (col: string): number | null => (hasBaseline ? num(p[col]) : null);
         const pvBand  = prev('v_in_band_pct');
         const pThd    = prev('thd_p95');
+        const pThdI   = prev('thd_i_p95');
         const pVUnb   = prev('v_unb_p95');
         const pIUnb   = prev('i_unb_p95');
         const pPf     = prev('pf_avg');
@@ -242,6 +272,7 @@ export async function assessPowerQuality(
         const tFreq = compareTrend(fBand,  pFBand, true,  '%', 1, 'Readings inside band:');
         const tPf   = compareTrend(pfAvg,  pPf,    true,  '', 3);
         const tIUnb = compareTrend(iUnb,   pIUnb,  false, '%', 1, 'Current imbalance:');
+        const tThdI = compareTrend(thdIP95, pThdI, false, '%', 1, 'Current distortion:');
 
         if (n < 100) {
             return {
@@ -291,6 +322,35 @@ export async function assessPowerQuality(
                 : thdP95 <= THD_LIMIT ? `Distortion is elevated but still within the ${THD_LIMIT}% limit. Worth monitoring, particularly if inverters or VSDs are added.`
                 : `Distortion exceeds the ${THD_LIMIT}% compatibility level. Expect additional heating in transformers, cables and capacitors.`,
             previous: pThd, trend: tThd.trend, trend_note: tThd.note,
+        });
+
+        // Current distortion. Judged against IEEE 519 rather than NRS 048-2, and
+        // deliberately non-committal about the exact limit: that depends on the
+        // short-circuit ratio, which telemetry cannot see. Asserting a limit we
+        // cannot derive would be the fastest way to lose an engineer's trust.
+        const tddKnowable = thdIP95 !== null && tddP95 !== null && thdIN >= 20;
+        parameters.push({
+            key: 'current_distortion',
+            label: 'Current distortion (THD-I)',
+            measured: tddP95,
+            display: thdIP95 !== null ? `${thdIP95.toFixed(1)}%` : '—',
+            limit: `TDD ${TDD_STRICTEST}–${TDD_LOOSEST}% (IEEE 519, by supply strength)`,
+            status: !tddKnowable ? 'NO_DATA'
+                : tddP95! <= TDD_STRICTEST ? 'PASS'
+                : tddP95! > TDD_LOOSEST    ? 'FAIL'
+                : 'WARN',
+            standard: 'IEEE 519 — current distortion at the point of common coupling',
+            method: thdIN > 0
+                ? `95th percentile of ${thdIN.toLocaleString()} readings taken above ${(I_LOAD_FLOOR * 100).toFixed(0)}% of the ${iPeak?.toFixed(0) ?? '—'} A peak load current`
+                : 'Insufficient readings at meaningful load',
+            detail: !tddKnowable
+                ? 'Not enough current-distortion data at meaningful load to assess. THD-I measured at light load is not comparable against any limit.'
+                : tddP95! <= TDD_STRICTEST
+                    ? `Demand distortion of about ${tddP95!.toFixed(1)}% sits inside the strictest IEEE 519 band, so this installation is compliant regardless of how stiff or weak the supply is.`
+                : tddP95! > TDD_LOOSEST
+                    ? `Demand distortion of about ${tddP95!.toFixed(1)}% exceeds ${TDD_LOOSEST}%, which is IEEE 519's most permissive limit. This breaches the standard whatever the short-circuit ratio at your point of supply.`
+                    : `Measured THD-I is ${thdIP95!.toFixed(1)}%, which works out to roughly ${tddP95!.toFixed(1)}% demand distortion (TDD). Whether that complies depends on the short-circuit ratio at your point of supply — resolving it needs the supply transformer rating and the utility fault level.`,
+            previous: pThdI, trend: tThdI.trend, trend_note: tThdI.note,
         });
 
         parameters.push({
@@ -413,6 +473,31 @@ export async function assessPowerQuality(
             });
         }
 
+        // Harmonic CURRENT — a different finding from the voltage-distortion risk
+        // above. Voltage THD is largely what the supply delivers; current
+        // distortion is what this installation draws, so it is the client's to
+        // fix and the neutral-loading question is a safety one.
+        if (tddKnowable && tddP95! > TDD_STRICTEST) {
+            risks.push({
+                key: 'current_distortion',
+                severity: tddP95! > TDD_LOOSEST ? 'HIGH' : 'MEDIUM',
+                title: 'Harmonic current is loading the neutral and transformer',
+                finding: `Current distortion reaches ${thdIP95!.toFixed(1)}% THD-I at the 95th percentile under load`
+                    + `, roughly ${tddP95!.toFixed(1)}% expressed as demand distortion against the ${iPeak?.toFixed(0) ?? '—'} A peak.`
+                    + (tThdI.trend !== 'NO_BASELINE' ? ` ${tThdI.note}` : ''),
+                mechanism: 'Non-linear loads — variable-speed drives, LED drivers, switch-mode power supplies, UPS rectifiers — '
+                    + 'draw current in pulses rather than as a sinusoid. The triplen orders (3rd, 9th, 15th) do not cancel in the '
+                    + 'neutral of a three-phase system but add, so the neutral can end up carrying more current than any phase '
+                    + 'while typically being sized for less. Separately, transformer eddy-current losses rise roughly with the '
+                    + 'square of harmonic order, so the same kVA of distorted load runs the transformer hotter than clean load would.',
+                action: 'Measure the neutral current directly and compare it against the neutral conductor rating — that is the '
+                    + 'immediate safety question, and it is a clamp-meter check. Confirm whether the supply transformer is K-rated '
+                    + 'or derated for harmonic duty. To settle compliance definitively, obtain the supply transformer rating and '
+                    + 'the utility fault level: together they give the short-circuit ratio that fixes which IEEE 519 limit applies here.',
+                standard: 'IEEE 519 — harmonic control; SANS 10142-1 — neutral conductor sizing',
+            });
+        }
+
         // Power factor exposure — quantified where a tariff is known.
         if (pfAvg !== null && pfAvg < PF_TARGET && peakKw !== null) {
             const kvarNeeded = peakKw * (Math.tan(Math.acos(pfAvg)) - Math.tan(Math.acos(PF_TARGET)));
@@ -428,7 +513,12 @@ export async function assessPowerQuality(
         }
 
         // ── Scores: separate what the utility owns from what the client owns ──
-        const supplyChecks = parameters.filter(p => p.key !== 'power_factor');
+        // Power factor and current distortion are things the INSTALLATION does,
+        // not things the supply delivers. Scoring them against the utility would
+        // contradict the whole point of separating the two responsibilities.
+        const supplyChecks = parameters.filter(
+            p => p.key !== 'power_factor' && p.key !== 'current_distortion'
+        );
         const supplyScore = Math.round(
             supplyChecks.reduce((acc, p) =>
                 acc + (p.status === 'PASS' ? 100 : p.status === 'WARN' ? 65 : p.status === 'FAIL' ? 20 : 70), 0

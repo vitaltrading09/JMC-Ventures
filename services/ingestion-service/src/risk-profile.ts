@@ -33,6 +33,9 @@ export interface MonitoringEvidence {
     days_covered:          number;
     coverage_pct:          number | null;  // % of days in the window carrying data
     continuous:            boolean;
+    /** Share of recent readings timestamped by the meter's own clock rather than
+     *  by arrival time. Null until readings carrying provenance exist. */
+    device_clock_pct:      number | null;
 }
 
 export interface RiskProfile {
@@ -86,6 +89,14 @@ const PERIL_MAP: Record<string, { perils: Peril[]; mechanism: string }> = {
             'Harmonic currents cause additional heating in transformers, cables and power-factor-correction capacitors. '
             + 'Capacitor failure under harmonic resonance is a known ignition source, and transformer overheating shortens '
             + 'insulation life.',
+    },
+    current_distortion: {
+        perils: ['FIRE', 'MACHINERY_BREAKDOWN'],
+        mechanism:
+            'Triplen harmonic currents add rather than cancel in the neutral of a three-phase system, so a neutral '
+            + 'sized smaller than the phase conductors can be carrying more current than any of them — a recognised '
+            + 'overheating and ignition path. Transformer eddy-current losses also rise with harmonic order, running '
+            + 'the transformer hotter and shortening its insulation life.',
     },
     // Power factor is a tariff exposure, not an insurable peril. Listed
     // explicitly so the omission is a decision rather than an oversight.
@@ -150,6 +161,7 @@ export async function buildRiskProfile(
     let monitoring: MonitoringEvidence = {
         monitored_since: null, assessments_on_record: 0,
         days_covered: 0, coverage_pct: null, continuous: false,
+        device_clock_pct: null,
     };
     try {
         const hist = await client.query(`
@@ -169,6 +181,22 @@ export async function buildRiskProfile(
             WHERE meter_id = $1
               AND time >= NOW() - INTERVAL '365 days'
         `, [report.meter_id]);
+
+        // Timestamp provenance over the assessed window. Readings predating the
+        // provenance change carry no time_source, so they are excluded rather
+        // than counted as failures — this measures the current pipeline, not
+        // history it cannot speak for.
+        const clock = await client.query(`
+            SELECT COUNT(*) FILTER (WHERE time_source IS NOT NULL)::int  AS known,
+                   COUNT(*) FILTER (WHERE time_source = 'DEVICE')::int   AS device
+            FROM meter_readings
+            WHERE meter_id = $1
+              AND time >= NOW() - ($2 || ' days')::INTERVAL
+        `, [report.meter_id, report.period_days]);
+
+        const known  = Number(clock.rows[0]?.known)  || 0;
+        const device = Number(clock.rows[0]?.device) || 0;
+        const deviceClockPct = known > 0 ? (device / known) * 100 : null;
 
         const assessments = Number(hist.rows[0]?.assessments) || 0;
         const firstAssess = hist.rows[0]?.first_at ?? null;
@@ -194,6 +222,7 @@ export async function buildRiskProfile(
             // "Continuous" is a claim an underwriter may lean on, so it needs a
             // real bar: a month of history and few gaps in it.
             continuous: daysWithData >= 28 && (coveragePct ?? 0) >= 90,
+            device_clock_pct: deviceClockPct,
         };
     } catch (e: any) {
         console.error('Risk profile monitoring query failed:', e.message || e);

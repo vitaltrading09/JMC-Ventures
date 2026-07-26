@@ -6,7 +6,8 @@
     "scripts": {
         "build": "tsc",
         "start": "node dist/main.js",
-        "dev": "ts-node-dev --respawn src/main.ts"
+        "dev": "ts-node-dev --respawn src/main.ts",
+        "test": "node --test test/*.test.js"
     },
     "dependencies": {
         "@types/cors": "^2.8.19",
