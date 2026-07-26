@@ -64,11 +64,27 @@ if ! docker exec "$CONTAINER" pg_dump -U "$DB_USER" -Fc "$DB_NAME" 2>/tmp/pgdump
     die "pg_dump failed: $(tail -3 /tmp/pgdump.err 2>/dev/null || echo 'no detail')"
 fi
 
-# A dump nobody has verified is a guess. Confirm the archive's table of contents
-# is readable before it counts as a backup, and before the old ones are pruned.
-if ! gunzip -c "$TMP" | docker exec -i "$CONTAINER" pg_restore --list >/dev/null 2>&1; then
+# A dump nobody has verified is a guess. Two checks, because they catch
+# different failures.
+#
+# 1. gzip -t reads the whole stream and checks its CRC and length trailer, so a
+#    dump truncated by a full disk or a killed process is caught here.
+if ! gzip -t "$TMP" 2>/dev/null; then
     rm -f "$TMP"
-    die "dump wrote but did not verify — treating as no backup"
+    die "compressed stream is incomplete or corrupt — treating as no backup"
+fi
+
+# 2. pg_restore --list proves the archive's table of contents actually parses.
+#    pipefail must be off for this one: pg_restore reads the header and exits
+#    without draining the stream, so gunzip takes SIGPIPE and reports 141. That
+#    is expected, and only pg_restore's own status is meaningful here.
+set +o pipefail
+gunzip -c "$TMP" 2>/dev/null | docker exec -i "$CONTAINER" pg_restore --list >/dev/null 2>/tmp/pgverify.err
+VERIFY_RC=$?
+set -o pipefail
+if [ "$VERIFY_RC" -ne 0 ]; then
+    rm -f "$TMP"
+    die "archive did not parse: $(tail -2 /tmp/pgverify.err 2>/dev/null || echo 'no detail')"
 fi
 
 mv "$TMP" "$OUT"
