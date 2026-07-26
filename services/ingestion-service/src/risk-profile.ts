@@ -201,10 +201,26 @@ export async function buildRiskProfile(
         client.release();
     }
 
-    const standards = Array.from(new Set([
-        ...report.parameters.map(p => p.standard.split('—')[0].trim()),
+    // Present a clean list of the published standards actually applied. Echoing
+    // the raw `standard` strings produces near-duplicates ("SANS 10142-1" and
+    // "SANS 10142-1 for installation") and clause commentary, which reads as
+    // sloppy in a document whose whole value is looking authoritative.
+    const haystack = [
+        ...report.parameters.map(p => p.standard),
         ...report.risks.map(r => r.standard),
-    ])).filter(Boolean);
+    ].join(' | ');
+
+    const CANONICAL_STANDARDS: [RegExp, string][] = [
+        [/NRS\s*048-2/i,        'NRS 048-2 (quality of supply)'],
+        [/SANS\s*10142-1/i,     'SANS 10142-1 (wiring code)'],
+        [/NEMA\s*MG-1/i,        'NEMA MG-1 (motor derating)'],
+        [/IEEE\s*519/i,         'IEEE 519 (harmonic control)'],
+        [/IEC\s*61000-4-34/i,   'IEC 61000-4-34 (equipment immunity)'],
+        [/EN\s*50160/i,         'EN 50160 (voltage characteristics)'],
+    ];
+    const standards = CANONICAL_STANDARDS
+        .filter(([re]) => re.test(haystack))
+        .map(([, label]) => label);
 
     const criticalOrHigh = report.risks.filter(
         r => r.severity === 'CRITICAL' || r.severity === 'HIGH'

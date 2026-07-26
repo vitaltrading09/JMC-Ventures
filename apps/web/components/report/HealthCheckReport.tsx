@@ -558,11 +558,16 @@ export default function HealthCheckReport({
                                 {profile.standards.join("; ")}.
                             </p>
                         )}
+                        {/* Deliberately does NOT claim the code is stable for a given
+                            link: the assessment re-runs against a rolling window, so it
+                            changes as new measurements arrive. Claiming otherwise would
+                            make an honest difference look like tampering. */}
                         <p className="text-xs text-slate-500 mt-2">
                             <span className="font-medium text-slate-600">Verification code:</span>{" "}
                             <span className="font-mono text-slate-700">{profile.verification_code}</span>
-                            {" "}— derived from the measured content of this assessment. A copy showing the same
-                            code is the same report.
+                            {" "}— a fingerprint of the measurements in this assessment. This report is
+                            regenerated from live data each time it is opened, so the code advances as new
+                            measurements arrive; two copies bearing the same code contain identical figures.
                         </p>
                     </div>
                 </div>
