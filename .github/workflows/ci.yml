@@ -1,0 +1,55 @@
+name: CI
+
+# Deploys now pull straight from main, so main breaking means production
+# breaking on the next deploy. This runs on every push and PR to catch that
+# before it reaches the server.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A newer push supersedes an in-flight run on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the server. The tests use node:test, which needs 18+.
+          node-version: '20'
+          cache: 'npm'
+
+      # npm ci needs the lockfile to agree with every workspace package.json —
+      # which also makes a forgotten lockfile update a build failure rather than
+      # a surprise on the server.
+      - name: Install
+        run: npm ci
+
+      - name: Build ingestion-service
+        run: npm run build --prefix services/ingestion-service
+
+      - name: Build auth-service
+        run: npm run build --prefix services/auth-service
+
+      - name: Build api-gateway
+        run: npm run build --prefix services/api-gateway
+
+      - name: Test ingestion-service
+        run: npm test --prefix services/ingestion-service
+
+      # Last because it is by far the slowest step: fail fast on the cheap ones.
+      - name: Build web
+        run: npm run build --prefix apps/web
+        env:
+          # Build-time only. The real value is supplied by the server's env at
+          # runtime; this just satisfies the build.
+          NEXT_PUBLIC_API_URL: http://localhost:8081
