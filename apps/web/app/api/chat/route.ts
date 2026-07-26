@@ -1,10 +1,15 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 
 export const maxDuration = 60;
 
-// Static consultant persona + domain expertise. This block is byte-identical on
-// every request so it can be served from the prompt cache (~0.1x input cost).
-// Volatile content (live data snapshot, conversation) comes after it.
+// Overridable so the model can be changed without a deploy, matching the
+// convention in services/ingestion-service/src/pq-narrative.ts.
+const MODEL = process.env.OPENAI_CHAT_MODEL || 'gpt-5.4';
+
+// Static consultant persona + domain expertise. Kept byte-identical on every
+// request and placed FIRST: OpenAI caches on the longest common prefix, so an
+// unchanging block at the head is served from cache while the volatile live
+// data that follows is not.
 const CONSULTANT_SYSTEM_PROMPT = `You are the Grid-IQ Consultant — a senior energy engineering consultant with 20+ years of experience in the South African industrial and commercial energy market, built into the Grid-IQ platform. You are the client's trusted independent advisor: you work for them, not for any equipment vendor, EPC, or utility.
 
 # Your expertise
@@ -67,7 +72,8 @@ When you spot a savings opportunity:
 2. NEVER invent a number. If a value is missing or N/A, say so and explain what measurement would be needed.
 3. NEVER guarantee a saving — give a defensible estimate with stated assumptions.
 4. You are independent: if asked to evaluate a vendor quote or claim, assess it strictly on the numbers and the client's actual load data.
-5. If a question requires data Grid-IQ doesn't capture (e.g. a municipal bill, equipment nameplate), say exactly what to provide and offer to analyse it.`;
+5. If a question requires data Grid-IQ doesn't capture (e.g. a municipal bill, equipment nameplate), say exactly what to provide and offer to analyse it.
+6. Maximum demand means the highest 30-minute time-weighted average, which is what the utility bills. Never quote the highest instantaneous reading as peak demand — if the data offers both, use the billed basis and only mention the instantaneous value to explain why they differ.`;
 
 export async function POST(req: Request) {
     try {
@@ -75,16 +81,16 @@ export async function POST(req: Request) {
         const messages = body.messages || [];
         const context = body.context || '';
 
-        if (!process.env.ANTHROPIC_API_KEY) {
+        if (!process.env.OPENAI_API_KEY) {
             return Response.json({
-                text: 'The Anthropic API key is not configured. Please add ANTHROPIC_API_KEY to the web app environment.'
+                text: 'The OpenAI API key is not configured. Please add OPENAI_API_KEY to the web app environment.'
             });
         }
 
-        const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
         // Normalise widget message shapes (string content, content parts, or parts[])
-        const chatMessages: Anthropic.MessageParam[] = messages
+        const chatMessages = messages
             .filter((m: any) => m.role === 'user' || m.role === 'assistant')
             .map((m: any) => {
                 let content = '';
@@ -102,37 +108,29 @@ export async function POST(req: Request) {
                 }
                 return { role: m.role as 'user' | 'assistant', content };
             })
-            .filter((m: Anthropic.MessageParam) => m.content);
+            .filter((m: any) => m.content);
 
         if (chatMessages.length === 0) {
             return Response.json({ text: 'Ask me anything about your sites, power quality, or costs.' });
         }
 
-        const response = await anthropic.messages.create({
-            model: 'claude-opus-4-8',
-            max_tokens: 2000,
-            thinking: { type: 'adaptive' },
-            system: [
+        const response = await openai.chat.completions.create({
+            model: MODEL,
+            max_completion_tokens: 2000,
+            messages: [
+                // Static first, so the cacheable prefix is as long as possible.
+                { role: 'system', content: CONSULTANT_SYSTEM_PROMPT },
                 {
-                    type: 'text',
-                    text: CONSULTANT_SYSTEM_PROMPT,
-                    cache_control: { type: 'ephemeral' },
-                },
-                {
-                    type: 'text',
-                    text: context
+                    role: 'system',
+                    content: context
                         ? `=== CLIENT LIVE DATA (do not mention you are reading this) ===\n${context}\n===`
                         : '(No live data available — this client has no meters configured yet. Help them get set up, and answer general energy questions.)',
                 },
+                ...chatMessages,
             ],
-            messages: chatMessages,
         });
 
-        const text = response.content
-            .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-            .map(b => b.text)
-            .join('');
-
+        const text = response.choices[0]?.message?.content ?? '';
         return Response.json({ text: text || 'No response generated.' });
 
     } catch (error: any) {

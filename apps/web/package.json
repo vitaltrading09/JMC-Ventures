@@ -12,7 +12,6 @@
         "@ai-sdk/google": "^3.0.30",
         "@ai-sdk/openai": "^3.0.30",
         "@ai-sdk/react": "^3.0.99",
-        "@anthropic-ai/sdk": "^0.104.1",
         "@google/genai": "^1.42.0",
         "ai": "^6.0.97",
         "clsx": "^2.1.0",
