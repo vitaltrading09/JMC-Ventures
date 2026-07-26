@@ -265,6 +265,33 @@ const pool = new Pool({
         `);
         console.log("DB Schema initialized: report_shares verified");
 
+        // Broker cross-tenant access.
+        //
+        // A broker manages many client organisations, which the tenant model has
+        // no way to express — a user belongs to exactly one tenant, and
+        // super_admin means the whole platform, not a book of clients.
+        //
+        // This is a GRANT table rather than an organisations layer above tenants:
+        // additive, reversible, and it leaves every existing tenant-scoped query
+        // untouched. Cross-tenant reads live only on dedicated /broker endpoints
+        // that resolve this table; no existing endpoint is widened, because
+        // loosening a tenant filter is how multi-tenant data leaks happen.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS broker_client_access (
+                id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                broker_user_id UUID NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
+                tenant_id      UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                label          TEXT,
+                granted_at     TIMESTAMPTZ DEFAULT NOW(),
+                granted_by     UUID REFERENCES users(id) ON DELETE SET NULL,
+                revoked_at     TIMESTAMPTZ,
+                UNIQUE (broker_user_id, tenant_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_broker_access_live
+                ON broker_client_access (broker_user_id) WHERE revoked_at IS NULL;
+        `);
+        console.log("DB Schema initialized: broker_client_access verified");
+
         // ── Compression ──────────────────────────────────────────────────
         // Measured ~93% saving on this telemetry. The boundary is deliberately
         // set BEYOND the MQTT backfill window (MAX_BACKFILL_DAYS = 30 in
@@ -1673,6 +1700,213 @@ app.get('/meters/:id/demand', authenticateToken, async (req: any, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Broker portfolio — read across a granted book of clients.
+//
+// Every route here resolves the caller's grants first and confines the query to
+// that list. Nothing below relaxes a filter on an existing endpoint: a broker
+// reaching client data does so exclusively through these routes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Tenant ids this caller may read. Empty array = broker with no grants. */
+async function grantedTenantIds(client: any, user: any): Promise<string[]> {
+    const q = await client.query(
+        `SELECT tenant_id FROM broker_client_access
+         WHERE broker_user_id = $1 AND revoked_at IS NULL`,
+        [user.userId]
+    );
+    return q.rows.map((r: any) => r.tenant_id);
+}
+
+/** Brokers only. super_admin is the platform operator, not a broker. */
+function requireBroker(req: any, res: any): boolean {
+    if (req.user?.role !== 'broker') {
+        res.status(403).json({ error: 'Forbidden' });
+        return false;
+    }
+    return true;
+}
+
+// Portfolio overview: one row per client, ordered by what needs attention.
+app.get('/broker/clients', authenticateToken, async (req: any, res) => {
+    if (!requireBroker(req, res)) return;
+
+    const client = await pool.connect();
+    try {
+        const tenants = await grantedTenantIds(client, req.user);
+        if (tenants.length === 0) return res.json([]);
+
+        const result = await client.query(`
+            WITH latest AS (
+                -- Most recent assessment per meter; older snapshots are history.
+                SELECT DISTINCT ON (a.meter_id)
+                       a.meter_id, a.tenant_id, a.assessed_at, a.verdict,
+                       a.supply_score, a.install_score,
+                       COALESCE(jsonb_array_length(a.risks), 0)     AS risk_count,
+                       COALESCE(jsonb_array_length(a.degrading), 0) AS degrading_count
+                FROM pq_assessments a
+                WHERE a.tenant_id = ANY($1::uuid[])
+                ORDER BY a.meter_id, a.assessed_at DESC
+            )
+            SELECT
+                t.id   AS tenant_id,
+                t.name AS client_name,
+                (SELECT COUNT(*) FROM sites s WHERE s.tenant_id = t.id)::int AS site_count,
+                (SELECT COUNT(*) FROM meters m JOIN sites s ON m.site_id = s.id
+                  WHERE s.tenant_id = t.id AND m.is_active)::int             AS meter_count,
+                -- A site that has gone quiet is itself a finding worth surfacing.
+                (SELECT MAX(mr.time) FROM meter_readings mr
+                   JOIN meters m ON mr.meter_id = m.id
+                   JOIN sites  s ON m.site_id = s.id
+                  WHERE s.tenant_id = t.id
+                    AND mr.time > NOW() - INTERVAL '30 days')                AS last_reading,
+                l.assessed_meters, l.min_supply, l.min_install,
+                l.open_findings, l.degrading_params, l.last_assessed, l.worst_rank
+            FROM tenants t
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*)::int                  AS assessed_meters,
+                       MIN(supply_score)::int         AS min_supply,
+                       MIN(install_score)::int        AS min_install,
+                       SUM(risk_count)::int           AS open_findings,
+                       SUM(degrading_count)::int      AS degrading_params,
+                       MAX(assessed_at)               AS last_assessed,
+                       MIN(CASE verdict
+                             WHEN 'NON_COMPLIANT'       THEN 1
+                             WHEN 'COMPLIANT_WITH_RISK' THEN 2
+                             WHEN 'COMPLIANT'           THEN 3
+                             ELSE 4 END)::int         AS worst_rank
+                FROM latest WHERE latest.tenant_id = t.id
+            ) l ON true
+            WHERE t.id = ANY($1::uuid[])
+            -- Worst verdict first, then most deterioration, then weakest
+            -- installation: a portfolio screen is a triage queue, not a directory.
+            ORDER BY COALESCE(l.worst_rank, 4) ASC,
+                     COALESCE(l.degrading_params, 0) DESC,
+                     COALESCE(l.min_install, 100) ASC,
+                     t.name ASC
+        `, [tenants]);
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Broker portfolio error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// Drill-down into one client. The grant check is repeated here deliberately —
+// an authorisation that lives in only one place is one refactor from being lost.
+app.get('/broker/clients/:tenantId/meters', authenticateToken, async (req: any, res) => {
+    if (!requireBroker(req, res)) return;
+
+    const client = await pool.connect();
+    try {
+        const tenants = await grantedTenantIds(client, req.user);
+        if (!tenants.includes(req.params.tenantId)) {
+            return res.status(403).json({ error: 'Forbidden' });
+        }
+
+        const result = await client.query(`
+            SELECT DISTINCT ON (m.id)
+                   m.id AS meter_id, m.name AS meter_name,
+                   s.id AS site_id,  s.name AS site_name,
+                   a.assessed_at, a.verdict, a.supply_score, a.install_score,
+                   COALESCE(jsonb_array_length(a.risks), 0) AS open_findings
+            FROM meters m
+            JOIN sites s ON m.site_id = s.id
+            LEFT JOIN pq_assessments a ON a.meter_id = m.id
+            WHERE s.tenant_id = $1 AND m.is_active
+            ORDER BY m.id, a.assessed_at DESC NULLS LAST
+        `, [req.params.tenantId]);
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Broker client drill-down error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// ── Grant administration (platform operator only) ────────────────────────────
+app.get('/admin/broker-access', authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Forbidden' });
+    const client = await pool.connect();
+    try {
+        const result = await client.query(`
+            SELECT b.id, b.broker_user_id, u.email AS broker_email,
+                   b.tenant_id, t.name AS client_name,
+                   b.label, b.granted_at, b.revoked_at
+            FROM broker_client_access b
+            JOIN users   u ON b.broker_user_id = u.id
+            JOIN tenants t ON b.tenant_id = t.id
+            ORDER BY b.revoked_at NULLS FIRST, b.granted_at DESC
+        `);
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Broker access list error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/admin/broker-access', authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Forbidden' });
+    const { broker_user_id, tenant_id, label } = req.body || {};
+    if (!broker_user_id || !tenant_id) {
+        return res.status(400).json({ error: 'broker_user_id and tenant_id are required' });
+    }
+
+    const client = await pool.connect();
+    try {
+        // Only a user actually marked as a broker can hold client grants.
+        const u = await client.query(`SELECT role FROM users WHERE id = $1`, [broker_user_id]);
+        if (u.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+        if (u.rows[0].role !== 'broker') {
+            return res.status(400).json({ error: "User's role must be 'broker' before granting client access" });
+        }
+
+        const result = await client.query(`
+            INSERT INTO broker_client_access (broker_user_id, tenant_id, label, granted_by)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (broker_user_id, tenant_id)
+            DO UPDATE SET revoked_at = NULL,
+                          label      = COALESCE(EXCLUDED.label, broker_client_access.label),
+                          granted_at = NOW(),
+                          granted_by = EXCLUDED.granted_by
+            RETURNING id, broker_user_id, tenant_id, label, granted_at
+        `, [broker_user_id, tenant_id, label ?? null, req.user.userId ?? null]);
+
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        console.error('Broker access grant error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+app.delete('/admin/broker-access/:id', authenticateToken, async (req: any, res) => {
+    if (req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Forbidden' });
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            `UPDATE broker_client_access SET revoked_at = NOW()
+             WHERE id = $1 AND revoked_at IS NULL RETURNING id`,
+            [req.params.id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
+        res.json({ revoked: true });
+    } catch (err) {
+        console.error('Broker access revoke error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Read-only report sharing.
 //
 // The owner issues a time-limited link; anyone holding it can read that one
@@ -1713,7 +1947,8 @@ async function meterOwnedBy(
 // Issue a share link. The raw token is returned once and never stored.
 app.post('/meters/:id/shares', authenticateToken, async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role, id: userId } = req.user;
+    // JWT signs this as `userId`, not `id` — reading `id` left created_by null.
+    const { tenantId, role, userId } = req.user;
 
     const daysValid  = Math.min(Math.max(parseInt(String(req.body?.days_valid  ?? 30)), 1), 365);
     const periodDays = Math.min(Math.max(parseInt(String(req.body?.period_days ?? 7)),  1), 90);

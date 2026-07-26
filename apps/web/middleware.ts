@@ -24,6 +24,7 @@ export function middleware(request: NextRequest) {
     // Define route categories
     const isDashboardRoute = request.nextUrl.pathname.startsWith('/dashboard');
     const isAdminRoute = request.nextUrl.pathname.startsWith('/admin');
+    const isBrokerRoute = request.nextUrl.pathname.startsWith('/broker');
     const isLoginRoute = request.nextUrl.pathname === '/login';
 
     // 1. Handle Login Route
@@ -33,12 +34,17 @@ export function middleware(request: NextRequest) {
             if (payload.role === 'super_admin') {
                 return NextResponse.redirect(new URL('/admin', request.url));
             }
+            // A broker has no tenant data of their own — /dashboard would be
+            // empty for them. Their home is the portfolio.
+            if (payload.role === 'broker') {
+                return NextResponse.redirect(new URL('/broker', request.url));
+            }
             return NextResponse.redirect(new URL('/dashboard', request.url));
         }
     }
 
     // 2. Protect Authenticated Routes
-    if (!token && (isDashboardRoute || isAdminRoute)) {
+    if (!token && (isDashboardRoute || isAdminRoute || isBrokerRoute)) {
         return NextResponse.redirect(new URL('/login', request.url));
     }
 
@@ -57,7 +63,18 @@ export function middleware(request: NextRequest) {
 
         // Route: Client trying to access Admin area
         if (isAdminRoute && role !== 'super_admin') {
-            return NextResponse.redirect(new URL('/dashboard', request.url));
+            return NextResponse.redirect(new URL(role === 'broker' ? '/broker' : '/dashboard', request.url));
+        }
+
+        // The portfolio is broker-only. super_admin is the platform operator,
+        // not a broker, and holds no client grants.
+        if (isBrokerRoute && role !== 'broker') {
+            return NextResponse.redirect(new URL(role === 'super_admin' ? '/admin' : '/dashboard', request.url));
+        }
+
+        // A broker landing on the tenant dashboard sees nothing useful.
+        if (isDashboardRoute && role === 'broker') {
+            return NextResponse.redirect(new URL('/broker', request.url));
         }
 
         // Route: Admin hitting the root dashboard (redirect to their proper home)
@@ -73,5 +90,5 @@ export function middleware(request: NextRequest) {
 
 export const config = {
     // Run middleware on these paths
-    matcher: ['/dashboard/:path*', '/admin/:path*', '/login'],
+    matcher: ['/dashboard/:path*', '/admin/:path*', '/broker/:path*', '/login'],
 };
