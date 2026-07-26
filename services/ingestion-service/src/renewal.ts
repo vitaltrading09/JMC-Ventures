@@ -131,15 +131,23 @@ export async function buildRenewalReview(
             };
         });
 
-        const totalNow    = meters.reduce((a, m) => a + m.now_findings, 0);
-        const totalThen   = meters.reduce((a, m) => a + m.then_findings, 0);
-        const totalClosed = meters.reduce((a, m) => a + m.closed.length, 0);
-        const totalOpened = meters.reduce((a, m) => a + m.opened.length, 0);
+        const totalNow  = meters.reduce((a, m) => a + m.now_findings, 0);
+        const totalThen = meters.reduce((a, m) => a + m.then_findings, 0);
 
         // A baseline only counts if at least one meter actually had a snapshot
         // near the start of the year. Without it there is nothing to compare and
         // the review must say so rather than imply a year of history.
         const hasBaseline = meters.some(m => m.then_install !== null);
+
+        // Without a baseline every current finding trivially looks "opened",
+        // because it is being diffed against nothing. That is an artefact of the
+        // absent comparison, not a fact about the year, so the counts are zeroed
+        // rather than left to be read as five new problems.
+        const totalClosed = hasBaseline ? meters.reduce((a, m) => a + m.closed.length, 0) : 0;
+        const totalOpened = hasBaseline ? meters.reduce((a, m) => a + m.opened.length, 0) : 0;
+        if (!hasBaseline) {
+            for (const m of meters) { m.closed = []; m.opened = []; }
+        }
 
         const installsNow  = meters.map(m => m.now_install).filter((v): v is number => v !== null);
         const installsThen = meters.map(m => m.then_install).filter((v): v is number => v !== null);
