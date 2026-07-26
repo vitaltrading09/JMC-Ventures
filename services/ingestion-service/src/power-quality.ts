@@ -168,16 +168,21 @@ export async function assessPowerQuality(
                 WHERE meter_id = $1
                   AND time >= NOW() - ($2 || ' days')::INTERVAL
                   AND time <  NOW() - ($7 || ' days')::INTERVAL
+            ), peak AS (
+                -- Stands in for IEEE 519's "maximum demand current". Uses the
+                -- 99th percentile rather than the maximum on purpose: a single
+                -- sampling spike would inflate this denominator and make TDD
+                -- look better than it is, and a risk report must never be
+                -- biased toward reassurance.
+                SELECT percentile_cont(0.99) WITHIN GROUP (ORDER BY i_avg) AS i_peak
+                FROM base WHERE i_avg IS NOT NULL
             ), calc AS (
-                SELECT *,
+                SELECT b.*, pk.i_peak,
                     CASE WHEN v_avg IS NOT NULL AND voltage_b IS NOT NULL AND voltage_c IS NOT NULL
                          THEN GREATEST(ABS(voltage_a-v_avg),ABS(voltage_b-v_avg),ABS(voltage_c-v_avg))/v_avg*100 END AS v_unb,
                     CASE WHEN i_avg IS NOT NULL AND current_b IS NOT NULL AND current_c IS NOT NULL
-                         THEN GREATEST(ABS(current_a-i_avg),ABS(current_b-i_avg),ABS(current_c-i_avg))/i_avg*100 END AS i_unb,
-                    -- Peak load current over the window. Stands in for maximum
-                    -- demand current when estimating TDD below.
-                    MAX(i_avg) OVER () AS i_peak
-                FROM base
+                         THEN GREATEST(ABS(current_a-i_avg),ABS(current_b-i_avg),ABS(current_c-i_avg))/i_avg*100 END AS i_unb
+                FROM base b CROSS JOIN peak pk
             )
             SELECT
                 COUNT(*)                                                            AS n,
