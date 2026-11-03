@@ -1,0 +1,23 @@
+# LOCAL DEV ONLY. Copy to docker-compose.override.yml (gitignored); compose
+# merges it automatically. Never use it on a server.
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Adds host ports bound to 127.0.0.1 only, so nothing becomes reachable from
+# the network, and trusts Caddy's local CA for the ingest TLS connection.
+services:
+  timescaledb:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  mosquitto:
+    # Plain listener for mosquitto_pub tests. Also create the listener file:
+    #   cp mosquitto/config/conf.d/dev-listener.conf.example mosquitto/config/conf.d/dev-listener.conf
+    ports:
+      - "127.0.0.1:1883:1883"
+
+  ingest:
+    environment:
+      # With APP_DOMAIN=localhost Caddy issues certificates from its own local
+      # CA; sync-mqtt-certs.sh copies that root to mqtt-certs/ca.crt.
+      MQTT_CA_CERT: /mqtt-certs/ca.crt

@@ -2,12 +2,11 @@ import mqtt from 'mqtt';
 import { Pool } from 'pg';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main entry point — called once from main.ts after the DB pool is ready
+// Schema bootstrap — run by the api role only (see main.ts). The ingest role
+// waits for these objects (ingestSchemaReady in roles.ts) before subscribing,
+// so the ON CONFLICT guard is always in place before the first insert.
 // ─────────────────────────────────────────────────────────────────────────────
-export async function initMqtt(pool: Pool) {
-    console.log('[MQTT] Initializing Acuvim telemetry listener...');
-
-    // ── Schema bootstrap ───────────────────────────────────────────────────
+export async function bootstrapMqttSchema(pool: Pool) {
     const schemaClient = await pool.connect();
     try {
         // CT/PT ratio scaling columns (safe to run every startup)
@@ -52,6 +51,14 @@ export async function initMqtt(pool: Pool) {
     } finally {
         schemaClient.release();
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main entry point — called once from main.ts (ingest role) after the schema
+// is ready. Returns the client so the caller can report broker connectivity.
+// ─────────────────────────────────────────────────────────────────────────────
+export async function initMqtt(pool: Pool): Promise<mqtt.MqttClient> {
+    console.log('[MQTT] Initializing Acuvim telemetry listener...');
 
     // ── Broker connection ──────────────────────────────────────────────────
     // All sensitive values come from environment — never hardcoded.
@@ -323,6 +330,8 @@ export async function initMqtt(pool: Pool) {
             dbClient.release();
         }
     });
+
+    return mqttClient;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

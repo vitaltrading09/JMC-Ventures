@@ -1,10 +1,10 @@
 #!/bin/bash
 # Redeploy after `git pull` — rebuilds frontend, restarts all backend services.
-# Run: bash deploy/scripts/redeploy.sh
+# Run: bash deploy/legacy-aws/scripts/redeploy.sh
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 echo "▶ Pulling latest from git…"
 cd "$REPO_ROOT"
@@ -36,4 +36,4 @@ done
 
 echo ""
 sleep 5
-bash "$REPO_ROOT/deploy/scripts/status.sh"
+bash "$REPO_ROOT/deploy/legacy-aws/scripts/status.sh"

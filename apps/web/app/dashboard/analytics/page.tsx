@@ -11,7 +11,7 @@ import { Zap, TrendingDown, RefreshCw, Loader2, DollarSign, Lightbulb, ChevronRi
 import Link from "next/link";
 import { zar, normalizeRec } from "@/lib/format";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 interface Reading {
     time: string;

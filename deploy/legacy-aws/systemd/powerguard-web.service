@@ -13,7 +13,7 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/PowerGuard/apps/web
 
 # Next.js production server reads from .next/ — must run `npm run build` first.
-# The install script does this; if you redeploy code, run `bash deploy/scripts/redeploy.sh`.
+# The install script does this; if you redeploy code, run `bash deploy/legacy-aws/scripts/redeploy.sh`.
 ExecStart=/bin/bash -lc 'exec npm run start'
 
 Restart=always

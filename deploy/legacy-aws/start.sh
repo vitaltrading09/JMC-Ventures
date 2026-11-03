@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 # Grid-IQ Production Startup Script
-# Run this once after pulling from GitHub: bash start.sh
+# LEGACY AWS BOX ONLY. Run from the repo root: bash deploy/legacy-aws/start.sh
 # ============================================================
 
 echo "🔄 Stopping any existing Node processes..."
@@ -10,7 +10,7 @@ pkill -f "next" 2>/dev/null || true
 sleep 2
 
 echo "🗄️  Making sure Docker services are running (TimescaleDB, Redis, Mosquitto)..."
-sudo docker compose up -d 2>/dev/null || sudo docker-compose up -d
+sudo docker compose --project-directory . -f deploy/legacy-aws/docker-compose.legacy.yml up -d
 sleep 5
 
 echo "🚀 Starting Auth Service on port 3001..."

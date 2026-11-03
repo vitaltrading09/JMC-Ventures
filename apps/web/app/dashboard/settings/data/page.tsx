@@ -40,14 +40,14 @@ export default function DataImportPage() {
 
     // Fetch sites
     useEffect(() => {
-        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, { credentials: 'include' })
+        fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/sites`, { credentials: 'include' })
             .then(r => r.json()).then(setSites).catch(() => { });
     }, []);
 
     // Fetch meters for selected site
     useEffect(() => {
         if (!selectedSiteId) return;
-        fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, { credentials: 'include' })
+        fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/meters`, { credentials: 'include' })
             .then(r => r.json())
             .then((all: Meter[]) => setMeters(all.filter(m => m.site_id === selectedSiteId)))
             .catch(() => { });
@@ -57,7 +57,7 @@ export default function DataImportPage() {
         if (!newMeterName.trim() || !selectedSiteId) return;
         setCreatingMeter(true); setError("");
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/meters`, {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
@@ -80,7 +80,7 @@ export default function DataImportPage() {
         setPreviewLoading(true);
         try {
             const fd = new FormData(); fd.append('file', f);
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/upload/preview`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/upload/preview`, {
                 method: 'POST', credentials: 'include', body: fd,
             });
             if (res.ok) setPreview(await res.json());
@@ -94,7 +94,7 @@ export default function DataImportPage() {
         setUploading(true); setError("");
         const fd = new FormData(); fd.append('file', file); fd.append('meter_id', selectedMeterId);
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/upload`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/upload`, {
                 method: 'POST', credentials: 'include', body: fd,
             });
             const data = await res.json();

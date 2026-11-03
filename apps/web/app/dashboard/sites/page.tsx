@@ -184,7 +184,7 @@ export default function SitesPage() {
         setSavingProfile(true); setError("");
         try {
             const res = await fetch(
-                `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${editingMeter.id}/profile`,
+                `${process.env.NEXT_PUBLIC_API_URL}/ingestion/meters/${editingMeter.id}/profile`,
                 {
                     method: 'PATCH',
                     credentials: 'include',
@@ -219,8 +219,8 @@ export default function SitesPage() {
     const fetchData = async () => {
         try {
             const [sitesRes, metersRes] = await Promise.all([
-                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, { credentials: 'include' }),
-                fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, { credentials: 'include' }),
+                fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/sites`, { credentials: 'include' }),
+                fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/meters`, { credentials: 'include' }),
             ]);
             if (sitesRes.status === 401 || metersRes.status === 401) {
                 window.location.href = '/login'; return;
@@ -242,7 +242,7 @@ export default function SitesPage() {
         e.preventDefault();
         setSubmitting(true); setError("");
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/sites`, {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
@@ -264,7 +264,7 @@ export default function SitesPage() {
         e.preventDefault();
         setSubmitting(true); setError("");
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/meters`, {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
@@ -284,7 +284,7 @@ export default function SitesPage() {
         if (!confirm(`Delete meter "${meterName}" and ALL its readings ? This cannot be undone.`)) return;
         setDeletingId(meterId);
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${meterId}`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/meters/${meterId}`, {
                 method: 'DELETE',
                 credentials: 'include',
             });
@@ -299,7 +299,7 @@ export default function SitesPage() {
         setTogglingId(meter.id);
         try {
             const res = await fetch(
-                `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/meters/${meter.id}/active`,
+                `${process.env.NEXT_PUBLIC_API_URL}/ingestion/meters/${meter.id}/active`,
                 { method: 'PATCH', credentials: 'include' }
             );
             if (!res.ok) throw new Error(await res.text());
@@ -312,7 +312,7 @@ export default function SitesPage() {
         if (!confirm(`WARNING: Are you sure you want to delete the site "${siteName}"? This will permanently delete ALL its meters and data.`)) return;
         setDeletingId(siteId);
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${siteId}`, {
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/sites/${siteId}`, {
                 method: 'DELETE',
                 credentials: 'include',
             });

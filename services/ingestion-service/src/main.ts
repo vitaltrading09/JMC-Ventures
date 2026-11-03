@@ -2,7 +2,12 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { Pool } from 'pg';
 import cron from 'node-cron';
-import { initMqtt } from './mqtt';
+import type { MqttClient } from 'mqtt';
+import { initMqtt, bootstrapMqttSchema } from './mqtt';
+import {
+    parseRoles, uploadDir, toStoredUploadPath, resolveStoredUploadPath,
+    waitUntil, databaseReachable, ingestSchemaReady, startHealthServer,
+} from './roles';
 import { computeAndStoreSiteScore, getLatestSiteScore } from './energy-score';
 import { assessPowerQuality } from './power-quality';
 import { getOrCreateExecutiveSummary, getCachedExecutiveSummary, answerReportQuestion } from './pq-narrative';
@@ -34,6 +39,16 @@ if (!JWT_SECRET || JWT_SECRET === 'gridiq-super-secret-key-change-in-prod' || JW
     process.exit(1);
 }
 
+// Which parts of the service this process runs (see roles.ts).
+let ROLES: ReturnType<typeof parseRoles>;
+try {
+    ROLES = parseRoles(process.env.ROLES);
+} catch (e: any) {
+    console.error('FATAL:', e.message);
+    process.exit(1);
+}
+console.log(`Ingestion Service roles: ${[...ROLES].join(',')}`);
+
 // Database Connection
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -41,8 +56,9 @@ const pool = new Pool({
     idleTimeoutMillis: 30000,
 });
 
-// Initialize schema for site settings
-(async () => {
+// Startup schema bootstrap. Runs in the api role only, so two containers never
+// race on the same DDL. Phase 2 replaces this with migrations.
+async function bootstrapSchema() {
     const client = await pool.connect();
     try {
         // Meter active/pause flag + load profile (what the meter actually measures)
@@ -53,6 +69,26 @@ const pool = new Pool({
             ADD COLUMN IF NOT EXISTS load_description TEXT,
             ADD COLUMN IF NOT EXISTS site_type        VARCHAR(50);
         `);
+
+        // Created before the ALTERs below. It used to come after them, which
+        // failed the whole bootstrap on an empty database (init.sql does not
+        // create site_settings). No-op on existing databases.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS site_settings (
+                site_id UUID PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
+                tariff_peak DECIMAL(10,2),
+                peak_times VARCHAR(255),
+                tariff_standard DECIMAL(10,2),
+                standard_times VARCHAR(255),
+                tariff_offpeak DECIMAL(10,2),
+                offpeak_times VARCHAR(255),
+                alert_max_kw DECIMAL(10,2),
+                alert_min_v DECIMAL(10,2),
+                alert_max_thd DECIMAL(10,2),
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        console.log("DB Schema initialized: site_settings verified");
 
         // Energy score weight columns (added to existing site_settings)
         await client.query(`
@@ -179,22 +215,6 @@ const pool = new Pool({
         `);
 
         console.log('DB Schema initialized: energy_scores, recommendations, leads verified');
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS site_settings (
-                site_id UUID PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
-                tariff_peak DECIMAL(10,2),
-                peak_times VARCHAR(255),
-                tariff_standard DECIMAL(10,2),
-                standard_times VARCHAR(255),
-                tariff_offpeak DECIMAL(10,2),
-                offpeak_times VARCHAR(255),
-                alert_max_kw DECIMAL(10,2),
-                alert_min_v DECIMAL(10,2),
-                alert_max_thd DECIMAL(10,2),
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-        console.log("DB Schema initialized: site_settings verified");
 
         // Power quality assessment snapshots — the long-term record behind trend
         // lines and the value ledger. One row per meter per assessment run.
@@ -348,162 +368,222 @@ const pool = new Pool({
     } finally {
         client.release();
     }
+}
 
-    // Start MQTT Listener bridging Mosquitto to TimescaleDB
-    await initMqtt(pool);
+// Startup order per role. Each role only touches the database once it is
+// reachable; ingest and jobs additionally wait until the api role has run the
+// bootstrap. Bootstrap failures stay non-fatal, as before the split.
+let mqttClient: MqttClient | null = null;
+let jobsRegistered = false;
+const startup = (async () => {
+    await waitUntil('database', () => databaseReachable(pool));
+    if (ROLES.has('api')) {
+        // MQTT schema first: bootstrapSchema enables compression on
+        // meter_readings, after which TimescaleDB refuses the index/column DDL
+        // in bootstrapMqttSchema. In the old order a fresh database never got
+        // the provenance columns. Existing databases: both remain no-ops.
+        await bootstrapMqttSchema(pool);
+        await bootstrapSchema();
+    }
+    if (ROLES.has('ingest') || ROLES.has('jobs')) {
+        await waitUntil('schema bootstrap (api role)', () => ingestSchemaReady(pool), { intervalMs: 5_000 });
+    }
+    if (ROLES.has('ingest')) {
+        // Start MQTT Listener bridging Mosquitto to TimescaleDB
+        mqttClient = await initMqtt(pool);
+    }
+    if (ROLES.has('jobs')) {
+        registerJobs(pool);
+        jobsRegistered = true;
+    }
 })();
+startup.catch((e) => {
+    console.error('FATAL: startup failed', e);
+    process.exit(1);
+});
 
 // -----------------------------------------------------------------------------
-// ENERGY SCORE ENGINE — recalculates every 5 minutes for all sites
+// Scheduled jobs (jobs role only)
 // -----------------------------------------------------------------------------
-cron.schedule('*/5 * * * *', async () => {
-    const client = await pool.connect();
-    try {
-        const sites = await client.query(`SELECT id FROM sites`);
-        for (const site of sites.rows) {
-            try {
-                const result = await computeAndStoreSiteScore(pool, site.id);
-                if (result) {
-                    console.log(`[SCORE] Site ${site.id} → ${result.score}/100 (${result.tariffType})`);
+function registerJobs(pool: Pool) {
+    // -----------------------------------------------------------------------------
+    // ENERGY SCORE ENGINE — recalculates every 5 minutes for all sites
+    // -----------------------------------------------------------------------------
+    cron.schedule('*/5 * * * *', async () => {
+        const client = await pool.connect();
+        try {
+            const sites = await client.query(`SELECT id FROM sites`);
+            for (const site of sites.rows) {
+                try {
+                    const result = await computeAndStoreSiteScore(pool, site.id);
+                    if (result) {
+                        console.log(`[SCORE] Site ${site.id} → ${result.score}/100 (${result.tariffType})`);
+                    }
+                } catch (e) {
+                    console.error(`[SCORE] Error for site ${site.id}:`, e);
                 }
-            } catch (e) {
-                console.error(`[SCORE] Error for site ${site.id}:`, e);
             }
+        } catch (err) {
+            console.error('[SCORE] Cron error:', err);
+        } finally {
+            client.release();
         }
-    } catch (err) {
-        console.error('[SCORE] Cron error:', err);
-    } finally {
-        client.release();
-    }
-});
+    });
 
-// -----------------------------------------------------------------------------
-// PREDICTIVE MAINTENANCE SCANNER
-// Runs every 30 minutes — looks for SUSTAINED patterns over 24h that the
-// real-time NRS 048 alerts (single-reading) won't catch:
-//
-//   1. Phase current imbalance > 20% (24h average across all three phases)
-//      → unbalanced loads, failing motor windings, neutral fault, blown fuse
-//
-//   2. Sustained low power factor (24h average PF < 0.80)
-//      → capacitor bank degradation, inductive load increase, disconnected PFC
-//
-// Voltage limit breaches (NRS 048) are handled by the real-time mqtt.ts
-// evaluateAlerts function — no need to duplicate them here.
-// One alert per meter per 24 hours to prevent notification spam.
-// -----------------------------------------------------------------------------
-// Pre-renewal review sweep. Daily at 06:00 — renewals move on a calendar, not
-// a clock, so anything more frequent is wasted work. The sweep is idempotent
-// and catches up on missed milestones, so a restart or an outage cannot cause a
-// client's renewal to be skipped silently.
-cron.schedule('0 6 * * *', async () => {
-    const n = await runRenewalSweep(pool);
-    if (n > 0) console.log(`[renewal] sweep produced ${n} review(s)`);
-});
+    // -----------------------------------------------------------------------------
+    // PREDICTIVE MAINTENANCE SCANNER
+    // Runs every 30 minutes — looks for SUSTAINED patterns over 24h that the
+    // real-time NRS 048 alerts (single-reading) won't catch:
+    //
+    //   1. Phase current imbalance > 20% (24h average across all three phases)
+    //      → unbalanced loads, failing motor windings, neutral fault, blown fuse
+    //
+    //   2. Sustained low power factor (24h average PF < 0.80)
+    //      → capacitor bank degradation, inductive load increase, disconnected PFC
+    //
+    // Voltage limit breaches (NRS 048) are handled by the real-time mqtt.ts
+    // evaluateAlerts function — no need to duplicate them here.
+    // One alert per meter per 24 hours to prevent notification spam.
+    // -----------------------------------------------------------------------------
+    // Pre-renewal review sweep. Daily at 06:00 — renewals move on a calendar, not
+    // a clock, so anything more frequent is wasted work. The sweep is idempotent
+    // and catches up on missed milestones, so a restart or an outage cannot cause a
+    // client's renewal to be skipped silently.
+    cron.schedule('0 6 * * *', async () => {
+        const n = await runRenewalSweep(pool);
+        if (n > 0) console.log(`[renewal] sweep produced ${n} review(s)`);
+    });
 
-cron.schedule('*/30 * * * *', async () => {
-    const client = await pool.connect();
+    cron.schedule('*/30 * * * *', async () => {
+        const client = await pool.connect();
+        try {
+            const anomalies = await client.query(`
+                WITH stats AS (
+                    SELECT
+                        m.id            AS meter_id,
+                        s.tenant_id,
+                        m.name          AS meter_name,
+                        -- Power factor (24h average, exclude invalid readings)
+                        ROUND(AVG(r.power_factor_total)
+                            FILTER (WHERE r.power_factor_total > 0 AND r.power_factor_total <= 1.05)
+                            ::numeric, 3)  AS avg_pf,
+                        -- Phase currents (24h average)
+                        ROUND(AVG(r.current_a) FILTER (WHERE r.current_a IS NOT NULL)::numeric, 1) AS avg_i1,
+                        ROUND(AVG(r.current_b) FILTER (WHERE r.current_b IS NOT NULL)::numeric, 1) AS avg_i2,
+                        ROUND(AVG(r.current_c) FILTER (WHERE r.current_c IS NOT NULL)::numeric, 1) AS avg_i3,
+                        COUNT(*) AS reading_count
+                    FROM meters m
+                    JOIN sites s ON m.site_id = s.id
+                    JOIN meter_readings r ON m.id = r.meter_id
+                    WHERE r.time >= NOW() - INTERVAL '24 hours'
+                    GROUP BY m.id, s.tenant_id, m.name
+                    HAVING COUNT(*) >= 10
+                )
+                SELECT *,
+                    -- Phase imbalance = largest current deviation from 3-phase average
+                    CASE
+                        WHEN avg_i1 IS NOT NULL AND avg_i2 IS NOT NULL AND avg_i3 IS NOT NULL
+                             AND (avg_i1 + avg_i2 + avg_i3) > 0
+                        THEN ROUND((
+                                GREATEST(
+                                    ABS(avg_i1 - (avg_i1 + avg_i2 + avg_i3) / 3.0),
+                                    ABS(avg_i2 - (avg_i1 + avg_i2 + avg_i3) / 3.0),
+                                    ABS(avg_i3 - (avg_i1 + avg_i2 + avg_i3) / 3.0)
+                                ) / NULLIF((avg_i1 + avg_i2 + avg_i3) / 3.0, 0) * 100
+                             )::numeric, 1)
+                        ELSE NULL
+                    END AS imbalance_pct
+                FROM stats
+                WHERE (
+                    -- Sustained low PF over 24h
+                    avg_pf IS NOT NULL AND avg_pf < 0.80
+                ) OR (
+                    -- Phase current imbalance > 20%
+                    avg_i1 IS NOT NULL AND avg_i2 IS NOT NULL AND avg_i3 IS NOT NULL
+                    AND (avg_i1 + avg_i2 + avg_i3) > 0
+                    AND GREATEST(
+                            ABS(avg_i1 - (avg_i1 + avg_i2 + avg_i3) / 3.0),
+                            ABS(avg_i2 - (avg_i1 + avg_i2 + avg_i3) / 3.0),
+                            ABS(avg_i3 - (avg_i1 + avg_i2 + avg_i3) / 3.0)
+                        ) / NULLIF((avg_i1 + avg_i2 + avg_i3) / 3.0, 0) * 100 > 20
+                )
+            `);
+
+            for (const m of anomalies.rows) {
+                // Deduplicate — one predictive alert per meter per 24h
+                const recent = await client.query(`
+                    SELECT id FROM alerts
+                    WHERE meter_id = $1
+                      AND type = 'PREDICTIVE_WARNING'
+                      AND created_at >= NOW() - INTERVAL '24 hours'
+                    LIMIT 1
+                `, [m.meter_id]);
+                if (recent.rows.length > 0) continue;
+
+                const parts: string[] = [];
+
+                if (m.avg_pf !== null && Number(m.avg_pf) < 0.80) {
+                    parts.push(
+                        `Sustained low power factor: 24h average PF = ${Number(m.avg_pf).toFixed(3)} ` +
+                        `(target ≥0.85 to avoid Eskom reactive penalty). ` +
+                        `Likely cause: capacitor bank degradation or increased inductive load. ` +
+                        `Inspect PFC capacitor bank and check for new uncompensated motor loads.`
+                    );
+                }
+
+                if (m.imbalance_pct !== null && Number(m.imbalance_pct) > 20) {
+                    parts.push(
+                        `Phase current imbalance: ${Number(m.imbalance_pct).toFixed(1)}% ` +
+                        `(L1 ${m.avg_i1} A / L2 ${m.avg_i2} A / L3 ${m.avg_i3} A, 24h avg). ` +
+                        `Imbalance above 20% causes excess motor winding heating and reduces equipment life. ` +
+                        `Check load distribution across phases, neutral continuity, and for blown fuses on one phase.`
+                    );
+                }
+
+                if (parts.length === 0) continue;
+
+                const message = parts.join(' | ');
+
+                await client.query(`
+                    INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
+                    VALUES ($1, $2, 'PREDICTIVE_WARNING', 'WARNING', $3)
+                `, [m.tenant_id, m.meter_id, message]);
+
+                console.log(`[PREDICTIVE] ${m.meter_name} — ${parts.length} condition(s): imbalance=${m.imbalance_pct}% PF=${m.avg_pf}`);
+            }
+        } catch (err) {
+            console.error('[PREDICTIVE] Scan error:', err);
+        } finally {
+            client.release();
+        }
+    });
+
+    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m)');
+}
+
+// Health of the roles this process runs. Shared by the api /health route and
+// the internal health server used by ingest-only / jobs-only containers.
+async function roleHealth() {
+    const detail: Record<string, unknown> = { roles: [...ROLES] };
+    let ok = true;
     try {
-        const anomalies = await client.query(`
-            WITH stats AS (
-                SELECT
-                    m.id            AS meter_id,
-                    s.tenant_id,
-                    m.name          AS meter_name,
-                    -- Power factor (24h average, exclude invalid readings)
-                    ROUND(AVG(r.power_factor_total)
-                        FILTER (WHERE r.power_factor_total > 0 AND r.power_factor_total <= 1.05)
-                        ::numeric, 3)  AS avg_pf,
-                    -- Phase currents (24h average)
-                    ROUND(AVG(r.current_a) FILTER (WHERE r.current_a IS NOT NULL)::numeric, 1) AS avg_i1,
-                    ROUND(AVG(r.current_b) FILTER (WHERE r.current_b IS NOT NULL)::numeric, 1) AS avg_i2,
-                    ROUND(AVG(r.current_c) FILTER (WHERE r.current_c IS NOT NULL)::numeric, 1) AS avg_i3,
-                    COUNT(*) AS reading_count
-                FROM meters m
-                JOIN sites s ON m.site_id = s.id
-                JOIN meter_readings r ON m.id = r.meter_id
-                WHERE r.time >= NOW() - INTERVAL '24 hours'
-                GROUP BY m.id, s.tenant_id, m.name
-                HAVING COUNT(*) >= 10
-            )
-            SELECT *,
-                -- Phase imbalance = largest current deviation from 3-phase average
-                CASE
-                    WHEN avg_i1 IS NOT NULL AND avg_i2 IS NOT NULL AND avg_i3 IS NOT NULL
-                         AND (avg_i1 + avg_i2 + avg_i3) > 0
-                    THEN ROUND((
-                            GREATEST(
-                                ABS(avg_i1 - (avg_i1 + avg_i2 + avg_i3) / 3.0),
-                                ABS(avg_i2 - (avg_i1 + avg_i2 + avg_i3) / 3.0),
-                                ABS(avg_i3 - (avg_i1 + avg_i2 + avg_i3) / 3.0)
-                            ) / NULLIF((avg_i1 + avg_i2 + avg_i3) / 3.0, 0) * 100
-                         )::numeric, 1)
-                    ELSE NULL
-                END AS imbalance_pct
-            FROM stats
-            WHERE (
-                -- Sustained low PF over 24h
-                avg_pf IS NOT NULL AND avg_pf < 0.80
-            ) OR (
-                -- Phase current imbalance > 20%
-                avg_i1 IS NOT NULL AND avg_i2 IS NOT NULL AND avg_i3 IS NOT NULL
-                AND (avg_i1 + avg_i2 + avg_i3) > 0
-                AND GREATEST(
-                        ABS(avg_i1 - (avg_i1 + avg_i2 + avg_i3) / 3.0),
-                        ABS(avg_i2 - (avg_i1 + avg_i2 + avg_i3) / 3.0),
-                        ABS(avg_i3 - (avg_i1 + avg_i2 + avg_i3) / 3.0)
-                    ) / NULLIF((avg_i1 + avg_i2 + avg_i3) / 3.0, 0) * 100 > 20
-            )
-        `);
-
-        for (const m of anomalies.rows) {
-            // Deduplicate — one predictive alert per meter per 24h
-            const recent = await client.query(`
-                SELECT id FROM alerts
-                WHERE meter_id = $1
-                  AND type = 'PREDICTIVE_WARNING'
-                  AND created_at >= NOW() - INTERVAL '24 hours'
-                LIMIT 1
-            `, [m.meter_id]);
-            if (recent.rows.length > 0) continue;
-
-            const parts: string[] = [];
-
-            if (m.avg_pf !== null && Number(m.avg_pf) < 0.80) {
-                parts.push(
-                    `Sustained low power factor: 24h average PF = ${Number(m.avg_pf).toFixed(3)} ` +
-                    `(target ≥0.85 to avoid Eskom reactive penalty). ` +
-                    `Likely cause: capacitor bank degradation or increased inductive load. ` +
-                    `Inspect PFC capacitor bank and check for new uncompensated motor loads.`
-                );
-            }
-
-            if (m.imbalance_pct !== null && Number(m.imbalance_pct) > 20) {
-                parts.push(
-                    `Phase current imbalance: ${Number(m.imbalance_pct).toFixed(1)}% ` +
-                    `(L1 ${m.avg_i1} A / L2 ${m.avg_i2} A / L3 ${m.avg_i3} A, 24h avg). ` +
-                    `Imbalance above 20% causes excess motor winding heating and reduces equipment life. ` +
-                    `Check load distribution across phases, neutral continuity, and for blown fuses on one phase.`
-                );
-            }
-
-            if (parts.length === 0) continue;
-
-            const message = parts.join(' | ');
-
-            await client.query(`
-                INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
-                VALUES ($1, $2, 'PREDICTIVE_WARNING', 'WARNING', $3)
-            `, [m.tenant_id, m.meter_id, message]);
-
-            console.log(`[PREDICTIVE] ${m.meter_name} — ${parts.length} condition(s): imbalance=${m.imbalance_pct}% PF=${m.avg_pf}`);
-        }
-    } catch (err) {
-        console.error('[PREDICTIVE] Scan error:', err);
-    } finally {
-        client.release();
+        await pool.query('SELECT 1');
+        detail.db = 'ok';
+    } catch (e: any) {
+        ok = false;
+        detail.db = e?.message || 'unreachable';
     }
-});
+    if (ROLES.has('ingest')) {
+        const connected = !!mqttClient?.connected;
+        detail.mqtt = connected ? 'connected' : 'disconnected';
+        ok = ok && connected;
+    }
+    if (ROLES.has('jobs')) {
+        detail.jobs = jobsRegistered ? 'registered' : 'pending';
+        ok = ok && jobsRegistered;
+    }
+    return { ok, ...detail };
+}
 
 // Express API for Data Access
 import express from 'express';
@@ -538,7 +618,7 @@ const authenticateToken = (req: any, res: any, next: any) => {
 };
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', service: 'ingestion-service', mode: 'queue+api' });
+    res.json({ status: 'ok', service: 'ingestion-service', mode: [...ROLES].join(',') });
 });
 
 // Secure endpoint: Get Sites (filtered by Tenant)
@@ -1216,7 +1296,10 @@ import multer from 'multer';
 import csv from 'csv-parser';
 import fs from 'fs';
 
-const upload = multer({ dest: 'uploads/' });
+// CSV imports are staged in UPLOAD_DIR and deleted once processed.
+const UPLOAD_DIR = uploadDir();
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const upload = multer({ dest: UPLOAD_DIR });
 
 // Secure endpoint: Get Readings for a specific Meter (verified access).
 // When a date range is provided, server-side time_bucket aggregation keeps
@@ -2787,9 +2870,10 @@ app.patch('/leads/:id', authenticateToken, async (req: any, res) => {
 
 // ── Single-Line Diagram (SLD) endpoints ──────────────────────────────────────
 // Layout JSONB stores nodes + edges. PDF backdrops are persisted to disk under
-// uploads/sld-pdfs/<site>.pdf and streamed via auth-protected endpoint.
+// UPLOAD_DIR/sld-pdfs/<site>.pdf and streamed via auth-protected endpoint.
+// TODO: move SLD PDFs to object storage (see the Phase 1 PR).
 
-const SLD_PDF_DIR = path.join(__dirname, '..', 'uploads', 'sld-pdfs');
+const SLD_PDF_DIR = path.join(UPLOAD_DIR, 'sld-pdfs');
 fs.mkdirSync(SLD_PDF_DIR, { recursive: true });
 
 const sldUpload = multer({
@@ -2895,7 +2979,7 @@ app.post('/sites/:id/diagram/pdf', authenticateToken, sldUpload.single('pdf') as
             try { fs.unlinkSync(req.file.path); } catch {}
             return res.status(403).json({ error: 'Forbidden' });
         }
-        const relPath = path.relative(path.join(__dirname, '..'), req.file.path);
+        const relPath = toStoredUploadPath(req.file.path, UPLOAD_DIR);
         await client.query(`
             INSERT INTO site_diagrams (site_id, background_pdf_path, updated_at)
             VALUES ($1, $2, NOW())
@@ -2927,8 +3011,8 @@ app.get('/sites/:id/diagram/pdf', authenticateToken, async (req: any, res) => {
         );
         const relPath = result.rows[0]?.background_pdf_path;
         if (!relPath) return res.status(404).json({ error: 'No PDF uploaded for this site' });
-        const absPath = path.join(__dirname, '..', relPath);
-        if (!fs.existsSync(absPath)) return res.status(404).json({ error: 'PDF file missing on disk' });
+        const absPath = resolveStoredUploadPath(relPath, UPLOAD_DIR);
+        if (!absPath || !fs.existsSync(absPath)) return res.status(404).json({ error: 'PDF file missing on disk' });
         res.setHeader('Content-Type', 'application/pdf');
         fs.createReadStream(absPath).pipe(res);
     } catch (err) {
@@ -2953,8 +3037,8 @@ app.delete('/sites/:id/diagram/pdf', authenticateToken, async (req: any, res) =>
             [id]
         );
         const relPath = result.rows[0]?.background_pdf_path;
-        if (relPath) {
-            const absPath = path.join(__dirname, '..', relPath);
+        const absPath = relPath ? resolveStoredUploadPath(relPath, UPLOAD_DIR) : null;
+        if (absPath) {
             try { fs.unlinkSync(absPath); } catch {}
         }
         await client.query(
@@ -2970,8 +3054,13 @@ app.delete('/sites/:id/diagram/pdf', authenticateToken, async (req: any, res) =>
     }
 });
 
-app.listen(port, () => {
-    console.log(`Ingestion Service API running on port ${port}`);
-});
+if (ROLES.has('api')) {
+    app.listen(port, () => {
+        console.log(`Ingestion Service API running on port ${port}`);
+    });
+} else {
+    // ingest/jobs containers: tiny internal /health for the Docker HEALTHCHECK
+    startHealthServer(Number(process.env.HEALTH_PORT || 9090), roleHealth);
+}
 
 console.log('Ingestion Service started.');

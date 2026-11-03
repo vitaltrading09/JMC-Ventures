@@ -7,7 +7,7 @@ import {
     Loader2, Bell, Filter,
 } from "lucide-react";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 interface Alert {
     id: string;

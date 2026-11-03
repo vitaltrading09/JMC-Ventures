@@ -22,7 +22,7 @@ interface Ledger {
     findings: Finding[];
 }
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 const SEV_CLS: Record<string, string> = {
     CRITICAL: "text-red-400 bg-red-500/10 border-red-500/30",

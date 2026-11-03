@@ -6,8 +6,8 @@
 # event loop blocked). This script hits the HTTP health endpoint of each
 # service; if the request fails or times out, the service is restarted.
 #
-# Install:  installed automatically by deploy/scripts/install.sh
-# Manual:   sudo crontab -e  →  * * * * * /home/ubuntu/Grid-IQ/deploy/scripts/healthcheck.sh >> /var/log/gridiq-healthcheck.log 2>&1
+# Install:  installed automatically by deploy/legacy-aws/scripts/install.sh
+# Manual:   sudo crontab -e  →  * * * * * /home/ubuntu/Grid-IQ/deploy/legacy-aws/scripts/healthcheck.sh >> /var/log/gridiq-healthcheck.log 2>&1
 # Tail:     sudo tail -f /var/log/gridiq-healthcheck.log
 
 set -u

@@ -34,7 +34,7 @@ interface Recommendation {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 const TYPE_COLOUR: Record<string, string> = {
     POWER_FACTOR_CORRECTION: "#f59e0b",

@@ -2,7 +2,7 @@
 # Grid-IQ production setup — switches services from `nohup &` to systemd.
 # Idempotent: safe to run multiple times.
 #
-# Run from anywhere on the server:  sudo bash /home/ubuntu/Grid-IQ/deploy/scripts/install.sh
+# Run from anywhere on the server:  sudo bash /home/ubuntu/Grid-IQ/deploy/legacy-aws/scripts/install.sh
 
 set -euo pipefail
 
@@ -11,11 +11,11 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Resolve repo root (script lives at deploy/scripts/install.sh)
+# Resolve repo root (script lives at deploy/legacy-aws/scripts/install.sh)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SYSTEMD_SRC="$REPO_ROOT/deploy/systemd"
-HEALTHCHECK="$REPO_ROOT/deploy/scripts/healthcheck.sh"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SYSTEMD_SRC="$REPO_ROOT/deploy/legacy-aws/systemd"
+HEALTHCHECK="$REPO_ROOT/deploy/legacy-aws/scripts/healthcheck.sh"
 HEALTHCHECK_LOG="/var/log/gridiq-healthcheck.log"
 
 echo "════════════════════════════════════════════════════"
@@ -85,7 +85,7 @@ echo "  ✓ Legacy processes stopped"
 echo ""
 echo "▶ Bringing up Docker infrastructure (TimescaleDB, Redis, Mosquitto)…"
 cd "$REPO_ROOT"
-docker compose up -d
+docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/deploy/legacy-aws/docker-compose.legacy.yml" up -d
 sleep 3
 echo "  ✓ Docker services running"
 
@@ -165,7 +165,7 @@ echo ""
 echo "════════════════════════════════════════════════════"
 echo "  Service Status"
 echo "════════════════════════════════════════════════════"
-bash "$REPO_ROOT/deploy/scripts/status.sh"
+bash "$REPO_ROOT/deploy/legacy-aws/scripts/status.sh"
 
 echo ""
 echo "════════════════════════════════════════════════════"
@@ -174,11 +174,11 @@ echo "════════════════════════�
 cat <<EOF
 
 Useful commands:
-  bash $REPO_ROOT/deploy/scripts/status.sh          # one-glance health
-  bash $REPO_ROOT/deploy/scripts/logs.sh ingestion  # tail any service
+  bash $REPO_ROOT/deploy/legacy-aws/scripts/status.sh          # one-glance health
+  bash $REPO_ROOT/deploy/legacy-aws/scripts/logs.sh ingestion  # tail any service
   sudo systemctl restart powerguard-ingestion      # manual restart
   sudo tail -f $HEALTHCHECK_LOG                    # see healthcheck activity
 
 After a git pull:
-  bash $REPO_ROOT/deploy/scripts/redeploy.sh       # rebuild web + restart services
+  bash $REPO_ROOT/deploy/legacy-aws/scripts/redeploy.sh       # rebuild web + restart services
 EOF

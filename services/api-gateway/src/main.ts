@@ -18,6 +18,13 @@ if (!JWT_SECRET || JWT_SECRET === 'gridiq-super-secret-key-change-in-prod' || JW
 const app = express();
 const port = process.env.PORT || 8081;
 
+// Behind Caddy every request arrives from the proxy's address, so the rate
+// limiter would put all users in one bucket. TRUST_PROXY=1 (set in compose)
+// takes the client IP from Caddy's X-Forwarded-For. Unset when the gateway is
+// reached directly (npm run dev), so the header can't be spoofed there.
+const trustProxy = Number(process.env.TRUST_PROXY || 0);
+if (trustProxy > 0) app.set('trust proxy', trustProxy);
+
 // 1. Security Headers (Helmet)
 app.use(helmet());
 

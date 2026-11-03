@@ -1,13 +1,13 @@
 #!/bin/bash
 # Tail logs for a Grid-IQ service.
-# Usage: bash deploy/scripts/logs.sh <auth|ingestion|gateway|web>  [lines]
+# Usage: bash deploy/legacy-aws/scripts/logs.sh <auth|ingestion|gateway|web>  [lines]
 
 SERVICE="${1:-}"
 LINES="${2:-100}"
 
 if [ -z "$SERVICE" ]; then
     cat <<EOF
-Usage:  bash deploy/scripts/logs.sh <service> [lines]
+Usage:  bash deploy/legacy-aws/scripts/logs.sh <service> [lines]
 
 Services:
   auth        Authentication service (port 3001)
@@ -16,9 +16,9 @@ Services:
   web         Next.js frontend (port 3000)
 
 Examples:
-  bash deploy/scripts/logs.sh ingestion           # tail with last 100 lines
-  bash deploy/scripts/logs.sh ingestion 500       # tail with last 500 lines
-  bash deploy/scripts/logs.sh auth                # tail auth service
+  bash deploy/legacy-aws/scripts/logs.sh ingestion           # tail with last 100 lines
+  bash deploy/legacy-aws/scripts/logs.sh ingestion 500       # tail with last 500 lines
+  bash deploy/legacy-aws/scripts/logs.sh auth                # tail auth service
 
 EOF
     exit 1

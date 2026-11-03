@@ -1,7 +1,7 @@
 #!/bin/bash
 # Roll back the systemd setup — stops services, removes units, removes cron.
-# Run: sudo bash deploy/scripts/uninstall.sh
-# After uninstall, you can fall back to `bash start.sh` (legacy nohup mode).
+# Run: sudo bash deploy/legacy-aws/scripts/uninstall.sh
+# After uninstall, you can fall back to `bash deploy/legacy-aws/start.sh` (legacy nohup mode).
 
 set -u
 if [ "$EUID" -ne 0 ]; then
@@ -10,8 +10,8 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-HEALTHCHECK="$REPO_ROOT/deploy/scripts/healthcheck.sh"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+HEALTHCHECK="$REPO_ROOT/deploy/legacy-aws/scripts/healthcheck.sh"
 
 echo "▶ Stopping and disabling services…"
 for svc in powerguard-auth powerguard-ingestion powerguard-gateway powerguard-web; do
@@ -34,4 +34,4 @@ echo ""
 echo "Docker containers (TimescaleDB, Redis, Mosquitto) left running."
 echo "Application logs at /var/log/gridiq-healthcheck.log preserved."
 echo ""
-echo "Done. You can now use 'bash start.sh' again."
+echo "Done. You can now use 'bash deploy/legacy-aws/start.sh' again."

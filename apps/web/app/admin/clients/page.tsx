@@ -30,7 +30,7 @@ interface TenantPortfolio {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 function scoreColour(s: number | null) {
     if (s === null) return "text-slate-500";

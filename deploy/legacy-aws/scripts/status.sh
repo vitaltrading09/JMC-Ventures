@@ -1,6 +1,6 @@
 #!/bin/bash
 # Quick overview of all Grid-IQ infrastructure.
-# Run: bash deploy/scripts/status.sh
+# Run: bash deploy/legacy-aws/scripts/status.sh
 
 YEL='\033[1;33m'
 GRN='\033[1;32m'
@@ -57,4 +57,4 @@ for svc in powerguard-auth powerguard-ingestion powerguard-gateway powerguard-we
 done | head -5 || true
 
 echo ""
-echo -e "${DIM}Hint: bash deploy/scripts/logs.sh <service>   to tail logs${RST}"
+echo -e "${DIM}Hint: bash deploy/legacy-aws/scripts/logs.sh <service>   to tail logs${RST}"

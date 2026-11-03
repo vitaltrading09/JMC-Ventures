@@ -29,7 +29,7 @@ interface SiteScore {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 function scoreColour(s: number) {
     if (s >= 80) return "text-emerald-400";

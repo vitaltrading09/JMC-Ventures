@@ -1,43 +1,212 @@
-version: '3.8'
+# Grid-IQ — full stack, one Docker Compose project.
+#
+#   cp .env.example .env        # then fill in every change_me
+#   docker compose up -d --build
+#
+# Only caddy (80/443) and mosquitto (8883) publish host ports. Everything else
+# is reachable only on the compose network. Local dev extras (127.0.0.1-only
+# ports for the DB and plain MQTT) live in docker-compose.override.yml.example.
+#
+# Persistent data lives under ${DATA_DIR} (default ./.data):
+#   pg/  caddy/  mosquitto/data/  mqtt-certs/  uploads/
+
+x-restart: &restart
+  restart: unless-stopped
+
+# One image, four services: api / ingest / jobs (ROLES) and the migrate one-shot.
+x-ingestion-image: &ingestion-image
+  image: gridiq/ingestion-service:${IMAGE_TAG:-local}
+  build:
+    context: .
+    dockerfile: services/ingestion-service/Dockerfile
+
+x-ingestion-env: &ingestion-env
+  DATABASE_URL: postgres://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@timescaledb:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+  UPLOAD_DIR: /data/uploads
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_MODEL: ${OPENAI_MODEL:-}
 
 services:
-  # TimescaleDB (PostgreSQL for Time-Series & Relational Data)
-  timescaledb:
-    image: timescale/timescaledb:latest-pg16
-    container_name: powerguard-db
-    restart: always
+  caddy:
+    <<: *restart
+    image: caddy:2.8.4
+    ports:
+      - "80:80"
+      - "443:443"
     environment:
-      # From the root .env (see .env.example). Only used when the data volume
-      # is first initialised; changing it later does not change the DB password.
-      POSTGRES_USER: ${POSTGRES_USER:-powerguard_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-powerguard_db}
-    ports:
-      - "5432:5432"
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env}
+      MQTT_DOMAIN: ${MQTT_DOMAIN:?set MQTT_DOMAIN in .env}
     volumes:
-      - db_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates, local CA and ACME account. sync-mqtt-certs.sh reads
+      # ${DATA_DIR}/caddy/certificates/<issuer>/<MQTT_DOMAIN>/.
+      - ${DATA_DIR:-./.data}/caddy:/data/caddy
+      - ${DATA_DIR:-./.data}/caddy-config:/config/caddy
+    depends_on:
+      - web
+      - gateway
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
 
-  # Redis (Caching & Message Broker for specialized queues if needed)
-  redis:
-    image: redis:alpine
-    container_name: powerguard-redis
-    restart: always
-    ports:
-      - "6379:6379"
+  web:
+    <<: *restart
+    image: gridiq/web:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Baked into the client bundle; the browser calls the API via Caddy.
+        NEXT_PUBLIC_API_URL: https://${APP_DOMAIN}/api
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-}
 
-  # MQTT Message Broker (for live Acuvim Telemetry)
+  gateway:
+    <<: *restart
+    image: gridiq/api-gateway:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      FRONTEND_URL: https://${APP_DOMAIN}
+      AUTH_SERVICE_URL: http://auth:3001
+      INGESTION_SERVICE_URL: http://api:3002
+      # One proxy hop (Caddy) in front of the gateway.
+      TRUST_PROXY: "1"
+    depends_on:
+      - auth
+      - api
+
+  auth:
+    <<: *restart
+    image: gridiq/auth-service:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      # Served over HTTPS by Caddy, so the auth cookie is Secure.
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # REST endpoints + (until Phase 2) the startup schema bootstrap.
+  api:
+    <<: [*restart, *ingestion-image]
+    environment:
+      <<: *ingestion-env
+      ROLES: api
+    volumes:
+      - ${DATA_DIR:-./.data}/uploads:/data/uploads
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # MQTT → DB only. Independent of api: stopping api does not stop ingestion.
+  ingest:
+    <<: [*restart, *ingestion-image]
+    environment:
+      <<: *ingestion-env
+      ROLES: ingest
+      # Resolves to the mosquitto container (network alias below), so the TLS
+      # hostname matches the certificate without leaving the host.
+      MQTT_BROKER_URL: mqtts://${MQTT_DOMAIN}:8883
+      MQTT_USERNAME: ${MQTT_USERNAME:?set MQTT_USERNAME in .env}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD in .env}
+      MQTT_CA_CERT: ${MQTT_CA_CERT:-}
+      MQTT_TLS_REJECT_UNAUTHORIZED: ${MQTT_TLS_REJECT_UNAUTHORIZED:-true}
+    volumes:
+      # Only read when MQTT_CA_CERT points into it (local dev's Caddy CA).
+      - ${DATA_DIR:-./.data}/mqtt-certs:/mqtt-certs:ro
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      mosquitto:
+        condition: service_started
+
+  # Every cron.schedule job.
+  jobs:
+    <<: [*restart, *ingestion-image]
+    environment:
+      <<: *ingestion-env
+      ROLES: jobs
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # One-shot: creates the base schema on an empty DB (Phase 2: real migrations).
+  # Not restarted: it exits 0 when done.
+  migrate:
+    <<: *ingestion-image
+    restart: "no"
+    command: ["node", "dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+    healthcheck:
+      disable: true
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+
   mosquitto:
-    image: eclipse-mosquitto:latest
-    container_name: powerguard-mqtt
-    restart: always
+    <<: *restart
+    image: eclipse-mosquitto:2.0.22
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "8883:8883"
+    # Waits for the TLS certificate (deploy/scripts/sync-mqtt-certs.sh) instead
+    # of crash-looping on a fresh install before Caddy has issued it.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until [ -s /mosquitto/certs/fullchain.pem ] && [ -s /mosquitto/certs/privkey.pem ]; do
+          echo "mosquitto: waiting for /mosquitto/certs (run deploy/scripts/sync-mqtt-certs.sh)"; sleep 10
+        done
+        exec /docker-entrypoint.sh /usr/sbin/mosquitto -c /mosquitto/config/mosquitto.conf
     volumes:
       - ./mosquitto/config:/mosquitto/config
-      - ./mosquitto/data:/mosquitto/data
-      - ./mosquitto/log:/mosquitto/log
+      - ${DATA_DIR:-./.data}/mosquitto/data:/mosquitto/data
+      - ${DATA_DIR:-./.data}/mqtt-certs:/mosquitto/certs:ro
+    networks:
+      default:
+        aliases:
+          - ${MQTT_DOMAIN}
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8883"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
-volumes:
-  db_data:
+  timescaledb:
+    <<: *restart
+    # Must match the production extension version before a restore (plan Part D5).
+    image: timescale/timescaledb:2.17.2-pg16
+    environment:
+      # Only used when the data directory is first initialised.
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ${DATA_DIR:-./.data}/pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s

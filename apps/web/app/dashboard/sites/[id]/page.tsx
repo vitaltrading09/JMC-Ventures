@@ -58,7 +58,7 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
     // Simulation state
     const [systemConfig, setSystemConfig] = useState({ solarKw: 0, batteryKwh: 0, batteryPowerKw: 0 });
 
-    const API   = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081';
+    const API   = process.env.NEXT_PUBLIC_API_URL;
 
     // Fetch meter info once
     useEffect(() => {

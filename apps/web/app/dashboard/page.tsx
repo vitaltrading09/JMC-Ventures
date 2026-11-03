@@ -55,7 +55,7 @@ interface SiteScore {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 function timeAgo(iso: string): string {
     const diff = Date.now() - new Date(iso).getTime();
