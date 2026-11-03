@@ -5,11 +5,9 @@ ARG NODE_IMAGE=node:22.21.1-bookworm-slim
 
 # ── Workspace manifests only, so dependency layers cache across code edits ──
 FROM ${NODE_IMAGE} AS manifests
-# bcrypt is native: prebuilt binaries cover amd64/arm64, the toolchain is the
-# fallback when a prebuild is unavailable.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# bcrypt is native. npm ci downloads its prebuilt binary (published for
+# linux-x64-glibc and linux-arm64-glibc), so no compiler toolchain is needed;
+# if a prebuild were ever missing, npm ci fails here rather than at runtime.
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
