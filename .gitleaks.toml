@@ -1,0 +1,24 @@
+# gitleaks config: the default rule set, plus project-specific rules for the
+# credentials this repo used to hard-code. Placeholders in .env.example are
+# deliberately values that no rule matches (change_me, empty).
+[extend]
+useDefault = true
+
+[[rules]]
+id = "gridiq-legacy-db-password"
+description = "Legacy hard-coded Postgres password"
+regex = '''powerguard_pass[w]ord'''
+[rules.allowlist]
+paths = ['''docs/planning/GRIDIQ_ORACLE_PLAN\.md''']  # the plan names these strings so they can be removed
+
+[[rules]]
+id = "gridiq-legacy-demo-password"
+description = "Legacy hard-coded demo login password"
+regex = '''\b(password12[3]|demo12[3])\b'''
+[rules.allowlist]
+paths = ['''docs/planning/GRIDIQ_ORACLE_PLAN\.md''']  # the plan names these strings so they can be removed
+
+[[rules]]
+id = "mosquitto-password-hash"
+description = "Mosquitto passwd file entry (user:$7$... PBKDF2 hash)"
+regex = '''(?m)^[A-Za-z0-9_.-]+:\$[67]\$[0-9]+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+'''

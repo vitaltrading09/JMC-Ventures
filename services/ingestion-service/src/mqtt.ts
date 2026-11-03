@@ -407,7 +407,6 @@ function noteConflict(meterId: string): void {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Alert threshold evaluation
-// Mirrors the BullMQ worker logic to keep threshold behaviour consistent.
 // Deduplicates: at most 1 alert of the same type per meter per hour.
 // ─────────────────────────────────────────────────────────────────────────────
 interface AlertParams {

@@ -145,7 +145,7 @@ aws s3 cp "s3://$BACKUP_S3_BUCKET/daily/$LATEST" /tmp/drill_restore.dump
 # 2. Spin up isolated test container
 docker run -d --name pg_drill \
   -e POSTGRES_USER=powerguard_user \
-  -e POSTGRES_PASSWORD=powerguard_password \
+  -e POSTGRES_PASSWORD="$(openssl rand -hex 16)" \
   -e POSTGRES_DB=powerguard_db \
   timescale/timescaledb:latest-pg15
 

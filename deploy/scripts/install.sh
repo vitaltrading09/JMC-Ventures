@@ -91,6 +91,14 @@ echo "  ✓ Docker services running"
 
 # ── 4. Build Next.js frontend (must exist for systemd web service) ─────────
 echo ""
+# NEXT_PUBLIC_API_URL is baked into the bundle at build time. It used to come
+# from a committed apps/web/.env.production (now removed); on this box put it in
+# apps/web/.env.production.local (gitignored) or export it before running.
+if [ -z "${NEXT_PUBLIC_API_URL:-}" ] && ! grep -qs '^NEXT_PUBLIC_API_URL=' "$REPO_ROOT/apps/web/.env.production.local"; then
+    echo "✗ NEXT_PUBLIC_API_URL is not set. Create apps/web/.env.production.local with:"
+    echo "    NEXT_PUBLIC_API_URL=http://<server-ip>:8081"
+    exit 1
+fi
 echo "▶ Building Next.js frontend (this can take a minute)…"
 sudo -u ubuntu bash -lc "cd '$REPO_ROOT/apps/web' && npm run build"
 echo "  ✓ Frontend built (.next/ ready)"
