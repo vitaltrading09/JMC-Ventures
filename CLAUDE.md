@@ -226,10 +226,11 @@ Compose stack behind Caddy with a real domain. The steps are in
 `docs/planning/GRIDIQ_ORACLE_PLAN.md` Part D. Server `.env`: `APP_DOMAIN=app.<domain>`,
 `MQTT_DOMAIN=mqtt.<domain>`, `DATA_DIR=/data`. Deploy with `bash deploy/deploy.sh`.
 
-- The TimescaleDB image is pinned to `2.17.2-pg16`. **Confirm it matches the production
-  extension version (Part D5) before restoring a dump.**
-- The old AWS EC2 box (systemd + `npx tsx`) still runs from `deploy/legacy-aws/`
-  until decommission. Read `deploy/legacy-aws/README.md` before pulling `main` onto it.
+- AWS is gone and no production data is carried over: the Oracle server starts
+  from an empty database. The plan's AWS steps (D5 version check, D7 restore,
+  D9 backfill, D11 decommission) do not apply, and nothing pins TimescaleDB to an
+  old version (currently `2.17.2-pg16`).
+- The old systemd / `npx tsx` runtime files were deleted in Phase 1.
 - Backups (`deploy/backup-db.sh`, `deploy/scripts/backup-*.sh`) still target the legacy
   `powerguard-db` container; Phase 5 replaces them.
 
@@ -269,8 +270,8 @@ Compose stack behind Caddy with a real domain. The steps are in
   Create them per machine from `passwd.example`, `acl.example`, `conf.d/*.example`.
 - `.data/` (compose data) and `docker-compose.override.yml` (local dev ports) are gitignored.
 - `apps/web/.env.production` was removed. `NEXT_PUBLIC_API_URL` is supplied at build
-  time: a Docker build arg (compose sets `https://${APP_DOMAIN}/api`), `apps/web/.env.local`
-  for `npm run dev`, `apps/web/.env.production.local` on the legacy AWS box. The build
+  time: a Docker build arg (compose sets `https://${APP_DOMAIN}/api`), or `apps/web/.env.local`
+  for `npm run dev`. The build
   fails if it is unset; no frontend code may hard-code a host or port.
 - CI runs a gitleaks scan (`.gitleaks.toml`) on the tree and on PR commits.
 - The migration and fleet plan is `docs/planning/GRIDIQ_ORACLE_PLAN.md`.

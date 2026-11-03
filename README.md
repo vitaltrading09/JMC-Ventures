@@ -70,6 +70,6 @@ npm run build && npm test   # the web build needs apps/web/.env.local (NEXT_PUBL
 - `services/auth-service`: authentication API (Express + JWT)
 - `services/ingestion-service`: REST API, MQTT ingest and scheduled jobs (one image, `ROLES` picks which)
 - `services/api-gateway`: central entry point (Express proxy)
-- `deploy/`: Caddyfile, deploy/status/logs scripts, MQTT cert sync; `deploy/legacy-aws/` holds the old AWS box files
+- `deploy/`: Caddyfile, deploy/status/logs scripts, MQTT cert sync, multi-arch build
 - `mosquitto/config`: broker config, ACL and password-file templates
 - `scripts`: database seeding and utility scripts

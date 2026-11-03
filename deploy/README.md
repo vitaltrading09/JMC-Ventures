@@ -39,9 +39,8 @@ Follow plan Part D (`docs/planning/GRIDIQ_ORACLE_PLAN.md`). In short:
 3. `bash deploy/deploy.sh`. Mosquitto waits until `sync-mqtt-certs.sh` has
    copied the certificate Caddy obtained for `MQTT_DOMAIN`.
 
-## Legacy
+## Not yet migrated
 
-The old AWS box (systemd + `npx tsx`) uses `deploy/legacy-aws/` until it is
-decommissioned; read `deploy/legacy-aws/README.md` before pulling onto it.
-Backups (`deploy/backup-db.sh`, `deploy/scripts/backup-*.sh`) still target the
-legacy `powerguard-db` container; Phase 5 replaces them.
+Backups (`deploy/backup-db.sh`, `deploy/scripts/backup-*.sh`, `README-BACKUPS.md`)
+are still the AWS-era scripts (S3, EC2 snapshots, `powerguard-db` container).
+They do not work with this stack; Phase 5 replaces them.
