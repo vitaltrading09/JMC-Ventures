@@ -4,8 +4,18 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+// Demo accounts must never be created by accident on a real server.
+if (process.env.ALLOW_DEMO_SEED !== 'true') {
+    console.error('Refusing to seed: set ALLOW_DEMO_SEED=true to create demo data (local dev only).');
+    process.exit(1);
+}
+if (!process.env.DATABASE_URL) {
+    console.error('FATAL: DATABASE_URL is not set.');
+    process.exit(1);
+}
+
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || 'postgres://powerguard_user:powerguard_password@localhost:5432/powerguard_db',
+    connectionString: process.env.DATABASE_URL,
 });
 
 async function seed() {

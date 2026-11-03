@@ -7,6 +7,13 @@ import { Pool } from 'pg';
 // Load .env from the service directory regardless of CWD
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
+// Crash early rather than run against a guessed database
+if (!process.env.DATABASE_URL) {
+  console.error('FATAL: DATABASE_URL is not set.');
+  console.error('       Set it in services/auth-service/.env (see .env.example at the repo root).');
+  process.exit(1);
+}
+
 const app = express();
 const port = process.env.PORT || 3001;
 
@@ -15,7 +22,7 @@ app.use(express.json());
 
 // Database Connection
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgres://powerguard_user:powerguard_password@localhost:5432/powerguard_db',
+  connectionString: process.env.DATABASE_URL,
 });
 
 app.get('/health', (req, res) => {

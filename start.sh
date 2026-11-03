@@ -13,10 +13,6 @@ echo "🗄️  Making sure Docker services are running (TimescaleDB, Redis, Mosq
 sudo docker compose up -d 2>/dev/null || sudo docker-compose up -d
 sleep 5
 
-# echo "🌱 Seeding the database with demo data..."
-# DATABASE_URL="postgres://powerguard_user:powerguard_password@localhost:5432/powerguard_db" npx tsx services/auth-service/src/seed.ts
-# echo "✅ Seed complete!"
-
 echo "🚀 Starting Auth Service on port 3001..."
 nohup npx tsx services/auth-service/src/main.ts > /tmp/auth.log 2>&1 &
 sleep 2
@@ -28,8 +24,7 @@ sleep 2
 echo "Ingestion Service PID: $!"
 
 echo "🚀 Starting API Gateway on port 8081..."
-DATABASE_URL="postgres://powerguard_user:powerguard_password@localhost:5432/powerguard_db" \
-  FRONTEND_URL="http://35.179.107.189:3000" \
+FRONTEND_URL="http://35.179.107.189:3000" \
   AUTH_SERVICE_URL="http://localhost:3001" \
   INGESTION_SERVICE_URL="http://localhost:3002" \
   nohup npx tsx services/api-gateway/src/main.ts > /tmp/gateway.log 2>&1 &
@@ -51,8 +46,6 @@ echo "============================================================"
 echo "✅ Grid-IQ is LIVE!"
 echo "   Dashboard:  http://35.179.107.189:3000"
 echo "   API:        http://35.179.107.189:8081/health"
-echo ""
-echo "   Login with: demo@grid-iq.co.za / password123"
 echo "============================================================"
 echo ""
 echo "Tip: Run 'cat /tmp/auth.log' to check the auth service logs."

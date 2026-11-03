@@ -2,8 +2,6 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { Pool } from 'pg';
 import cron from 'node-cron';
-import { Queue, Worker } from 'bullmq';
-import IORedis from 'ioredis';
 import { initMqtt } from './mqtt';
 import { computeAndStoreSiteScore, getLatestSiteScore } from './energy-score';
 import { assessPowerQuality } from './power-quality';
@@ -23,16 +21,22 @@ import {
 // Load .env from the service directory regardless of CWD
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
-// Redis Connection
-const redisConnection = new IORedis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: Number(process.env.REDIS_PORT) || 6379,
-    maxRetriesPerRequest: null,
-});
+// Crash early rather than run against a guessed database or an insecure secret
+if (!process.env.DATABASE_URL) {
+    console.error('FATAL: DATABASE_URL is not set.');
+    console.error('       Set it in services/ingestion-service/.env (see .env.example at the repo root).');
+    process.exit(1);
+}
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET || JWT_SECRET === 'gridiq-super-secret-key-change-in-prod' || JWT_SECRET.length < 32) {
+    console.error('FATAL: JWT_SECRET is missing, too short, or still set to the default placeholder.');
+    console.error('       Set a strong secret (≥32 chars) in services/ingestion-service/.env');
+    process.exit(1);
+}
 
 // Database Connection
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || 'postgres://powerguard_user:powerguard_password@localhost:5432/powerguard_db',
+    connectionString: process.env.DATABASE_URL,
     max: 20, // Connection pool size from env
     idleTimeoutMillis: 30000,
 });
@@ -349,121 +353,6 @@ const pool = new Pool({
     await initMqtt(pool);
 })();
 
-// Queue Definition
-const ingestionQueue = new Queue('ingestion-queue', { connection: redisConnection });
-
-// Worker Definition (Consumer)
-const worker = new Worker('ingestion-queue', async (job) => {
-    const { meterId } = job.data;
-    const client = await pool.connect();
-
-    try {
-        await client.query('BEGIN'); // Start transaction for atomicity
-
-        // 1. Fetch Tenant ID and their Alert Settings for this meter
-        const settingsQuery = `
-            SELECT s.tenant_id, ss.alert_max_kw as max_peak_kw, ss.alert_min_v as min_voltage, ss.alert_max_thd as max_thd
-            FROM meters m
-            JOIN sites s ON m.site_id = s.id
-            LEFT JOIN site_settings ss ON s.id = ss.site_id
-            WHERE m.id = $1
-        `;
-        const settingsRes = await client.query(settingsQuery, [meterId]);
-        const tenantInfo = settingsRes.rows[0];
-
-        if (!tenantInfo) {
-            throw new Error(`Meter ${meterId} not found or has no linked tenant.`);
-        }
-
-        // 2. Generate/Simulate Reading (or read from real hardware payload)
-        const voltage = 400 + (Math.random() * 20 - 10); // ~400V (3-phase line-to-line base)
-        const power = 200 + Math.random() * 800; // 200 - 1000 kW
-        const current = (power * 1000) / (voltage * 1.732 * 0.95);
-
-        // 3. Insert Reading into Hypertable
-        const insertQuery = `
-            INSERT INTO meter_readings (
-                time, meter_id, voltage_a, current_a, power_active_total
-            ) VALUES (
-                NOW(), $1, $2, $3, $4
-            )
-        `;
-        await client.query(insertQuery, [meterId, voltage, current, power]);
-
-        // 4. Alerting Engine: Evaluate Thresholds
-        if (tenantInfo.max_peak_kw && power > Number(tenantInfo.max_peak_kw)) {
-            await client.query(`
-                INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
-                VALUES ($1, $2, 'PEAK_DEMAND', 'WARNING', $3)
-             `, [tenantInfo.tenant_id, meterId, `Peak demand threshold exceeded: ${power.toFixed(2)}kW (Limit: ${tenantInfo.max_peak_kw}kW)`]);
-        }
-
-        if (tenantInfo.min_voltage && voltage < Number(tenantInfo.min_voltage)) {
-            await client.query(`
-               INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
-               VALUES ($1, $2, 'VOLTAGE_SAG', 'CRITICAL', $3)
-            `, [tenantInfo.tenant_id, meterId, `Critical voltage sag detected: ${voltage.toFixed(2)}V (Min Limit: ${tenantInfo.min_voltage}V). Machinery at risk.`]);
-        }
-
-        await client.query('COMMIT');
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error(`Error processing job ${job.id}:`, err);
-        throw err;
-    } finally {
-        client.release();
-    }
-}, {
-    connection: redisConnection,
-    concurrency: 50 // Process 50 jobs in parallel
-});
-
-worker.on('completed', (job) => {
-    // console.log(`Job ${job.id} completed!`);
-});
-
-worker.on('failed', (job, err) => {
-    console.error(`Job ${job?.id} failed with ${err.message}`);
-});
-
-// Producer Logic (Scheduler)
-async function scheduleIngestion() {
-    // console.log('Scheduling ingestion jobs...');
-    const client = await pool.connect();
-    try {
-        // Get all meters
-        const metersRes = await client.query('SELECT id FROM meters');
-        const meters = metersRes.rows;
-
-        if (meters.length === 0) {
-            // console.log('No meters found. Skipping scheduling.');
-            return;
-        }
-
-        // Add jobs to queue using bulk add for efficiency
-        const jobs = meters.map(meter => ({
-            name: 'ingest-meter',
-            data: { meterId: meter.id },
-            opts: { removeOnComplete: true } // Don't clog Redis with completed jobs
-        }));
-
-        await ingestionQueue.addBulk(jobs);
-        // console.log(`Scheduled ${jobs.length} ingestion jobs.`);
-    } catch (err) {
-        console.error('Scheduling error:', err);
-    } finally {
-        client.release();
-    }
-}
-
-// -----------------------------------------------------------------------------
-// VIRTUAL METER LOAD GENERATOR (DISABLED FOR PRODUCTION HARDWARE)
-// -----------------------------------------------------------------------------
-// Run scheduler every 5 seconds to simulate high frequency enterprise data
-// cron.schedule('*/5 * * * * *', () => {
-//     scheduleIngestion();
-// });
-
 // -----------------------------------------------------------------------------
 // ENERGY SCORE ENGINE — recalculates every 5 minutes for all sites
 // -----------------------------------------------------------------------------
@@ -623,12 +512,6 @@ import jwt from 'jsonwebtoken';
 
 const app = express();
 const port = process.env.PORT || 3002;
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET || JWT_SECRET === 'gridiq-super-secret-key-change-in-prod' || JWT_SECRET.length < 32) {
-    console.error('FATAL: JWT_SECRET is missing, too short, or still set to the default placeholder.');
-    console.error('       Set a strong secret (≥32 chars) in services/ingestion-service/.env');
-    process.exit(1);
-}
 
 app.use(cors());
 app.use(express.json());
@@ -3091,4 +2974,4 @@ app.listen(port, () => {
     console.log(`Ingestion Service API running on port ${port}`);
 });
 
-console.log('Ingestion Service (Queue Mode) started.');
+console.log('Ingestion Service started.');

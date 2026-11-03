@@ -27,26 +27,17 @@ npm install
 ```
 
 ### 4. Setup Environment Variables
-Create a `.env` file in the root directory:
+Every variable is documented in `.env.example` at the repo root. Copy it and
+fill in real values (generate secrets with `openssl rand -hex 32`):
 ```bash
-# Database Configuration
-DATABASE_URL="postgres://powerguard_user:powerguard_password@localhost:5432/powerguard_db"
-POSTGRES_USER="powerguard_user"
-POSTGRES_PASSWORD="powerguard_password"
-POSTGRES_DB="powerguard_db"
-
-# JWT Secrets
-JWT_SECRET="powerguard-super-secret-key-change-in-prod"
-
-# Service Ports
-PORT_API_GATEWAY=8081
-PORT_AUTH_SERVICE=3001
-PORT_INGESTION_SERVICE=3002
-
-# Redis
-REDIS_HOST="localhost"
-REDIS_PORT=6379
+cp .env.example .env
+cp .env.example services/auth-service/.env
+cp .env.example services/ingestion-service/.env
+cp .env.example services/api-gateway/.env
+echo "NEXT_PUBLIC_API_URL=http://localhost:8081" > apps/web/.env.local
 ```
+Services refuse to start without `DATABASE_URL` and a 32+ character `JWT_SECRET`.
+`JWT_SECRET` must be identical in every service.
 
 ### 5. Start Infrastructure (Databases)
 Make sure Docker Desktop is running, then start the database containers:
@@ -58,9 +49,11 @@ docker-compose up -d
 ### 6. Seed the Database
 Populate the database with initial users and meter data:
 ```bash
-npx ts-node scripts/seed.ts
+ALLOW_DEMO_SEED=true DEMO_USER_PASSWORD='<choose-a-local-password>' \
+  DATABASE_URL="<your DATABASE_URL>" npx tsx services/auth-service/src/seed.ts
 ```
-*(User: `demo@powerguard.com` / Password: `demo123`)*
+*(Local dev only. Creates `demo@grid-iq.co.za` with the password you chose.
+The seed scripts refuse to run unless `ALLOW_DEMO_SEED=true`.)*
 
 ### 7. Run the Application
 Start all services and the frontend in development mode:

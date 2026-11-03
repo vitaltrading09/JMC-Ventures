@@ -1,0 +1,12 @@
+# Mosquitto password file — TEMPLATE ONLY. Do not put hashes here.
+#
+# The real file lives at mosquitto/config/passwd (gitignored) and is created
+# on each machine with mosquitto_passwd, which writes salted hashes:
+#
+#   # first user: -c creates the file
+#   docker compose run --rm mosquitto mosquitto_passwd -c -b /mosquitto/config/passwd <ingest-user> '<strong-password>'
+#   # every further user: no -c (it would wipe the file)
+#   docker compose run --rm mosquitto mosquitto_passwd -b /mosquitto/config/passwd <meter-user> '<strong-password>'
+#
+# Generate passwords with:  openssl rand -hex 24
+# Restart mosquitto after editing:  docker compose restart mosquitto

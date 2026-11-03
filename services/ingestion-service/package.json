@@ -11,20 +11,18 @@
     },
     "dependencies": {
         "@types/cors": "^2.8.19",
-        "openai": "^4.67.3",
         "@types/express": "^5.0.6",
         "@types/jsonwebtoken": "^9.0.10",
         "axios": "^1.6.7",
-        "bullmq": "^5.67.3",
         "cors": "^2.8.6",
         "csv-parser": "^3.2.0",
         "dotenv": "^16.4.1",
         "express": "^5.2.1",
-        "ioredis": "^5.9.2",
         "jsonwebtoken": "^9.0.3",
         "mqtt": "^5.15.0",
         "multer": "^2.0.2",
         "node-cron": "^3.0.3",
+        "openai": "^4.67.3",
         "pg": "^8.11.3"
     },
     "devDependencies": {

@@ -15,6 +15,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Fails the build if a credential lands in the tree. Uses the pinned binary
+  # rather than gitleaks-action, which needs a paid licence for org repos.
+  secrets-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GITLEAKS_VERSION: '8.21.2'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan working tree
+        run: gitleaks dir . --config .gitleaks.toml --redact --no-banner
+
+      # Only the commits this PR adds; older history is covered by rotating
+      # the credentials it contains, not by blocking every build on it.
+      - name: Scan PR commits
+        if: github.event_name == 'pull_request'
+        run: |
+          gitleaks git . --config .gitleaks.toml --redact --no-banner \
+            --log-opts="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+
   build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -24,9 +24,8 @@ PowerGuard is a **multi-tenant power quality monitoring and AI advisory SaaS pla
 | Ingestion Service | Node.js + Express, MQTT listener, AI engine, port **3002** |
 | API Gateway | Node.js + Express, reverse proxy, port **8081** |
 | Database | PostgreSQL + TimescaleDB (hypertable for `meter_readings`) |
-| Cache / Queues | Redis + BullMQ |
 | MQTT Broker | Eclipse Mosquitto, ports **1883** (TCP) / **9001** (WS) |
-| AI | Anthropic Claude (recommendations) + OpenAI (chat) |
+| AI | OpenAI (recommendations, narratives, chat) |
 
 ---
 
@@ -42,7 +41,7 @@ Browser (Next.js :3000)
                             │
                     ┌───────┼───────┐
                     ▼       ▼       ▼
-              TimescaleDB  Redis  Mosquitto
+              TimescaleDB         Mosquitto
                             │
                      Acuvim II meters
                    (MQTT topic: acuvim/{meter_id}/telemetry)
@@ -127,35 +126,27 @@ After clicking **Add Meter** and saving, a confirmation modal appears showing th
 
 ### First-time setup
 
-**1. Create `.env` files** (not in git — copy from `.env.example`):
+**1. Create `.env` files** (all gitignored). The root `.env.example` is the single
+list of every variable; copy it and replace the placeholders:
 
 ```bash
-cp services/auth-service/.env.example services/auth-service/.env
-cp services/ingestion-service/.env.example services/ingestion-service/.env
-# Add your ANTHROPIC_API_KEY to services/ingestion-service/.env
+cp .env.example .env                              # docker compose (POSTGRES_*)
+cp .env.example services/auth-service/.env
+cp .env.example services/ingestion-service/.env
+cp .env.example services/api-gateway/.env
+echo "NEXT_PUBLIC_API_URL=http://localhost:8081" > apps/web/.env.local
 ```
 
-Create `services/api-gateway/.env`:
-```env
-JWT_SECRET=powerguard_dev_secret_change_in_production_min32
-PORT=8081
-FRONTEND_URL=http://localhost:3000
-AUTH_SERVICE_URL=http://localhost:3001
-INGESTION_SERVICE_URL=http://localhost:3002
-```
-
-Create `apps/web/.env.local`:
-```env
-NEXT_PUBLIC_API_URL=http://localhost:8081
-```
-
-> ⚠️ The JWT_SECRET **must be identical** across all three `.env` files.
+> ⚠️ `JWT_SECRET` (32+ chars) **must be identical** in every service. auth-service
+> and ingestion-service exit at startup if `DATABASE_URL` or `JWT_SECRET` is
+> missing; the gateway exits without `JWT_SECRET`. There are no credential
+> fallbacks in code.
 
 **2. Start Docker infrastructure:**
 ```bash
 docker compose up -d
 # Wait 15 seconds for TimescaleDB to initialise
-docker ps   # should show: powerguard-db, powerguard-redis, powerguard-mqtt
+docker ps   # should show: powerguard-db, powerguard-mqtt (Redis is no longer used)
 ```
 
 **3. Install dependencies:**
@@ -163,10 +154,12 @@ docker ps   # should show: powerguard-db, powerguard-redis, powerguard-mqtt
 npm install
 ```
 
-**4. Seed the database:**
+**4. Seed the database (local dev only):**
 ```bash
-DATABASE_URL="postgres://powerguard_user:powerguard_password@localhost:5432/powerguard_db" npx tsx scripts/seed.ts
+ALLOW_DEMO_SEED=true DEMO_USER_PASSWORD='<choose one>' DATABASE_URL='<from your .env>' npx tsx services/auth-service/src/seed.ts
 ```
+The seed scripts (`services/auth-service/src/seed.ts`, `scripts/seed.ts`,
+`scripts/fix_password.ts`) refuse to run without `ALLOW_DEMO_SEED=true`. Never set it on a server.
 
 **5. Start all services:**
 ```bash
@@ -175,11 +168,11 @@ npm run dev
 ```
 
 **6. Open the app:** `http://localhost:3000`  
-Check `scripts/seed.ts` for demo login credentials.
+Log in as `demo@grid-iq.co.za` with the `DEMO_USER_PASSWORD` you chose.
 
 ### Test a meter reading via MQTT
 ```bash
-mosquitto_pub -h localhost -u acuvim_meter -P change_me_in_production \
+mosquitto_pub -h localhost -u <mqtt-user> -P '<mqtt-password>' \
   -t "acuvim/YOUR_METER_UUID/telemetry" \
   -m '{"V1": 230, "I1": 50, "Psum_kW": 11.5, "PF": 0.95, "Freq_Hz": 50}'
 ```
@@ -235,6 +228,17 @@ Target: **AWS Lightsail** (af-south-1, Cape Town)
 
 ---
 
+## Secrets and repo hygiene
+
+- No credential is ever committed. Real values live in gitignored `.env` files;
+  `.env.example` (repo root) holds placeholders only.
+- Mosquitto runtime files (`mosquitto/config/passwd`, `mosquitto/data/`, `mosquitto/log/`)
+  are gitignored. Create the password file per machine (`mosquitto/config/passwd.example`).
+- `apps/web/.env.production` was removed. `NEXT_PUBLIC_API_URL` is supplied at build
+  time (on the legacy AWS box: `apps/web/.env.production.local`).
+- CI runs a gitleaks scan (`.gitleaks.toml`) on the tree and on PR commits.
+- The migration and fleet plan is `docs/planning/GRIDIQ_ORACLE_PLAN.md`.
+
 ## Code Conventions
 
 - **API calls:** All frontend calls go through `NEXT_PUBLIC_API_URL` (the API gateway). Never call auth/ingestion services directly.
@@ -253,8 +257,7 @@ Target: **AWS Lightsail** (af-south-1, Cape Town)
 
 ```
 MQTT topic:        acuvim/{meter_id}/telemetry
-MQTT user:         acuvim_meter
-MQTT password:     change_me_in_production  (dev default)
+MQTT credentials:  mosquitto/config/passwd (gitignored; see passwd.example)
 MQTT port:         1883 (TCP) / 9001 (WS)
 DB name:           powerguard_db
 DB user:           powerguard_user
