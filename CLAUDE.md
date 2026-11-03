@@ -178,8 +178,35 @@ bash deploy/status.sh                     # every service healthy
 ALLOW_DEMO_SEED=true DEMO_USER_PASSWORD='<choose one>'   DATABASE_URL='postgres://<POSTGRES_USER>:<POSTGRES_PASSWORD>@localhost:5432/<POSTGRES_DB>'   npx tsx services/auth-service/src/seed.ts
 ```
 The seed scripts (`services/auth-service/src/seed.ts`, `scripts/seed.ts`,
-`scripts/fix_password.ts`) refuse to run without `ALLOW_DEMO_SEED=true`. Never set it on a server.
+`scripts/fix_password.ts`, `scripts/seed-readings.ts`) refuse to run without `ALLOW_DEMO_SEED=true`. Never set it on a server.
 Log in as `demo@grid-iq.co.za` with the `DEMO_USER_PASSWORD` you chose.
+
+**Synthetic readings (local dev only).** There is no production data, so
+`scripts/seed-readings.ts` fills `meter_readings` for the 5 seeded demo meters
+(found by their `DEMO-*` serials; nothing else is touched). Run it after the
+seed, with the stack up (the api role must have bootstrapped the schema):
+```bash
+ALLOW_DEMO_SEED=true DATABASE_URL='postgres://<POSTGRES_USER>:<POSTGRES_PASSWORD>@localhost:5432/<POSTGRES_DB>'   npx tsx scripts/seed-readings.ts
+```
+- Default: 90 days ending now at 5-minute resolution. Options: `--days N`,
+  `--interval M`, `--end ISO`, `--alert-days N` (0 = no alerts), `--only hq,mall`, `--dry-run`.
+- Re-running is safe and only tops the window up to now: `ON CONFLICT (meter_id, time) DO NOTHING`,
+  deterministic values, energy register integrated from a fixed epoch. It never updates or
+  deletes readings. Keep `--interval` the same across runs. After a profile change, new rows
+  are re-based onto the stored register so it stays monotonic; stored rows keep their old curve
+  (wipe `.data/` and re-seed for a clean set).
+- Every row has `time_source = 'SIMULATED'`, `device_time = time`. Simulated real-time alerts
+  (THD, sags, MDI, peak kW; MQTT never sees these rows) start with `[SIMULATED]`.
+- Blank `site_settings` (Eskom TOU tariffs, contracted MDI, demand interval, NRS 048 alert limits)
+  and meter profiles (site type, load types) are filled in; values already set are kept.
+- Sites: Headquarters is healthy. Cape Town Factory: 24 h PF ≈ 0.75 and weekday demand spikes over
+  the 1000 kVA MDI. Durban: ~30 % phase current imbalance. Sandton Mall: voltage THD > 8 % while
+  trading. Pretoria Data Center: daily sags below 207 V. The jobs role scores them within 5 min and
+  the predictive scan (every 30 min) flags the factory and Durban.
+- Profiles and curves: `services/ingestion-service/src/demo-profiles.ts`, tested in
+  `services/ingestion-service/test/demo-profiles.test.js`.
+- Data older than 35 days is in compressed chunks after the policy runs; the script decompresses
+  only the chunks its new rows land in before inserting (same as CSV import).
 
 ### Day-to-day commands
 
