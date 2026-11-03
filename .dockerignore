@@ -1,0 +1,23 @@
+# Build context is the repo root. Keep secrets, data and local build output out.
+.git
+.github
+.claude
+.data
+local
+**/node_modules
+**/.next
+**/dist
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!**/.env.example
+mosquitto/data
+mosquitto/log
+mosquitto/config/passwd
+mosquitto/config/acl
+**/uploads
+**/*.pem
+**/*.log
+docs
+deploy
+scripts

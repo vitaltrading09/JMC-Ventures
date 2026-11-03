@@ -18,7 +18,7 @@ import HealthCheckReport, {
 // links back into the dashboard, and no AI question box.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 type FailureReason = "not_found" | "expired" | "revoked" | "rate_limited" | "error";
 

@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/Card";
 import { Save, AlertCircle, Loader2, Building2 } from "lucide-react";
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 export default function AlertsPage() {
     const [sites, setSites] = useState<any[]>([]);

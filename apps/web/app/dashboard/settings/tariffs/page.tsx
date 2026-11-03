@@ -40,7 +40,7 @@ export default function TariffsPage() {
     useEffect(() => {
         const fetchSites = async () => {
             try {
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites`, {
+                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/sites`, {
                     credentials: 'include',
                 });
                 const data = await res.json();
@@ -63,7 +63,7 @@ export default function TariffsPage() {
 
         const fetchSettings = async () => {
             try {
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${selectedSiteId}/settings`, {
+                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/sites/${selectedSiteId}/settings`, {
                     credentials: 'include',
                 });
                 const data = await res.json();
@@ -99,7 +99,7 @@ export default function TariffsPage() {
         setSaving(true);
         setSuccess(false);
         try {
-            await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/sites/${selectedSiteId}/settings`, {
+            await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/sites/${selectedSiteId}/settings`, {
                 method: 'POST',
                 credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },

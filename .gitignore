@@ -44,3 +44,9 @@ yarn-error.log*
 mosquitto/config/passwd
 mosquitto/data/
 mosquitto/log/
+
+# Docker Compose runtime data and local-only files
+.data/
+docker-compose.override.yml
+mosquitto/config/acl
+mosquitto/config/conf.d/*.conf

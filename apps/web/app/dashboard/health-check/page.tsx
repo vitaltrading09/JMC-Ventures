@@ -18,7 +18,7 @@ interface ShareLink {
     created_at: string; is_live: boolean;
 }
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 export default function HealthCheckPage() {
     const [meters,   setMeters]   = useState<Meter[]>([]);

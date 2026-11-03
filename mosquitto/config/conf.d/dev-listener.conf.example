@@ -1,0 +1,5 @@
+# LOCAL DEV ONLY. Plain MQTT listener inside the container on 1883; the
+# compose override publishes it to 127.0.0.1:1883 on the host only.
+#   cp mosquitto/config/conf.d/dev-listener.conf.example mosquitto/config/conf.d/dev-listener.conf
+# Never create this file on a server.
+listener 1883

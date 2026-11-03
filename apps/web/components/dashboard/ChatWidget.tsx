@@ -28,7 +28,7 @@ export function ChatWidget() {
         if (!isOpen || context) return;
         const fetchContext = async () => {
             try {
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/ai-context`, {
+                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/ai-context`, {
                     credentials: 'include',
                 });
                 if (res.ok) {
@@ -64,7 +64,7 @@ export function ChatWidget() {
         try {
             // First, proactively fetch the absolute freshest context so the AI has real-time data
             let currentContext = context;
-            const ctxRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/ai-context`, {
+            const ctxRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/ai-context`, {
                 credentials: 'include',
             });
             if (ctxRes.ok) {

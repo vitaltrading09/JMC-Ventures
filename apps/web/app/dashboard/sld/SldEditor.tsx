@@ -32,7 +32,7 @@ import PdfBackdropNode from "./PdfBackdropNode";
 // Avoids the build-time bundler dance for the worker file.
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 interface Site  { id: string; name: string; }
 interface Meter {

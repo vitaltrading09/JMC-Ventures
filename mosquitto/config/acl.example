@@ -1,0 +1,10 @@
+# Mosquitto ACL — TEMPLATE. Copy to mosquitto/config/acl (gitignored):
+#   cp mosquitto/config/acl.example mosquitto/config/acl
+# The ingest username must match MQTT_USERNAME in .env.
+
+# meters: each user may only publish its own telemetry topic
+pattern write acuvim/%u/telemetry
+
+# ingest service
+user gridiq-ingest
+topic read acuvim/+/telemetry

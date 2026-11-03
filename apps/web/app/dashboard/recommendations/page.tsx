@@ -34,7 +34,7 @@ interface Site  { id: string; name: string; }
 interface Meter { id: string; name: string; site_id: string; is_active?: boolean; }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 const TYPE_META: Record<string, { label: string; icon: React.ElementType; colour: string }> = {
     POWER_FACTOR_CORRECTION: { label: "Power Factor",     icon: Zap,           colour: "text-yellow-400 bg-yellow-500/10 border-yellow-500/20" },

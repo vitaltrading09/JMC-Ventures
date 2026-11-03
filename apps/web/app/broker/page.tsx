@@ -14,7 +14,7 @@ import {
 // the first row. A broker with forty clients should not have to hunt.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 interface Client {
     tenant_id: string;

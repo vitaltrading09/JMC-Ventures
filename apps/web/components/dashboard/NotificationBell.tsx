@@ -24,7 +24,7 @@ export function NotificationBell() {
     useEffect(() => {
         const fetchAlerts = async () => {
             try {
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/alerts`, {
+                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/alerts`, {
                     credentials: 'include',
                 });
                 if (res.ok) {
@@ -55,7 +55,7 @@ export function NotificationBell() {
 
     const markAsRead = async (id: string) => {
         try {
-            await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8081'}/ingestion/alerts/${id}/read`, {
+            await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/alerts/${id}/read`, {
                 method: 'POST',
                 credentials: 'include',
             });

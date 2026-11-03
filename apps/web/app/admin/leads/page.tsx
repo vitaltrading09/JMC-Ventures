@@ -28,7 +28,7 @@ interface Lead {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8081";
+const API = process.env.NEXT_PUBLIC_API_URL;
 
 const STATUS_CONFIG: Record<LeadStatus, { label: string; icon: React.ElementType; cls: string; bg: string }> = {
     NEW:       { label: "New",       icon: Clock,         cls: "text-blue-400   border-blue-500/30",   bg: "bg-blue-500/10" },

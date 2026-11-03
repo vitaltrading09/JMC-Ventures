@@ -19,12 +19,14 @@ PowerGuard is a **multi-tenant power quality monitoring and AI advisory SaaS pla
 
 | Layer | Technology |
 |---|---|
-| Frontend | Next.js 14, TypeScript, Tailwind CSS, Recharts |
-| Auth Service | Node.js + Express, JWT + bcrypt, port **3001** |
-| Ingestion Service | Node.js + Express, MQTT listener, AI engine, port **3002** |
-| API Gateway | Node.js + Express, reverse proxy, port **8081** |
-| Database | PostgreSQL + TimescaleDB (hypertable for `meter_readings`) |
-| MQTT Broker | Eclipse Mosquitto, ports **1883** (TCP) / **9001** (WS) |
+| Runtime | Docker Compose (one project), Node 22 images for linux/arm64 + linux/amd64 |
+| Edge | Caddy 2.8.4: TLS on **80/443** for `APP_DOMAIN` and `MQTT_DOMAIN` |
+| Frontend | Next.js 14.2 (standalone output), TypeScript, Tailwind CSS, Recharts, port **3000** (internal) |
+| Auth Service | Node.js + Express, JWT + bcrypt, port **3001** (internal) |
+| Ingestion Service | Node.js + Express, one image run as `api` (:3002) / `ingest` / `jobs` containers via `ROLES` |
+| API Gateway | Node.js + Express, reverse proxy, port **8081** (internal, behind Caddy at `/api`) |
+| Database | PostgreSQL 16 + TimescaleDB 2.17.2 (hypertable for `meter_readings`) |
+| MQTT Broker | Eclipse Mosquitto 2.0.22, **8883 TLS only** (local dev adds 127.0.0.1:1883) |
 | AI | OpenAI (recommendations, narratives, chat) |
 
 ---
@@ -32,20 +34,41 @@ PowerGuard is a **multi-tenant power quality monitoring and AI advisory SaaS pla
 ## Architecture
 
 ```
-Browser (Next.js :3000)
-        │
-        ▼
-  API Gateway (:8081)
-    ├── /auth/*  → auth-service (:3001)
-    └── /ingestion/* → ingestion-service (:3002)
-                            │
-                    ┌───────┼───────┐
-                    ▼       ▼       ▼
-              TimescaleDB         Mosquitto
-                            │
-                     Acuvim II meters
-                   (MQTT topic: acuvim/{meter_id}/telemetry)
+Browser ──https──▶ caddy (:443, APP_DOMAIN)
+                     ├── /api/chat*  → web:3000   (Next.js route, not the gateway)
+                     ├── /api/*      → gateway:8081 (prefix stripped)
+                     │                   ├── /auth/*      → auth:3001
+                     │                   └── /ingestion/* → api:3002   (ROLES=api)
+                     └── everything else → web:3000
+
+Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES=ingest) ──▶ timescaledb
+  topic acuvim/{meter_id}/telemetry                  jobs (ROLES=jobs: cron) ──▶ timescaledb
+                                                     migrate (one-shot)  ──▶ timescaledb
 ```
+
+- Only `caddy` (80/443) and `mosquitto` (8883) publish host ports. Everything
+  else talks over the compose network.
+- **Roles** (`services/ingestion-service/src/roles.ts`): `ROLES` is a comma list
+  of `api`, `ingest`, `jobs` (default all three, for `npm run dev`). Only `api`
+  calls `app.listen` and runs the startup schema bootstrap (main.ts
+  `bootstrapSchema` plus mqtt.ts `bootstrapMqttSchema`). Only `ingest` calls
+  `initMqtt`. Only `jobs` calls `registerJobs` (every `cron.schedule`). `ingest`
+  and `jobs` wait until the DB is reachable and the bootstrap has created the
+  objects ingest needs (`ingestSchemaReady`). Without `api` they serve an
+  internal `/health` on `HEALTH_PORT` (9090): MQTT connected / jobs registered.
+- **migrate** (`dist/migrate.js`) is an interim Phase-1 step. It applies
+  `init.sql` only when `tenants` is missing (an empty DB), so it is a no-op on a
+  restored production DB. Phase 2 replaces it with node-pg-migrate.
+- The ingest container reaches the broker as `mqtts://${MQTT_DOMAIN}:8883`.
+  `MQTT_DOMAIN` is a network alias of the mosquitto container, so the TLS
+  hostname matches the certificate without leaving the host.
+- Mosquitto's certificate is Caddy's certificate for `MQTT_DOMAIN`, copied by
+  `deploy/scripts/sync-mqtt-certs.sh` to `${DATA_DIR}/mqtt-certs/`. Mosquitto
+  waits at startup until the certificate is present.
+- Persistent data lives under `${DATA_DIR}` (default `./.data`, `/data` on
+  the server): `pg/ caddy/ caddy-config/ mosquitto/data/ mqtt-certs/ uploads/`.
+- Uploads (CSV staging, SLD PDFs) go to `UPLOAD_DIR` (default `/data/uploads`).
+  Stored SLD paths are relative to it; legacy `uploads/...` rows still resolve.
 
 ---
 
@@ -72,7 +95,7 @@ Browser (Next.js :3000)
 | `/admin` | Admin overview | ✅ Done |
 | `/admin/clients` | Client portfolio deep-dive (scores, sites, meters, leads) | ✅ Done |
 | `/admin/leads` | Leads management | ✅ Done |
-| `/api/chat` | AI chat route (OpenAI — pending migration to Claude) | ✅ Done |
+| `/api/chat` | AI chat route (OpenAI — pending migration to Claude). Caddy routes `/api/chat*` to web, all other `/api/*` to the gateway | ✅ Done |
 
 ### Backend Services
 
@@ -121,62 +144,70 @@ After clicking **Add Meter** and saving, a confirmation modal appears showing th
 
 ### Prerequisites
 - Docker Desktop installed and running (`docker compose` — V2 syntax, space not hyphen)
-- Node.js 18+
-- `mosquitto-clients` for MQTT testing (optional — on Windows use WSL)
+- Node.js 22 (tests, seeding, `npm run dev`)
+- `mosquitto-clients` for MQTT testing (optional — on Windows use WSL, or `docker compose exec mosquitto mosquitto_pub ...`)
 
-### First-time setup
-
-**1. Create `.env` files** (all gitignored). The root `.env.example` is the single
-list of every variable; copy it and replace the placeholders:
+### First-time setup (full stack in Docker — the normal way)
 
 ```bash
-cp .env.example .env                              # docker compose (POSTGRES_*)
-cp .env.example services/auth-service/.env
-cp .env.example services/ingestion-service/.env
-cp .env.example services/api-gateway/.env
-echo "NEXT_PUBLIC_API_URL=http://localhost:8081" > apps/web/.env.local
+cp .env.example .env                                   # replace every change_me
+cp docker-compose.override.yml.example docker-compose.override.yml   # 127.0.0.1-only DB + MQTT ports
+cp mosquitto/config/acl.example mosquitto/config/acl
+cp mosquitto/config/conf.d/dev-listener.conf.example mosquitto/config/conf.d/dev-listener.conf
+# MQTT users (Git Bash: prefix with MSYS_NO_PATHCONV=1). Ingest user = MQTT_USERNAME/MQTT_PASSWORD.
+docker compose run --rm --no-deps --entrypoint mosquitto_passwd mosquitto -c -b /mosquitto/config/passwd gridiq-ingest '<MQTT_PASSWORD>'
+docker compose run --rm --no-deps --entrypoint mosquitto_passwd mosquitto -b /mosquitto/config/passwd <meter-uuid> '<pw>'
+
+docker compose up -d --build
+bash deploy/scripts/sync-mqtt-certs.sh    # first run: copies Caddy's mqtt.localhost cert to Mosquitto
+bash deploy/status.sh                     # every service healthy
 ```
 
-> ⚠️ `JWT_SECRET` (32+ chars) **must be identical** in every service. auth-service
-> and ingestion-service exit at startup if `DATABASE_URL` or `JWT_SECRET` is
-> missing; the gateway exits without `JWT_SECRET`. There are no credential
-> fallbacks in code.
+- `.env` defaults: `APP_DOMAIN=localhost`, `MQTT_DOMAIN=mqtt.localhost`, `DATA_DIR=./.data`.
+  Caddy issues both certificates from its local CA. The override sets
+  `MQTT_CA_CERT=/mqtt-certs/ca.crt` so `ingest` trusts that CA.
+- Compose derives `DATABASE_URL`, service URLs, `FRONTEND_URL` and `MQTT_BROKER_URL`
+  itself. The web image is built with `NEXT_PUBLIC_API_URL=https://${APP_DOMAIN}/api`
+  (build arg). Changing `APP_DOMAIN` means rebuilding `web`.
+- `JWT_SECRET` (32+ chars) is shared by every container. There are no
+  credential fallbacks in code; services exit at startup without `DATABASE_URL` / `JWT_SECRET`.
+- Open `https://localhost` and accept the local-CA warning.
 
-**2. Start Docker infrastructure:**
+**Seed the database (local dev only)**, through the override's 127.0.0.1:5432:
 ```bash
-docker compose up -d
-# Wait 15 seconds for TimescaleDB to initialise
-docker ps   # should show: powerguard-db, powerguard-mqtt (Redis is no longer used)
-```
-
-**3. Install dependencies:**
-```bash
-npm install
-```
-
-**4. Seed the database (local dev only):**
-```bash
-ALLOW_DEMO_SEED=true DEMO_USER_PASSWORD='<choose one>' DATABASE_URL='<from your .env>' npx tsx services/auth-service/src/seed.ts
+ALLOW_DEMO_SEED=true DEMO_USER_PASSWORD='<choose one>'   DATABASE_URL='postgres://<POSTGRES_USER>:<POSTGRES_PASSWORD>@localhost:5432/<POSTGRES_DB>'   npx tsx services/auth-service/src/seed.ts
 ```
 The seed scripts (`services/auth-service/src/seed.ts`, `scripts/seed.ts`,
 `scripts/fix_password.ts`) refuse to run without `ALLOW_DEMO_SEED=true`. Never set it on a server.
-
-**5. Start all services:**
-```bash
-npm run dev
-# Starts: Next.js :3000, auth-service :3001, ingestion-service :3002, api-gateway :8081
-```
-
-**6. Open the app:** `http://localhost:3000`  
 Log in as `demo@grid-iq.co.za` with the `DEMO_USER_PASSWORD` you chose.
 
-### Test a meter reading via MQTT
+### Day-to-day commands
+
 ```bash
-mosquitto_pub -h localhost -u <mqtt-user> -P '<mqtt-password>' \
-  -t "acuvim/YOUR_METER_UUID/telemetry" \
-  -m '{"V1": 230, "I1": 50, "Psum_kW": 11.5, "PF": 0.95, "Freq_Hz": 50}'
+bash deploy/deploy.sh                 # git pull, build, migrate, up -d, cert sync, health summary
+bash deploy/status.sh                 # state + health
+bash deploy/logs.sh ingest            # follow one service
+docker compose stop api               # ingestion keeps running: api, ingest and jobs are separate
+bash deploy/scripts/build-multiarch.sh   # buildx linux/arm64 + linux/amd64 for every image
+npm run build && npm test             # web build needs NEXT_PUBLIC_API_URL (apps/web/.env.local)
 ```
-Replace `YOUR_METER_UUID` with a meter UUID from the Sites page (shown in the MQTT config modal after adding a meter).
+
+### Without containers (`npm run dev`)
+
+Copy `.env.example` to `services/{auth-service,ingestion-service,api-gateway}/.env`,
+`echo "NEXT_PUBLIC_API_URL=http://localhost:8081" > apps/web/.env.local`, start
+`docker compose up -d timescaledb migrate caddy mosquitto` (with the override),
+then `npm run dev`. The ingestion service runs all three roles in one process
+(`ROLES` unset), with `UPLOAD_DIR=./uploads`.
+
+### Test a meter reading via MQTT
+Local dev, plain listener on 127.0.0.1:1883 (from the override). The ACL only
+lets a user publish to `acuvim/<its username>/telemetry`, so the meter user
+must be named after the meter UUID:
+```bash
+mosquitto_pub -h localhost -p 1883 -u <meter-uuid> -P '<pw>' -q 1   -t "acuvim/<meter-uuid>/telemetry"   -m '{"V1": 230, "I1": 50, "Psum_kW": 11.5, "PF": 0.95, "Freq_Hz": 50}'
+```
+Over TLS, as a real meter connects: `-h mqtt.localhost -p 8883 --cafile .data/mqtt-certs/ca.crt`.
 
 ### Adding a real Acuvim II meter
 
@@ -188,15 +219,20 @@ Replace `YOUR_METER_UUID` with a meter UUID from the Sites page (shown in the MQ
 
 ---
 
-## Production Deployment (Pending)
+## Production Deployment
 
-Target: **AWS Lightsail** (af-south-1, Cape Town)
+Target: **Oracle Cloud ARM VM (A1), Johannesburg**, running the same Docker
+Compose stack behind Caddy with a real domain. The steps are in
+`docs/planning/GRIDIQ_ORACLE_PLAN.md` Part D. Server `.env`: `APP_DOMAIN=app.<domain>`,
+`MQTT_DOMAIN=mqtt.<domain>`, `DATA_DIR=/data`. Deploy with `bash deploy/deploy.sh`.
 
-- Single Linux instance running full Docker Compose stack
-- Caddy as reverse proxy with automatic TLS
-- Domain: `powerguard.co.za` via Route 53 / Lightsail DNS
-- Secrets via AWS SSM Parameter Store (not hardcoded)
-- Old EC2 at `35.179.107.189` (London) — decommission after migration
+- AWS is gone and no production data is carried over: the Oracle server starts
+  from an empty database. The plan's AWS steps (D5 version check, D7 restore,
+  D9 backfill, D11 decommission) do not apply, and nothing pins TimescaleDB to an
+  old version (currently `2.17.2-pg16`).
+- The old systemd / `npx tsx` runtime files were deleted in Phase 1.
+- Backups (`deploy/backup-db.sh`, `deploy/scripts/backup-*.sh`) still target the legacy
+  `powerguard-db` container; Phase 5 replaces them.
 
 ---
 
@@ -212,11 +248,8 @@ Target: **AWS Lightsail** (af-south-1, Cape Town)
 - Currently uses OpenAI — migrate to Anthropic Claude Sonnet
 - Also inject energy score + top recommendations as context so chat is site-aware
 
-### 3. AWS Lightsail deployment
-- Provision af-south-1 instance
-- Set up Docker Compose with Caddy TLS
-- Migrate secrets to SSM Parameter Store
-- Point powerguard.co.za DNS
+### 3. Oracle migration (plan phases 2–5, then Part D)
+- Phase 2 migrations, Phase 3 1-second ingest hardening, Phase 4 aggregates, Phase 5 backups/monitoring
 
 ### 4. Security hardening
 - Replace localStorage JWT storage with HTTPOnly cookies
@@ -232,10 +265,14 @@ Target: **AWS Lightsail** (af-south-1, Cape Town)
 
 - No credential is ever committed. Real values live in gitignored `.env` files;
   `.env.example` (repo root) holds placeholders only.
-- Mosquitto runtime files (`mosquitto/config/passwd`, `mosquitto/data/`, `mosquitto/log/`)
-  are gitignored. Create the password file per machine (`mosquitto/config/passwd.example`).
+- Mosquitto runtime files (`mosquitto/config/passwd`, `mosquitto/config/acl`,
+  `mosquitto/config/conf.d/*.conf`, `mosquitto/data/`, `mosquitto/log/`) are gitignored.
+  Create them per machine from `passwd.example`, `acl.example`, `conf.d/*.example`.
+- `.data/` (compose data) and `docker-compose.override.yml` (local dev ports) are gitignored.
 - `apps/web/.env.production` was removed. `NEXT_PUBLIC_API_URL` is supplied at build
-  time (on the legacy AWS box: `apps/web/.env.production.local`).
+  time: a Docker build arg (compose sets `https://${APP_DOMAIN}/api`), or `apps/web/.env.local`
+  for `npm run dev`. The build
+  fails if it is unset; no frontend code may hard-code a host or port.
 - CI runs a gitleaks scan (`.gitleaks.toml`) on the tree and on PR commits.
 - The migration and fleet plan is `docs/planning/GRIDIQ_ORACLE_PLAN.md`.
 
@@ -258,7 +295,7 @@ Target: **AWS Lightsail** (af-south-1, Cape Town)
 ```
 MQTT topic:        acuvim/{meter_id}/telemetry
 MQTT credentials:  mosquitto/config/passwd (gitignored; see passwd.example)
-MQTT port:         1883 (TCP) / 9001 (WS)
+MQTT port:         8883 (TLS) — local dev also 127.0.0.1:1883
 DB name:           powerguard_db
 DB user:           powerguard_user
 SA grid factor:    0.92 kg CO₂/kWh
