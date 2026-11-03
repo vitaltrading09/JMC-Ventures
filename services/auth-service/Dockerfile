@@ -14,6 +14,7 @@ COPY apps/web/package.json apps/web/
 COPY services/auth-service/package.json services/auth-service/
 COPY services/api-gateway/package.json services/api-gateway/
 COPY services/ingestion-service/package.json services/ingestion-service/
+COPY packages/db/package.json packages/db/
 
 # ── Production dependencies ────────────────────────────────────────────────
 FROM manifests AS deps
@@ -23,6 +24,7 @@ RUN npm ci -w services/auth-service --include-workspace-root=false --omit=dev --
 # ── Compile TypeScript ─────────────────────────────────────────────────────
 FROM manifests AS build
 RUN npm ci -w services/auth-service --include-workspace-root=false --no-audit --no-fund
+COPY packages/db packages/db
 COPY services/auth-service/tsconfig.json services/auth-service/
 COPY services/auth-service/src services/auth-service/src
 RUN npm run build -w services/auth-service
@@ -35,6 +37,7 @@ COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=deps --chown=node:node /app/services/auth-service/node_modules ./services/auth-service/node_modules
 COPY --chown=node:node services/auth-service/package.json ./services/auth-service/
 COPY --from=build --chown=node:node /app/services/auth-service/dist ./services/auth-service/dist
+COPY --chown=node:node packages/db ./packages/db
 USER node
 WORKDIR /app/services/auth-service
 EXPOSE 3001

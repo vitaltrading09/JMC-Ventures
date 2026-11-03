@@ -1,57 +1,6 @@
 import mqtt from 'mqtt';
 import { Pool } from 'pg';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Schema bootstrap — run by the api role only (see main.ts). The ingest role
-// waits for these objects (ingestSchemaReady in roles.ts) before subscribing,
-// so the ON CONFLICT guard is always in place before the first insert.
-// ─────────────────────────────────────────────────────────────────────────────
-export async function bootstrapMqttSchema(pool: Pool) {
-    const schemaClient = await pool.connect();
-    try {
-        // CT/PT ratio scaling columns (safe to run every startup)
-        await schemaClient.query(`
-            ALTER TABLE meters
-            ADD COLUMN IF NOT EXISTS ct_ratio NUMERIC DEFAULT 1,
-            ADD COLUMN IF NOT EXISTS pt_ratio NUMERIC DEFAULT 1;
-        `);
-
-        // Unique index required for idempotent ON CONFLICT inserts.
-        // TimescaleDB hypertable unique indexes MUST include the time dimension.
-        await schemaClient.query(`
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_meter_readings_unique
-            ON meter_readings (meter_id, time);
-        `);
-
-        // Timestamp provenance. `time` carries the authoritative timestamp used
-        // for all analysis; these record where it came from, so a reading's
-        // origin is always auditable rather than assumed.
-        await schemaClient.query(`
-            ALTER TABLE meter_readings
-            ADD COLUMN IF NOT EXISTS device_time TIMESTAMPTZ,
-            ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW(),
-            ADD COLUMN IF NOT EXISTS time_source VARCHAR(10);
-        `);
-
-        // Dead-letter table: captures payloads we cannot parse or map
-        // so no telemetry is ever silently discarded.
-        await schemaClient.query(`
-            CREATE TABLE IF NOT EXISTS dead_letter_payloads (
-                id          BIGSERIAL PRIMARY KEY,
-                received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                topic       TEXT,
-                raw_payload TEXT,
-                error_msg   TEXT
-            );
-        `);
-
-        console.log('[MQTT] Schema bootstrap complete.');
-    } catch (e) {
-        console.error('[MQTT] Schema bootstrap error (non-fatal):', e);
-    } finally {
-        schemaClient.release();
-    }
-}
+import { MAX_BACKFILL_DAYS } from '@gridiq/db';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main entry point — called once from main.ts (ingest role) after the schema
@@ -349,13 +298,13 @@ export async function initMqtt(pool: Pool): Promise<mqtt.MqttClient> {
 // provenance of every timestamp has to be answerable.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Store-and-forward buffers hold hours, not weeks. This bound is also a hard
-// constraint on the compression policy in main.ts: compression must start
-// strictly LATER than this, because TimescaleDB does not enforce unique indexes
-// on compressed chunks and a backfilled reading landing in one would bypass the
-// ON CONFLICT guard and silently duplicate. Raising this without raising the
-// compression interval to match reintroduces that corruption.
-const MAX_BACKFILL_DAYS  = 30;
+// Store-and-forward buffers hold hours, not weeks. MAX_BACKFILL_DAYS (30,
+// imported from @gridiq/db) is also a hard constraint on the meter_readings
+// compression policy: compression must start strictly LATER than this,
+// because TimescaleDB does not enforce unique indexes on compressed chunks and
+// a backfilled reading landing in one would bypass the ON CONFLICT guard and
+// silently duplicate. Both values live in packages/db/index.js, and
+// packages/db/test/constants.test.js fails if compression <= backfill.
 const MAX_CLOCK_SKEW_MS  = 120_000;  // tolerate 2 min of forward drift
 
 export function parseDeviceTime(v: unknown): Date | null {

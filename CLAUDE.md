@@ -25,7 +25,7 @@ PowerGuard is a **multi-tenant power quality monitoring and AI advisory SaaS pla
 | Auth Service | Node.js + Express, JWT + bcrypt, port **3001** (internal) |
 | Ingestion Service | Node.js + Express, one image run as `api` (:3002) / `ingest` / `jobs` containers via `ROLES` |
 | API Gateway | Node.js + Express, reverse proxy, port **8081** (internal, behind Caddy at `/api`) |
-| Database | PostgreSQL 16 + TimescaleDB 2.17.2 (hypertable for `meter_readings`) |
+| Database | PostgreSQL 16 + TimescaleDB 2.25.2 (hypertable for `meter_readings`); schema via migrations in `packages/db` |
 | MQTT Broker | Eclipse Mosquitto 2.0.22, **8883 TLS only** (local dev adds 127.0.0.1:1883) |
 | AI | OpenAI (recommendations, narratives, chat) |
 
@@ -50,15 +50,23 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   else talks over the compose network.
 - **Roles** (`services/ingestion-service/src/roles.ts`): `ROLES` is a comma list
   of `api`, `ingest`, `jobs` (default all three, for `npm run dev`). Only `api`
-  calls `app.listen` and runs the startup schema bootstrap (main.ts
-  `bootstrapSchema` plus mqtt.ts `bootstrapMqttSchema`). Only `ingest` calls
-  `initMqtt`. Only `jobs` calls `registerJobs` (every `cron.schedule`). `ingest`
-  and `jobs` wait until the DB is reachable and the bootstrap has created the
-  objects ingest needs (`ingestSchemaReady`). Without `api` they serve an
+  calls `app.listen`; only `ingest` calls `initMqtt`; only `jobs` calls
+  `registerJobs` (every `cron.schedule`). Without `api` a container serves an
   internal `/health` on `HEALTH_PORT` (9090): MQTT connected / jobs registered.
-- **migrate** (`dist/migrate.js`) is an interim Phase-1 step. It applies
-  `init.sql` only when `tenants` is missing (an empty DB), so it is a no-op on a
-  restored production DB. Phase 2 replaces it with node-pg-migrate.
+- **Schema = migrations** (`packages/db`, node-pg-migrate, plain SQL). No
+  service runs DDL. The one-shot `migrate` service (`node
+  /app/packages/db/bin/migrate.js up`) applies pending migrations in one
+  transaction, after updating the timescaledb extension if the image is newer.
+  auth-service and every ingestion role call `assertSchemaCurrent()` at startup
+  and **exit** if a migration is pending. See `packages/db/README.md`.
+  - The baseline migration is the only idempotent one (safe on empty and existing
+    DBs). Later migrations are normal, non-idempotent DDL.
+  - `MAX_BACKFILL_DAYS` (30, mqtt.ts) and `COMPRESSION_AFTER_DAYS` (35, the
+    compression policy) both live in `packages/db/index.js`; a test fails if
+    compression <= backfill.
+  - Old databases with duplicate `(meter_id, time)` readings: the baseline stops;
+    run the explicit `quarantine-duplicate-readings.js` step (moves them to
+    `meter_readings_quarantine`, deletes nothing for good), then migrate.
 - The ingest container reaches the broker as `mqtts://${MQTT_DOMAIN}:8883`.
   `MQTT_DOMAIN` is a network alias of the mosquitto container, so the TLS
   hostname matches the certificate without leaving the host.
@@ -199,6 +207,9 @@ Copy `.env.example` to `services/{auth-service,ingestion-service,api-gateway}/.e
 `docker compose up -d timescaledb migrate caddy mosquitto` (with the override),
 then `npm run dev`. The ingestion service runs all three roles in one process
 (`ROLES` unset), with `UPLOAD_DIR=./uploads`.
+After adding or pulling a migration, apply it from the host with
+`npm run migrate -w packages/db` (uses `DATABASE_URL` from your shell). Services
+refuse to start until it has run.
 
 ### Test a meter reading via MQTT
 Local dev, plain listener on 127.0.0.1:1883 (from the override). The ACL only
@@ -228,8 +239,11 @@ Compose stack behind Caddy with a real domain. The steps are in
 
 - AWS is gone and no production data is carried over: the Oracle server starts
   from an empty database. The plan's AWS steps (D5 version check, D7 restore,
-  D9 backfill, D11 decommission) do not apply, and nothing pins TimescaleDB to an
-  old version (currently `2.17.2-pg16`).
+  D9 backfill, D11 decommission) do not apply. TimescaleDB is `2.25.2-pg16`; bumping
+  the image is safe (`migrate` updates the extension).
+- Old local data: `deploy/scripts/restore-dump.sh <dump> <ts-version>` restores a
+  dump into an empty DB (the old local dev DB is `./local/prod.dump`, TimescaleDB
+  2.25.0, gitignored), then quarantine duplicates and migrate (`packages/db/README.md`).
 - The old systemd / `npx tsx` runtime files were deleted in Phase 1.
 - Backups (`deploy/backup-db.sh`, `deploy/scripts/backup-*.sh`) still target the legacy
   `powerguard-db` container; Phase 5 replaces them.

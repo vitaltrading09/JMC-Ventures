@@ -12,6 +12,7 @@ COPY apps/web/package.json apps/web/
 COPY services/auth-service/package.json services/auth-service/
 COPY services/api-gateway/package.json services/api-gateway/
 COPY services/ingestion-service/package.json services/ingestion-service/
+COPY packages/db/package.json packages/db/
 RUN npm ci -w apps/web --include-workspace-root=false --no-audit --no-fund
 COPY apps/web apps/web
 ARG NEXT_PUBLIC_API_URL

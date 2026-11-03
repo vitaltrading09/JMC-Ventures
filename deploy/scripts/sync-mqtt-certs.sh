@@ -57,20 +57,23 @@ fi
 
 mkdir -p "$DEST"
 changed=0
-install_file() { # src dest mode
+install_file() { # src dest mode → returns 0 if the file changed
     if ! cmp -s "$1" "$2" 2>/dev/null; then
         cp "$1" "$2.tmp"
         chmod "$3" "$2.tmp"
         mv -f "$2.tmp" "$2"
-        changed=1
+        return 0
     fi
+    return 1
 }
-install_file "$SRC/$MQTT_DOMAIN.crt" "$DEST/fullchain.pem" 0640
-install_file "$SRC/$MQTT_DOMAIN.key" "$DEST/privkey.pem"   0640
+install_file "$SRC/$MQTT_DOMAIN.crt" "$DEST/fullchain.pem" 0640 && changed=1
+install_file "$SRC/$MQTT_DOMAIN.key" "$DEST/privkey.pem"   0640 && changed=1
 
 # Local CA root, so the ingest container can verify a locally issued cert.
+# ingest reads it once at startup, so a new one means restarting ingest.
+ca_changed=0
 if [ "$ISSUER" = local ] && [ -f "$DATA_DIR/caddy/pki/authorities/local/root.crt" ]; then
-    install_file "$DATA_DIR/caddy/pki/authorities/local/root.crt" "$DEST/ca.crt" 0644
+    install_file "$DATA_DIR/caddy/pki/authorities/local/root.crt" "$DEST/ca.crt" 0644 && ca_changed=1
 fi
 
 # The mosquitto user in the official image is uid/gid 1883. Only meaningful
@@ -84,4 +87,8 @@ if [ "$changed" = 1 ]; then
     docker compose restart mosquitto
 else
     echo "sync-mqtt-certs: certificate for $MQTT_DOMAIN unchanged"
+fi
+if [ "$ca_changed" = 1 ] && [ -n "$(docker compose ps -q ingest 2>/dev/null)" ]; then
+    echo "sync-mqtt-certs: local CA updated; restarting ingest"
+    docker compose restart ingest
 fi

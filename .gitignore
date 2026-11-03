@@ -50,3 +50,6 @@ mosquitto/log/
 docker-compose.override.yml
 mosquitto/config/acl
 mosquitto/config/conf.d/*.conf
+
+# Local database dumps (plan Phase 2/6: ./local/prod.dump)
+local/

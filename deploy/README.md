@@ -11,12 +11,12 @@ else publishes a port. Persistent data lives under `${DATA_DIR}`
 | `web` | Next.js (standalone) |
 | `gateway` | API gateway: `/auth` → auth, `/ingestion` → api |
 | `auth` | Login, users, tenants |
-| `api` | ingestion-service image, `ROLES=api`: REST endpoints and the schema bootstrap |
+| `api` | ingestion-service image, `ROLES=api`: REST endpoints |
 | `ingest` | same image, `ROLES=ingest`: MQTT → DB only |
 | `jobs` | same image, `ROLES=jobs`: every cron job |
-| `migrate` | same image, one-shot: creates the base schema on an empty DB |
+| `migrate` | same image, one-shot: applies pending migrations (`packages/db`), then exits |
 | `mosquitto` | MQTT broker, 8883, password file + ACL |
-| `timescaledb` | PostgreSQL 16 + TimescaleDB |
+| `timescaledb` | PostgreSQL 16 + TimescaleDB 2.25.2 |
 
 ## Scripts
 
@@ -26,6 +26,7 @@ bash deploy/status.sh                 # state + health of every service
 bash deploy/logs.sh ingest [lines]    # follow one service's logs
 sudo bash deploy/scripts/sync-mqtt-certs.sh   # copy Caddy's MQTT cert to Mosquitto (daily cron in Phase 5)
 bash deploy/scripts/build-multiarch.sh        # linux/arm64 + linux/amd64 images via buildx
+bash deploy/scripts/restore-dump.sh <dump> <ts-version>   # restore a pg_dump into an EMPTY database
 ```
 
 ## First start on a server
