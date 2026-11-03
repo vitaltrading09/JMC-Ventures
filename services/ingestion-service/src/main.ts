@@ -2,8 +2,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { Pool } from 'pg';
 import cron from 'node-cron';
-import type { MqttClient } from 'mqtt';
-import { initMqtt } from './mqtt';
+import { initMqtt, IngestRuntime } from './mqtt';
 import { assertSchemaCurrent, SchemaBehindError } from '@gridiq/db';
 import {
     parseRoles, uploadDir, toStoredUploadPath, resolveStoredUploadPath,
@@ -56,11 +55,18 @@ const pool = new Pool({
     max: 20, // Connection pool size from env
     idleTimeoutMillis: 30000,
 });
+// When the database restarts, idle pooled connections are terminated and the
+// pool emits 'error'. Unhandled, that kills the process (and with it ingest's
+// in-memory queue). Logged instead: queries fail and are retried by callers,
+// and the pool reconnects on the next checkout.
+pool.on('error', (err) => {
+    console.error('[db] idle connection lost:', err.message);
+});
 
 // Startup. Every role refuses to run against a database that is behind the
 // latest migration (packages/db/migrations; the compose `migrate` service
 // applies them). No role changes the schema.
-let mqttClient: MqttClient | null = null;
+let ingest: IngestRuntime | null = null;
 let jobsRegistered = false;
 const startup = (async () => {
     await waitUntil('database', () => databaseReachable(pool));
@@ -76,7 +82,7 @@ const startup = (async () => {
     startHttp();
     if (ROLES.has('ingest')) {
         // Start MQTT Listener bridging Mosquitto to TimescaleDB
-        mqttClient = await initMqtt(pool);
+        ingest = await initMqtt(pool);
     }
     if (ROLES.has('jobs')) {
         registerJobs(pool);
@@ -87,6 +93,25 @@ startup.catch((e) => {
     console.error('FATAL: startup failed', e);
     process.exit(1);
 });
+
+// Graceful stop (docker compose stop/restart sends SIGTERM): ingest stops
+// taking messages, flushes and acks what is queued, then disconnects. Anything
+// not flushed stays unacked and the broker redelivers it.
+let stopping = false;
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(signal, async () => {
+        if (stopping) return;
+        stopping = true;
+        console.log(`[shutdown] ${signal} received`);
+        try {
+            if (ingest) await ingest.shutdown();
+            await pool.end();
+        } catch (e) {
+            console.error('[shutdown] error:', e);
+        }
+        process.exit(0);
+    });
+}
 
 // -----------------------------------------------------------------------------
 // Scheduled jobs (jobs role only)
@@ -260,9 +285,10 @@ async function roleHealth() {
         detail.db = e?.message || 'unreachable';
     }
     if (ROLES.has('ingest')) {
-        const connected = !!mqttClient?.connected;
-        detail.mqtt = connected ? 'connected' : 'disconnected';
-        ok = ok && connected;
+        const h = ingest ? ingest.health() : { ok: false, mqtt: 'starting' };
+        const { ok: ingestOk, ...rest } = h;
+        Object.assign(detail, rest);
+        ok = ok && ingestOk;
     }
     if (ROLES.has('jobs')) {
         detail.jobs = jobsRegistered ? 'registered' : 'pending';

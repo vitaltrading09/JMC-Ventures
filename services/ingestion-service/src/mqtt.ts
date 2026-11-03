@@ -1,13 +1,98 @@
 import mqtt from 'mqtt';
 import { Pool } from 'pg';
 import { MAX_BACKFILL_DAYS } from '@gridiq/db';
+import { CHANNEL_COLUMNS, cleanPayload, parseTelemetry, PayloadError } from './ingest/channels';
+import { BatchWriter, QueuedRow } from './ingest/batch-writer';
+import { installAckGate } from './ingest/ack-gate';
+import { MeterCache } from './ingest/meter-cache';
+import { EventDetector, PqEvent, UPSERT_PQ_EVENT, pqEventParams } from './ingest/event-detector';
+import { IngestStats } from './ingest/stats';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main entry point — called once from main.ts (ingest role) after the schema
-// is ready. Returns the client so the caller can report broker connectivity.
+// MQTT → meter_readings (ingest role).
+//
+//   broker ──QoS 1, persistent session──▶ parse ─▶ meter cache ─▶ batch writer
+//                                                                    │ commit
+//                                       PUBACK released ◀────────────┤
+//                                       event detector ◀─────────────┘
+//
+// - Durable: clientId MQTT_CLIENT_ID (default gridiq-ingest), clean: false,
+//   QoS 1 subscription. A message's PUBACK is sent only after the batch that
+//   wrote it commits (ingest/ack-gate.ts). On a DB failure nothing is acked
+//   and the writer retries; if ingest dies, the broker redelivers.
+// - Batched: one multi-row INSERT ... ON CONFLICT DO NOTHING per flush
+//   (INGEST_FLUSH_MS / INGEST_FLUSH_ROWS), bounded queue (INGEST_MAX_QUEUE)
+//   with backpressure instead of dropping (ingest/batch-writer.ts).
+// - No per-message queries: meters come from an in-memory cache, unknown
+//   meters are dead-lettered. Alert evaluation is no longer done here (Phase 4
+//   moves it to aggregates); ingest only writes readings and feeds the
+//   in-memory event detector (pq_events).
 // ─────────────────────────────────────────────────────────────────────────────
-export async function initMqtt(pool: Pool): Promise<mqtt.MqttClient> {
+
+export interface IngestRuntime {
+    client: mqtt.MqttClient;
+    health(): { ok: boolean; [k: string]: unknown };
+    /** Stop taking messages, flush and ack what is queued, disconnect. */
+    shutdown(): Promise<void>;
+}
+
+const envInt = (name: string, def: number) => {
+    const n = parseInt(process.env[name] ?? '', 10);
+    return Number.isFinite(n) && n > 0 ? n : def;
+};
+
+export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
     console.log('[MQTT] Initializing Acuvim telemetry listener...');
+
+    const logMessages = process.env.INGEST_LOG_MESSAGES === 'true';
+    const stats = new IngestStats();
+    const detector = new EventDetector({ minSeconds: envInt('EVENT_MIN_SECONDS', 3) });
+    const meters = new MeterCache(pool);
+    await meters.refresh();
+    meters.start();
+    stats.start();
+    console.log(`[MQTT] Meter cache loaded: ${meters.size} meter(s)`);
+
+    // Rolling numbers for the once-a-minute summary.
+    let windowRows = 0, windowConflicts = 0, windowDeadLetters = 0;
+    let windowLatencies: number[] = [];
+
+    const writer = new BatchWriter({
+        db: pool,
+        columns: CHANNEL_COLUMNS,
+        flushMs: envInt('INGEST_FLUSH_MS', 1000),
+        flushRows: envInt('INGEST_FLUSH_ROWS', 500),
+        maxQueue: envInt('INGEST_MAX_QUEUE', 50_000),
+        onConflict: noteConflict,
+        onCommitted: (inserted, info) => {
+            const now = Date.now();
+            windowRows += info.inserted;
+            windowConflicts += info.conflicts;
+            for (const row of inserted) windowLatencies.push(now - row.receivedAt);
+            const events: PqEvent[] = [];
+            for (const row of inserted) {
+                const m = meters.peek(row.meterId);
+                if (m) events.push(...detector.feed(row.meterId, row.time, row.values, m.thresholds));
+            }
+            for (const e of events) {
+                pool.query(UPSERT_PQ_EVENT, pqEventParams(e)).catch((err) =>
+                    console.error(`[ingest] pq_event ${e.type} ${e.meterId} not written:`, err?.message || err));
+            }
+        },
+    });
+    writer.start();
+
+    const summary = setInterval(() => {
+        if (windowRows + windowConflicts + windowDeadLetters === 0 && writer.size === 0) return;
+        windowLatencies.sort((a, b) => a - b);
+        const p95 = windowLatencies.length ? windowLatencies[Math.floor(windowLatencies.length * 0.95)] : 0;
+        console.log(
+            `[ingest] last 60 s: ${windowRows} rows, ${windowConflicts} conflicts, ${windowDeadLetters} dead letters, ` +
+            `receive→commit p95 ${p95} ms, queue ${writer.size}`
+        );
+        windowRows = 0; windowConflicts = 0; windowDeadLetters = 0; windowLatencies = [];
+    }, 60_000);
+    summary.unref();
 
     // ── Broker connection ──────────────────────────────────────────────────
     // All sensitive values come from environment — never hardcoded.
@@ -19,6 +104,10 @@ export async function initMqtt(pool: Pool): Promise<mqtt.MqttClient> {
     const connectOptions: mqtt.IClientOptions = {
         username: mqttUser || undefined,
         password: mqttPass || undefined,
+        // Persistent session: the broker keeps the subscription and queues
+        // QoS 1 messages while ingest is down (mosquitto max_queued_messages).
+        clientId: process.env.MQTT_CLIENT_ID || 'gridiq-ingest',
+        clean: false,
         reconnectPeriod: 5_000,
         connectTimeout: 10_000,
     };
@@ -40,15 +129,19 @@ export async function initMqtt(pool: Pool): Promise<mqtt.MqttClient> {
             process.env.MQTT_TLS_REJECT_UNAUTHORIZED !== 'false';
     }
 
-    const mqttClient = mqtt.connect(brokerUrl, connectOptions);
+    // manualConnect: the message handler and ack gate must be in place before
+    // the persistent session starts delivering its queued messages.
+    const mqttClient = mqtt.connect(brokerUrl, { ...connectOptions, manualConnect: true });
+    const gate = installAckGate(mqttClient as any);
+    let closing = false;
 
-    mqttClient.on('connect', () => {
-        console.log(`[MQTT] Connected to broker: ${brokerUrl}`);
-        mqttClient.subscribe('acuvim/+/telemetry', (err) => {
+    mqttClient.on('connect', (connack) => {
+        console.log(`[MQTT] Connected to broker: ${brokerUrl} (session present: ${!!connack?.sessionPresent})`);
+        mqttClient.subscribe('acuvim/+/telemetry', { qos: 1 }, (err) => {
             if (err) {
                 console.error('[MQTT] Subscribe error:', err);
             } else {
-                console.log('[MQTT] Subscribed to acuvim/+/telemetry');
+                console.log('[MQTT] Subscribed to acuvim/+/telemetry (QoS 1)');
             }
         });
     });
@@ -66,221 +159,109 @@ export async function initMqtt(pool: Pool): Promise<mqtt.MqttClient> {
     });
 
     // ── Message handler ────────────────────────────────────────────────────
-    mqttClient.on('message', async (topic, messageBuffer) => {
-        // Strip null bytes and other non-printable control characters that
-        // would break JSON.parse on some Acuvim firmware versions
-        const rawPayload = messageBuffer
-            .toString()
-            .trim()
-            .replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, '');
+    // mqtt.js calls this once per incoming PUBLISH and waits for `callback`
+    // before reading the next packet. The callback is delayed only while the
+    // writer's queue is full (backpressure). The PUBACK itself waits for the
+    // commit through the ack gate.
+    (mqttClient as any).handleMessage = (packet: any, callback: (err?: Error) => void) => {
+        if (closing) return; // not acked: the broker redelivers after restart
+        const messageId: number | undefined = packet.qos > 0 ? packet.messageId : undefined;
+        if (messageId !== undefined) gate.hold(messageId);
+        const ack = messageId !== undefined ? () => gate.release(messageId) : () => {};
+
+        handleTelemetry(packet.topic, packet.payload as Buffer, ack)
+            .then(() => writer.whenNotFull())
+            .then(() => callback(), (e) => {
+                // Unexpected: log, leave the message unacked, keep the loop alive.
+                console.error('[MQTT] Message handling failed:', e);
+                callback();
+            });
+    };
+
+    async function handleTelemetry(topic: string, payloadBuf: Buffer, ack: () => void): Promise<void> {
+        const receivedAt = Date.now();
+        const rawPayload = cleanPayload(payloadBuf);
 
         // Extract meter UUID from topic: acuvim/{meter_id}/telemetry
-        const topicParts   = topic.split('/');
-        const topicMeterId = topicParts[1] ?? 'unknown';
+        const topicMeterId = topic.split('/')[1] ?? 'unknown';
+        stats.notePayload(topicMeterId, payloadBuf.length);
 
-        console.log(
-            `\n[MQTT ${new Date().toISOString()}] topic=${topic}` +
-            ` | payload(200)=${rawPayload.slice(0, 200)}`
-        );
+        if (logMessages) {
+            console.log(`[MQTT ${new Date().toISOString()}] topic=${topic} | payload(200)=${rawPayload.slice(0, 200)}`);
+        }
 
-        // ── JSON parsing ───────────────────────────────────────────────────
-        let payload: any;
+        let parsed;
         try {
-            payload = JSON.parse(rawPayload);
-        } catch (parseError: any) {
-            console.error(`[MQTT] JSON parse error from ${topicMeterId}: ${parseError.message}`);
-            await deadLetter(pool, topic, rawPayload, `JSON parse: ${parseError.message}`);
+            parsed = parseTelemetry(rawPayload);
+        } catch (e) {
+            if (!(e instanceof PayloadError)) throw e;
+            console.warn(`[MQTT] ${topicMeterId}: ${e.message}`);
+            windowDeadLetters++;
+            await deadLetterDurable(pool, topic, rawPayload, e.message, () => closing);
+            ack();
             return;
         }
 
-        // ── Format normalisation ───────────────────────────────────────────
-        // Two supported formats:
-        //   1. Direct dict:  { V1: 243.5, I1: 45.2, Psum_kW: 12.5, … }
-        //   2. AXM-WEB2:     { device: { readings: [{ param:"V1", value:"243.5" }] } }
-        let raw: Record<string, unknown> = payload.Data ?? payload;
-
-        if (payload.device && Array.isArray(payload.device.readings)) {
-            raw = {};
-            for (const reading of payload.device.readings) {
-                if (reading?.param) {
-                    raw[reading.param] = reading.value;
-                }
-            }
+        const meter = await meters.lookup(topicMeterId, parsed.serial);
+        if (!meter) {
+            console.warn(`[MQTT] No meter found — topic-ID: "${topicMeterId}", serial: "${parsed.serial}" — dead-lettered`);
+            windowDeadLetters++;
+            await deadLetterDurable(pool, topic, rawPayload, 'unknown meter', () => closing);
+            ack();
+            return;
         }
+        stats.noteUnknownParams(meter.id, parsed.unknownParams);
 
-        // Firmware variants send numeric fields as JSON strings ("243.5") as
-        // well as numbers. Only the AXM-WEB2 branch ever parsed them, so a
-        // direct-dict meter sending strings reached evaluateAlerts and threw on
-        // .toFixed() — readings still inserted, but EVERY alert for that meter
-        // was silently skipped. Coerce once here so extraction, alert
-        // evaluation and the DB driver all see real numbers.
-        const toNum = (v: unknown): number | null => {
-            if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-            if (typeof v === 'string') {
-                const n = parseFloat(v.trim());
-                return Number.isFinite(n) ? n : null;   // also rejects NaN
-            }
-            return null;
+        const stamp = resolveReadingTime(parsed.rawTimestamp);
+        const row: QueuedRow = {
+            meterId: meter.id,
+            time: stamp.time,
+            deviceTime: stamp.deviceTime,
+            source: stamp.source,
+            values: parsed.values,
+            ack,
+            receivedAt,
         };
+        writer.enqueue(row);
 
-        const data: Record<string, number | null> = {};
-        for (const [k, v] of Object.entries(raw)) data[k] = toNum(v);
-
-        // Read the device clock from the PRE-coercion values: an ISO-8601
-        // timestamp is a string, and coercion would have flattened it to null.
-        const rawTimestamp =
-            raw.timestamp ?? raw.Timestamp ?? raw.ts   ?? raw.time ??
-            raw.datetime  ?? raw.DateTime  ?? raw.Time ??
-            payload?.timestamp ?? payload?.device?.timestamp ?? payload?.gateway?.timestamp ?? null;
-
-        const stamp = resolveReadingTime(rawTimestamp);
-
-        // ── Parameter extraction (Acuvim II key variants) ──────────────────
-        const v_a     = data.V1        ?? data.Va          ?? data.Vavg        ?? data.Vnavg_V     ?? data.V_A            ?? data.Voltage_LN          ?? data.voltage_a          ?? null;
-        const v_b     = data.V2        ?? data.Vb          ?? data.voltage_b                                                                                               ?? null;
-        const v_c     = data.V3        ?? data.Vc          ?? data.voltage_c                                                                                               ?? null;
-        const i_a     = data.I1        ?? data.Ia          ?? data.Iavg        ?? data.Iavg_A      ?? data.I_A            ?? data.Current             ?? data.current_a          ?? null;
-        const i_b     = data.I2        ?? data.Ib          ?? data.current_b                                                                                               ?? null;
-        const i_c     = data.I3        ?? data.Ic          ?? data.current_c                                                                                               ?? null;
-        const p_total = data.Psum_kW   ?? data.Psum        ?? data.P_Total     ?? data.Active_Power   ?? data.power_active_total   ?? null;
-        const q_total = data.Qsum_kvar ?? data.Qsum        ?? data.Q_Total     ?? data.Reactive_Power ?? data.power_reactive_total ?? null;
-        const s_total = data.Ssum_kVA  ?? data.Ssum        ?? data.S_Total     ?? data.Apparent_Power ?? data.power_apparent_total ?? null;
-        const pf      = data.PF        ?? data.PFavg       ?? data.PF1         ?? data.Power_Factor   ?? data.power_factor_total   ?? null;
-        const freq    = data.Freq_Hz   ?? data.F           ?? data.Freq        ?? data.frequency            ?? null;
-        const energy  = data.Ep_imp    ?? data.kWh         ?? data.energy_import_total                         ?? null;
-        const thd_v   = data.THD_V1    ?? data.THD_Va      ?? data.THD_V       ?? data.thd_voltage_a                               ?? null;
-        const thd_i   = data.THD_I1    ?? data.THD_Ia      ?? data.THD_I       ?? data.thd_current_a                               ?? null;
-
-        // Require at least one meaningful electrical parameter
-        if (v_a === null && i_a === null && p_total === null) {
-            console.warn(`[MQTT] No recognized parameters in payload from ${topicMeterId}`);
-            await deadLetter(pool, topic, rawPayload, 'No recognized Acuvim parameters in payload');
-            return;
-        }
-
-        // ── Meter ID resolution ────────────────────────────────────────────
-        // Match by MQTT topic UUID first, then by serial number from device
-        const serial = payload?.device?.serial ?? payload?.gateway?.serial ?? null;
-
-        const dbClient = await pool.connect();
-        try {
-            const lookupRes = await dbClient.query<{
-                id: string;
-                tenant_id: string;
-                alert_max_kw:       number | null;
-                alert_min_v:        number | null;
-                alert_max_v:        number | null;
-                alert_max_thd:      number | null;
-                alert_min_freq:     number | null;
-                alert_max_freq:     number | null;
-                contracted_mdi_kva: number | null;
-            }>(`
-                SELECT
-                    m.id,
-                    s.tenant_id,
-                    ss.alert_max_kw,
-                    ss.alert_min_v,
-                    ss.alert_max_v,
-                    ss.alert_max_thd,
-                    ss.alert_min_freq,
-                    ss.alert_max_freq,
-                    ss.contracted_mdi_kva
-                FROM meters m
-                JOIN sites s ON m.site_id = s.id
-                LEFT JOIN site_settings ss ON s.id = ss.site_id
-                WHERE m.id::text = $1
-                   OR (m.serial_number = $2 AND m.serial_number IS NOT NULL)
-                LIMIT 1
-            `, [topicMeterId, serial]);
-
-            if (lookupRes.rows.length === 0) {
-                console.warn(
-                    `[MQTT] No meter found — topic-ID: "${topicMeterId}", serial: "${serial}" — discarding`
-                );
-                return;
-            }
-
-            const meter    = lookupRes.rows[0];
-            const actualId = meter.id;
-
-            // ── Idempotent insert ──────────────────────────────────────────
-            // ON CONFLICT (meter_id, time) DO NOTHING prevents duplicate rows
-            // if the AXM-WEB2 store-and-forward replays the same packet after
-            // an internet outage.
-            const ins = await dbClient.query(`
-                INSERT INTO meter_readings (
-                    time,       meter_id,
-                    voltage_a,  voltage_b,  voltage_c,
-                    current_a,  current_b,  current_c,
-                    power_active_total,   power_reactive_total,   power_apparent_total,
-                    power_factor_total,   frequency,
-                    energy_import_total,  thd_voltage_a,  thd_current_a,
-                    device_time, ingested_at, time_source
-                ) VALUES (
-                    $1,  $2,
-                    $3,  $4,  $5,
-                    $6,  $7,  $8,
-                    $9,  $10, $11,
-                    $12, $13,
-                    $14, $15, $16,
-                    $17, NOW(), $18
-                )
-                ON CONFLICT (meter_id, time) DO NOTHING
-                RETURNING time
-            `, [
-                stamp.time, actualId,
-                v_a,  v_b,  v_c,
-                i_a,  i_b,  i_c,
-                p_total, q_total, s_total,
-                pf,   freq,
-                energy, thd_v, thd_i,
-                stamp.deviceTime, stamp.source,
-            ]);
-
-            // No row back means the timestamp already existed. Legitimate for a
-            // replayed packet; a rising count points at a stalled meter clock.
-            if (ins.rowCount === 0) noteConflict(actualId);
-
+        if (logMessages) {
+            const v = parsed.values;
             console.log(
-                `[MQTT ✓] ${actualId} | t=${stamp.time.toISOString()} (${stamp.source}${stamp.reason ? `: ${stamp.reason}` : ''})` +
-                ` | Va: ${v_a} Vb: ${v_b} Vc: ${v_c} V` +
-                ` | Ia: ${i_a} Ib: ${i_b} Ic: ${i_c} A` +
-                ` | P: ${p_total} kW | Q: ${q_total} kvar` +
-                ` | PF: ${pf} | THD_V: ${thd_v}% | THD_I: ${thd_i}% | E: ${energy} kWh`
+                `[MQTT queued] ${meter.id} | t=${stamp.time.toISOString()} (${stamp.source}${stamp.reason ? `: ${stamp.reason}` : ''})` +
+                ` | Va: ${v.voltage_a} Vb: ${v.voltage_b} Vc: ${v.voltage_c} V | P: ${v.power_active_total} kW`
             );
-
-            // ── Alert threshold evaluation ─────────────────────────────────
-            // NRS 048-2 South African grid voltage quality standards (used as
-            // defaults when site_settings thresholds are not configured).
-            await evaluateAlerts(dbClient, {
-                meterId:        actualId,
-                tenantId:       meter.tenant_id,
-                power:          p_total as number | null,
-                apparent:       s_total as number | null,
-                voltage:        v_a     as number | null,
-                thd:            thd_v   as number | null,
-                freq:           freq    as number | null,
-                // These are DECIMAL columns, which node-postgres returns as
-                // STRINGS. Comparisons happened to work through JS coercion, but
-                // the values must be real numbers before they reach any
-                // arithmetic or .toFixed() in the message text.
-                maxKw:          toNum(meter.alert_max_kw),
-                minV:           toNum(meter.alert_min_v)        ?? 207,   // NRS 048: 230V − 10%
-                maxV:           toNum(meter.alert_max_v)        ?? 253,   // NRS 048: 230V + 10%
-                maxThd:         toNum(meter.alert_max_thd)      ?? 8.0,   // NRS 048-2 THD limit
-                minFreq:        toNum(meter.alert_min_freq)     ?? 49.0,  // NRS 048: 50Hz − 2%
-                maxFreq:        toNum(meter.alert_max_freq)     ?? 51.0,  // NRS 048: 50Hz + 2%
-                contractedMdi:  toNum(meter.contracted_mdi_kva),
-            });
-
-        } catch (dbErr) {
-            console.error(`[MQTT] DB error processing reading for ${topicMeterId}:`, dbErr);
-        } finally {
-            dbClient.release();
         }
-    });
+    }
 
-    return mqttClient;
+    mqttClient.connect();
+
+    return {
+        client: mqttClient,
+        health() {
+            const connected = mqttClient.connected;
+            // Rows waiting and no successful flush for a minute: the DB path is stuck.
+            const stalled = writer.size > 0 && Date.now() - writer.lastSuccessAt > 60_000;
+            return {
+                ok: connected && !stalled,
+                mqtt: connected ? 'connected' : 'disconnected',
+                queue: writer.size,
+                unacked: gate.pending,
+                lastFlushAgoMs: Date.now() - writer.lastSuccessAt,
+                ...(writer.lastError ? { lastError: writer.lastError } : {}),
+            };
+        },
+        async shutdown() {
+            closing = true;
+            meters.stop();
+            stats.stop();
+            writer.stop();
+            const drained = await writer.drain(20_000);
+            console.log(drained
+                ? `[MQTT] Shutdown: queue flushed and acked (${writer.totals.inserted} rows written this run)`
+                : `[MQTT] Shutdown: ${writer.size} row(s) not flushed; left unacked, the broker redelivers them`);
+            await new Promise<void>((resolve) => mqttClient.end(false, {}, () => resolve()));
+        },
+    };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -364,125 +345,6 @@ function noteConflict(meterId: string): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Alert threshold evaluation
-// Deduplicates: at most 1 alert of the same type per meter per hour.
-// ─────────────────────────────────────────────────────────────────────────────
-interface AlertParams {
-    meterId:       string;
-    tenantId:      string;
-    power:         number | null;
-    apparent:      number | null;
-    voltage:       number | null;
-    thd:           number | null;
-    freq:          number | null;
-    maxKw:         number | null;
-    minV:          number;        // NRS 048 default applied before call
-    maxV:          number;        // NRS 048 default applied before call
-    maxThd:        number;        // NRS 048 default applied before call
-    minFreq:       number;        // NRS 048 default applied before call
-    maxFreq:       number;        // NRS 048 default applied before call
-    contractedMdi: number | null;
-}
-
-async function evaluateAlerts(client: any, p: AlertParams): Promise<void> {
-    // ── Max demand (kW) ────────────────────────────────────────────────────────
-    if (p.maxKw !== null && p.power !== null && p.power > Number(p.maxKw)) {
-        await maybeInsertAlert(
-            client, p.tenantId, p.meterId,
-            'PEAK_DEMAND', 'WARNING',
-            `Peak demand exceeded: ${p.power.toFixed(1)} kW (limit: ${p.maxKw} kW) — demand charge risk`
-        );
-    }
-
-    // ── Contracted MDI (kVA) ───────────────────────────────────────────────────
-    if (p.contractedMdi !== null && p.apparent !== null) {
-        const pct = (p.apparent / Number(p.contractedMdi)) * 100;
-        // This is a single instantaneous sample, NOT billed demand — utilities
-        // bill the highest 30-minute average, and a brief spike does not move
-        // one. It is still worth alerting on as an early warning, but the
-        // wording must not imply a penalty has been incurred; the client would
-        // check their bill and find it did not happen. /meters/:id/demand
-        // carries the billed figure.
-        if (pct >= 100) {
-            await maybeInsertAlert(
-                client, p.tenantId, p.meterId,
-                'MDI_EXCEEDED', 'CRITICAL',
-                `Instantaneous load reached ${p.apparent.toFixed(1)} kVA — above the ${p.contractedMdi} kVA contracted MDI (${pct.toFixed(0)}%). `
-                + `Billed demand is the highest 30-minute average, so check whether this was sustained.`
-            );
-        } else if (pct >= 90) {
-            await maybeInsertAlert(
-                client, p.tenantId, p.meterId,
-                'MDI_WARNING', 'WARNING',
-                `Instantaneous load at ${p.apparent.toFixed(1)} kVA = ${pct.toFixed(0)}% of the ${p.contractedMdi} kVA contracted MDI`
-            );
-        }
-    }
-
-    // ── Voltage sag — NRS 048-2 Category A lower limit ────────────────────────
-    if (p.voltage !== null && p.voltage < p.minV) {
-        await maybeInsertAlert(
-            client, p.tenantId, p.meterId,
-            'VOLTAGE_SAG', 'CRITICAL',
-            `Voltage sag: ${p.voltage.toFixed(1)} V L1 (NRS 048 min: ${p.minV} V) — equipment damage risk`
-        );
-    }
-
-    // ── Overvoltage — NRS 048-2 Category A upper limit ────────────────────────
-    if (p.voltage !== null && p.voltage > p.maxV) {
-        await maybeInsertAlert(
-            client, p.tenantId, p.meterId,
-            'OVERVOLTAGE', 'CRITICAL',
-            `Overvoltage: ${p.voltage.toFixed(1)} V L1 (NRS 048 max: ${p.maxV} V) — insulation and equipment risk`
-        );
-    }
-
-    // ── Voltage THD — NRS 048-2 limit ─────────────────────────────────────────
-    if (p.thd !== null && p.thd > p.maxThd) {
-        await maybeInsertAlert(
-            client, p.tenantId, p.meterId,
-            'HIGH_THD', 'WARNING',
-            `Voltage THD: ${p.thd.toFixed(2)}% (NRS 048 limit: ${p.maxThd}%) — harmonic distortion affecting equipment`
-        );
-    }
-
-    // ── Frequency out of range — NRS 048 statutory limits ─────────────────────
-    if (p.freq !== null && (p.freq < p.minFreq || p.freq > p.maxFreq)) {
-        await maybeInsertAlert(
-            client, p.tenantId, p.meterId,
-            'FREQUENCY_DEVIATION', 'WARNING',
-            `Frequency deviation: ${p.freq.toFixed(2)} Hz (NRS 048 range: ${p.minFreq}–${p.maxFreq} Hz)`
-        );
-    }
-}
-
-async function maybeInsertAlert(
-    client: any,
-    tenantId: string,
-    meterId: string,
-    type: string,
-    severity: string,
-    message: string
-): Promise<void> {
-    // One alert of this type per meter per hour to prevent notification floods
-    const recent = await client.query(`
-        SELECT id FROM alerts
-        WHERE meter_id  = $1
-          AND type      = $2
-          AND created_at >= NOW() - INTERVAL '1 hour'
-        LIMIT 1
-    `, [meterId, type]);
-
-    if (recent.rows.length === 0) {
-        await client.query(`
-            INSERT INTO alerts (tenant_id, meter_id, type, severity, message)
-            VALUES ($1, $2, $3, $4, $5)
-        `, [tenantId, meterId, type, severity, message]);
-        console.log(`[MQTT ALERT] ${type} (${severity}) → meter ${meterId}`);
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Dead-letter store
 // Any payload that cannot be parsed or lacks known parameters is written here
 // instead of being silently dropped. Inspect dead_letter_payloads to diagnose
@@ -493,7 +355,7 @@ async function deadLetter(
     topic: string,
     rawPayload: string,
     errorMsg: string
-): Promise<void> {
+): Promise<boolean> {
     try {
         const client = await pool.connect();
         try {
@@ -501,11 +363,27 @@ async function deadLetter(
                 INSERT INTO dead_letter_payloads (topic, raw_payload, error_msg)
                 VALUES ($1, $2, $3)
             `, [topic, rawPayload.slice(0, 4_096), errorMsg]);
+            return true;
         } finally {
             client.release();
         }
     } catch (e) {
         // Swallow — dead-letter failures must never crash the main message loop
         console.error('[MQTT] Dead-letter insert failed:', e);
+        return false;
+    }
+}
+
+// The message is only acked once its dead letter is written. While the DB is
+// down this retries (and, by holding up the message loop, applies
+// backpressure). On shutdown it gives up; the unacked message is redelivered.
+async function deadLetterDurable(
+    pool: Pool, topic: string, rawPayload: string, errorMsg: string, closing: () => boolean,
+): Promise<void> {
+    let delay = 1_000;
+    while (!(await deadLetter(pool, topic, rawPayload, errorMsg))) {
+        if (closing()) throw new Error('shutting down before the dead letter was written');
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 30_000);
     }
 }
