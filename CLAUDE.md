@@ -110,12 +110,18 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
 | Service | Key Features | Status |
 |---|---|---|
 | `auth-service` | Register, login, tenant management, JWT | ✅ Done |
-| `ingestion-service` | MQTT listener, meter readings, energy scoring, AI recommendations, NRS 048 alerts, MDI tracking | ✅ Done |
+| `ingestion-service` | MQTT ingest (durable, batched), meter readings, pq_events, energy scoring, AI recommendations, MDI tracking. Per-reading NRS 048 alerts were removed from ingest in Phase 3; Phase 4 re-adds alerting from aggregates | ✅ Done |
 | `api-gateway` | Proxy, CORS, rate limiting, helmet | ✅ Done |
 
 ### Key Backend Files
 
-- `services/ingestion-service/src/mqtt.ts` — Full Acuvim II MQTT pipeline. Topic: `acuvim/{meter_id}/telemetry`. Supports both native dict and AXM-WEB2 store-and-forward formats. Writes to TimescaleDB, fires alerts, dead-letter queue for bad payloads. Smart serial number mapping.
+- `services/ingestion-service/src/mqtt.ts` — the ingest role's MQTT pipeline (topic `acuvim/{meter_id}/telemetry`), plus the timestamp provenance logic (`resolveReadingTime`, conflict counter, dead-letter). Since Phase 3:
+  - **Durable:** QoS 1 subscription, persistent session (`MQTT_CLIENT_ID`, `clean: false`). Each message's PUBACK is held until the batch that wrote it commits (`src/ingest/ack-gate.ts`: mqtt.js 5 reads packets one at a time, so only the outgoing PUBACK is deferred). On a DB failure nothing is acked and the writer retries; if ingest dies, the broker redelivers. SIGTERM flushes and acks before disconnecting (`stop_grace_period: 30s`).
+  - **Batched** (`src/ingest/batch-writer.ts`): one multi-row `INSERT ... ON CONFLICT (meter_id, time) DO NOTHING RETURNING` per flush (`INGEST_FLUSH_MS` 1000 / `INGEST_FLUSH_ROWS` 500); the bounded queue (`INGEST_MAX_QUEUE` 50,000) applies backpressure, never drops.
+  - **Mapping is data** (`src/ingest/channels.ts`): column → candidate param names, ~42 columns including L-L voltages, neutral current, per-phase P/Q/S/PF, THD per phase, unbalance, kvarh, demand. Add new firmware names there; tests use `test/fixtures/` payloads. Unmapped names are logged once per meter per hour, and payload bytes/msg per meter hourly (`src/ingest/stats.ts`).
+  - **Meter cache** (`src/ingest/meter-cache.ts`): refreshed every 60 s and on a miss; topic segment matches id, serial, then `mqtt_username` (Phase 6). Unknown meters are dead-lettered (`unknown meter`).
+  - **No alert queries in ingest.** The per-reading NRS 048 alerts (`alerts` table) were removed from this path; Phase 4 reintroduces alerting from aggregates. Ingest feeds an in-memory event detector (`src/ingest/event-detector.ts`) that writes voltage/frequency excursions to `pq_events` (ongoing after `EVENT_MIN_SECONDS`, updated when they end). 1-second data cannot resolve sub-second dips.
+  - Mosquitto `max_inflight_messages 1000`: with deferred PUBACKs the default 20 would cap ingest at ~20 msg/flush.
 - `services/ingestion-service/src/energy-score.ts` — Calculates energy score (0–100) from PF, THD, load factor, voltage quality. Stores in `site_scores` table.
 - `services/ingestion-service/src/ai-recommendations.ts` — Claude-powered recommendation engine. Generates contextual recommendations per site based on score components.
 - `services/ingestion-service/src/main.ts` — NRS 048-2 alert logic, MDI (Max Demand Indicator) tracking, tariff-aware analytics endpoints.
@@ -197,6 +203,8 @@ bash deploy/status.sh                 # state + health
 bash deploy/logs.sh ingest            # follow one service
 docker compose stop api               # ingestion keeps running: api, ingest and jobs are separate
 bash deploy/scripts/build-multiarch.sh   # buildx linux/arm64 + linux/amd64 for every image
+# Ingest load test (20 meters × 1 Hz + a 2 h store-and-forward replay; see the file header)
+npx tsx services/ingestion-service/test/load/simulate.ts --meters 20 --minutes 10 --backlog-hours 2
 npm run build && npm test             # web build needs NEXT_PUBLIC_API_URL (apps/web/.env.local)
 ```
 
@@ -219,6 +227,9 @@ must be named after the meter UUID:
 mosquitto_pub -h localhost -p 1883 -u <meter-uuid> -P '<pw>' -q 1   -t "acuvim/<meter-uuid>/telemetry"   -m '{"V1": 230, "I1": 50, "Psum_kW": 11.5, "PF": 0.95, "Freq_Hz": 50}'
 ```
 Over TLS, as a real meter connects: `-h mqtt.localhost -p 8883 --cafile .data/mqtt-certs/ca.crt`.
+On this Windows dev machine, Avast's Web/Mail Shield intercepts TLS from the host
+(it re-signs with its own root), so host-side TLS clients fail verification against
+the local CA. Containers are unaffected; run TLS tests inside the compose network.
 
 ### Adding a real Acuvim II meter
 

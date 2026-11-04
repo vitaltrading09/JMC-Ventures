@@ -126,6 +126,15 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD in .env}
       MQTT_CA_CERT: ${MQTT_CA_CERT:-}
       MQTT_TLS_REJECT_UNAUTHORIZED: ${MQTT_TLS_REJECT_UNAUTHORIZED:-true}
+      # Persistent session id: must stay the same across restarts.
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-gridiq-ingest}
+      INGEST_FLUSH_MS: ${INGEST_FLUSH_MS:-1000}
+      INGEST_FLUSH_ROWS: ${INGEST_FLUSH_ROWS:-500}
+      INGEST_MAX_QUEUE: ${INGEST_MAX_QUEUE:-50000}
+      EVENT_MIN_SECONDS: ${EVENT_MIN_SECONDS:-3}
+      INGEST_LOG_MESSAGES: ${INGEST_LOG_MESSAGES:-false}
+    # On SIGTERM ingest flushes and acks its queue before disconnecting.
+    stop_grace_period: 30s
     volumes:
       # Only read when MQTT_CA_CERT points into it (local dev's Caddy CA).
       - ${DATA_DIR:-./.data}/mqtt-certs:/mqtt-certs:ro
