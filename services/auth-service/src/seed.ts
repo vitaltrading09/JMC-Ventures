@@ -62,12 +62,15 @@ async function main() {
         }
 
         // 3. Create Sites & Meters (5 Demo Sites)
+        // Fixed serials: scripts/seed-readings.ts finds the demo meters by these
+        // (and only writes readings to them). Keep in step with DEMO_PROFILES in
+        // services/ingestion-service/src/demo-profiles.ts; a test checks it.
         const sites = [
-            { name: 'Headquarters', address: '123 Power Lane, Johannesburg', timezone: 'Africa/Johannesburg', meterName: 'Main Incomer', model: 'Acuvim II' },
-            { name: 'Cape Town Factory', address: '45 Industry Rd, Cape Town', timezone: 'Africa/Johannesburg', meterName: 'Production Line A', model: 'PM8000' },
-            { name: 'Durban Distribution Ctr', address: '88 Logistics Blvd, Durban', timezone: 'Africa/Johannesburg', meterName: 'Warehouse Main', model: 'EM6400' },
-            { name: 'Sandton Mall', address: '99 Retail St, Sandton', timezone: 'Africa/Johannesburg', meterName: 'HVAC Feed', model: 'Acuvim II' },
-            { name: 'Pretoria Data Center', address: '12 Server Ave, Pretoria', timezone: 'Africa/Johannesburg', meterName: 'UPS Input', model: 'Janitza UMG' }
+            { name: 'Headquarters', address: '123 Power Lane, Johannesburg', timezone: 'Africa/Johannesburg', meterName: 'Main Incomer', serial: 'DEMO-HQ-001', model: 'Acuvim II' },
+            { name: 'Cape Town Factory', address: '45 Industry Rd, Cape Town', timezone: 'Africa/Johannesburg', meterName: 'Production Line A', serial: 'DEMO-CPT-001', model: 'PM8000' },
+            { name: 'Durban Distribution Ctr', address: '88 Logistics Blvd, Durban', timezone: 'Africa/Johannesburg', meterName: 'Warehouse Main', serial: 'DEMO-DBN-001', model: 'EM6400' },
+            { name: 'Sandton Mall', address: '99 Retail St, Sandton', timezone: 'Africa/Johannesburg', meterName: 'HVAC Feed', serial: 'DEMO-SDT-001', model: 'Acuvim II' },
+            { name: 'Pretoria Data Center', address: '12 Server Ave, Pretoria', timezone: 'Africa/Johannesburg', meterName: 'UPS Input', serial: 'DEMO-PTA-001', model: 'Janitza UMG' }
         ];
 
         for (const site of sites) {
@@ -88,16 +91,17 @@ async function main() {
                 console.log(`Created Site: ${site.name} (${siteId})`);
             }
 
-            // Check if meter exists for this site
-            const meterCheck = await client.query("SELECT id FROM meters WHERE site_id = $1", [siteId]);
+            // By serial, not "any meter on the site": a site may also carry a
+            // meter added by hand (e.g. an MQTT test meter).
+            const meterCheck = await client.query("SELECT id FROM meters WHERE serial_number = $1", [site.serial]);
             if (meterCheck.rows.length === 0) {
                 await client.query(`
-                    INSERT INTO meters (site_id, name, serial_number, model) 
-                    VALUES ($1, $2, 'SN-' + substring(md5(random()::text), 1, 8), $3)
-                `, [siteId, site.meterName, site.model]);
-                console.log(`Created Meter: ${site.meterName}`);
+                    INSERT INTO meters (site_id, name, serial_number, model)
+                    VALUES ($1, $2, $3, $4)
+                `, [siteId, site.meterName, site.serial, site.model]);
+                console.log(`Created Meter: ${site.meterName} (${site.serial})`);
             } else {
-                console.log(`Meter for '${site.name}' already exists.`);
+                console.log(`Meter ${site.serial} already exists.`);
             }
         }
 
@@ -105,6 +109,7 @@ async function main() {
 
     } catch (err) {
         console.error("Error seeding database:", err);
+        process.exitCode = 1;
     } finally {
         client.release();
         await pool.end();

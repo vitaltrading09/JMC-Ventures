@@ -48,7 +48,17 @@ ALLOW_DEMO_SEED=true DEMO_USER_PASSWORD='<choose-a-local-password>' \
   DATABASE_URL="postgres://<POSTGRES_USER>:<POSTGRES_PASSWORD>@localhost:5432/<POSTGRES_DB>" \
   npx tsx services/auth-service/src/seed.ts
 ```
-The seed scripts refuse to run unless `ALLOW_DEMO_SEED=true`.
+Then generate 90 days of synthetic 5-minute readings for the demo meters, so
+every page has data (one healthy site, and sites with low PF, high THD, phase
+imbalance, voltage sags and MDI exceedances):
+```bash
+ALLOW_DEMO_SEED=true \
+  DATABASE_URL="postgres://<POSTGRES_USER>:<POSTGRES_PASSWORD>@localhost:5432/<POSTGRES_DB>" \
+  npx tsx scripts/seed-readings.ts          # --days, --interval, --only, --dry-run: see the file header
+```
+Synthetic rows carry `time_source = 'SIMULATED'`. Re-running is safe and tops
+the data up to now. The seed scripts refuse to run unless `ALLOW_DEMO_SEED=true`;
+never run them on a server.
 
 ### 6. Open
 [https://localhost](https://localhost). Accept the browser warning for Caddy's
