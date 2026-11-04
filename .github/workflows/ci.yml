@@ -116,6 +116,16 @@ jobs:
         run: node packages/db/bin/migrate.js up
       - name: nothing pending
         run: node packages/db/bin/migrate.js status
+      - name: migrate down and up again (fleet model reversible)
+        run: |
+          node packages/db/bin/migrate.js down
+          node packages/db/bin/migrate.js up
+      - name: database tests (fleet model acceptance)
+        run: |
+          npm run build --prefix services/ingestion-service
+          node --test services/ingestion-service/test/db/*.test.js
+        env:
+          TEST_DATABASE_URL: postgres://ci:ci@localhost:5432/ci
 
   # Every image must build for the Oracle A1 (arm64) VM and for amd64.
   docker-images:

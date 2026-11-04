@@ -58,11 +58,12 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
     let windowLatencies: number[] = [];
 
     // Per-meter counters persisted to ingest_stats once a minute: the jobs
-    // role alerts on rising duplicate-timestamp counts, which only ingest sees.
-    let perMeter = new Map<string, { rows: number; conflicts: number }>();
-    const count = (meterId: string, field: 'rows' | 'conflicts') => {
-        const c = perMeter.get(meterId) ?? { rows: 0, conflicts: 0 };
-        c[field]++;
+    // role alerts on rising duplicate-timestamp counts, which only ingest sees,
+    // and /fleet reports payload bytes per device (cellular data budget).
+    let perMeter = new Map<string, { rows: number; conflicts: number; bytes: number }>();
+    const count = (meterId: string, field: 'rows' | 'conflicts' | 'bytes', by = 1) => {
+        const c = perMeter.get(meterId) ?? { rows: 0, conflicts: 0, bytes: 0 };
+        c[field] += by;
         perMeter.set(meterId, c);
     };
     const flushCounters = async () => {
@@ -72,12 +73,13 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
         try {
             for (const [meterId, c] of batch) {
                 await pool.query(`
-                    INSERT INTO ingest_stats (meter_id, hour, rows_written, conflicts)
-                    VALUES ($1, date_trunc('hour', NOW()), $2, $3)
+                    INSERT INTO ingest_stats (meter_id, hour, rows_written, conflicts, payload_bytes)
+                    VALUES ($1, date_trunc('hour', NOW()), $2, $3, $4)
                     ON CONFLICT (meter_id, hour) DO UPDATE SET
-                        rows_written = ingest_stats.rows_written + EXCLUDED.rows_written,
-                        conflicts    = ingest_stats.conflicts + EXCLUDED.conflicts`,
-                    [meterId, c.rows, c.conflicts]);
+                        rows_written  = ingest_stats.rows_written + EXCLUDED.rows_written,
+                        conflicts     = ingest_stats.conflicts + EXCLUDED.conflicts,
+                        payload_bytes = ingest_stats.payload_bytes + EXCLUDED.payload_bytes`,
+                    [meterId, c.rows, c.conflicts, c.bytes]);
             }
         } catch (e: any) {
             // Observability only: never let it affect ingestion. Counts are lost, not retried.
@@ -271,6 +273,7 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
             return;
         }
         stats.noteUnknownParams(meter.id, parsed.unknownParams);
+        count(meter.id, 'bytes', payloadBuf.length);
 
         const stamp = resolveReadingTime(parsed.rawTimestamp);
         const row: QueuedRow = {

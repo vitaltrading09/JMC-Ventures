@@ -78,21 +78,40 @@ docker compose kill -s HUP mosquitto       # reload the password file
 docker compose up -d ingest                # picks up the new .env value
 ```
 
-**Add a meter box:** its username must be the id in its topic, because the ACL only allows `acuvim/<username>/telemetry`.
+**Add a meter box:** its username must be the segment in its topic, because the ACL only allows `acuvim/<username>/telemetry`. A fleet device (created with `POST /devices`, below) uses its code in lower case, e.g. `gq-m01`; a meter added through the old Add Meter screen uses its UUID.
 ```bash
 PW=$(openssl rand -hex 24)
-docker compose exec mosquitto mosquitto_passwd -b /mosquitto/config/passwd <meter-uuid> "$PW"
+docker compose exec mosquitto mosquitto_passwd -b /mosquitto/config/passwd <username> "$PW"
 docker compose kill -s HUP mosquitto
 ```
 Then set on the AXM-WEB2:
 - host `mqtt.<domain>`, port 8883, TLS on;
-- username `<meter-uuid>` and the password above;
-- topic `acuvim/<meter-uuid>/telemetry`;
+- username `<username>` and the password above;
+- topic `acuvim/<username>/telemetry`;
 - QoS 1, store-and-forward on, NTP on.
 
 Then watch `bash deploy/logs.sh ingest` for the meter's first rows.
 
 **Remove or rotate a meter user:** `mosquitto_passwd -D /mosquitto/config/passwd <user>` (or `-b` with a new password), then the `kill -s HUP mosquitto` reload.
+
+## Fleet: devices, points and deployments
+Until the ops console (Phase 8), the fleet is managed through the API as a `super_admin` (`https://app.<domain>/api/ingestion/...`, `Authorization: Bearer <token>`). Readings stay keyed by the device; which project and point they belong to is decided by the deployment windows, so moving a box never copies or rewrites data.
+
+| Step | Call |
+|---|---|
+| New box | `POST /devices {"code":"GQ-M01","serial_number":"...","model":"Acuvim II","comms_module":"AXM-WEB2"}`, then add the broker user `gq-m01` (above) |
+| Project | `POST /projects {"tenant_id":"...","name":"...","end_client_name":"..."}` |
+| Point | `POST /projects/<id>/points {"name":"Main incomer","role":"incomer","nominal_voltage_v":230,"ct_primary_a":400}` |
+| Install | `POST /deployments {"device_id":"...","measurement_point_id":"...","installed_at":"<when it was connected>"}` |
+| Commissioning | `GET /deployments/<id>`: `commissioning` is re-evaluated every minute for 15 minutes after `installed_at`, then final |
+| Fix a reversed CT or a wrong ratio | `PATCH /deployments/<id>/corrections {"power_sign":-1,"reason":"CT installed backwards"}` (or `scale_correction`); audit-logged, raw data untouched |
+| Remove | `POST /deployments/<id>/remove {"removed_at":"...","device_status":"in_stock"}` |
+| Overview | `GET /fleet` (last seen, 24 h coverage, clock drift, payload/day); `GET /devices/<id>` for the deployment history |
+| Energy balance | `GET /projects/<id>/energy-balance?from=...&to=...` |
+
+- A device cannot be in two deployments at the same time, and a point cannot have two devices at once: the database rejects the overlap (409).
+- Enter `installed_at` and `removed_at` as the times the box was actually connected and disconnected. Readings outside every deployment window still exist but belong to no project.
+- Meters added through the old Add Meter screen get a point (role incomer) and an open deployment automatically. Set the right role on the point with `PATCH /points/<id> {"role":"pv"}` where needed.
 
 ## Archived meters and sites
 In the app, "delete" **archives**: the meter or site leaves the lists and stops ingesting (its messages are dead-lettered as unknown meter), while its readings, reports and alerts are kept.

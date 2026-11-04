@@ -9,13 +9,19 @@
 // in order: the meter id, its serial_number, its mqtt_username (column added
 // in Phase 6; tolerated if absent). Failing all three, the serial number inside
 // the payload is tried, as the per-message query did before.
+//
+// Since Phase 6 a fleet device need not belong to a project (in stock, or
+// sent out before ops recorded the install): it still ingests, readings are
+// keyed by device and attributed later through deployments. Retired devices
+// and archived meters/sites do not.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { toNum } from './channels';
 
 export interface MeterInfo {
     id: string;
-    tenantId: string;
+    /** Null for a fleet device that is not attached to a project. */
+    tenantId: string | null;
     serial: string | null;
     /** NRS 048 thresholds for the event detector (site_settings or defaults). */
     thresholds: {
@@ -91,17 +97,18 @@ export class MeterCache {
                    s.tenant_id,
                    ss.alert_min_v, ss.alert_max_v, ss.alert_min_freq, ss.alert_max_freq
             FROM meters m
-            JOIN sites s ON m.site_id = s.id
+            ${this.hasUsernameColumn ? 'LEFT JOIN' : 'JOIN'} sites s ON m.site_id = s.id
             LEFT JOIN site_settings ss ON ss.site_id = s.id
             -- An archived meter stops ingesting: its messages are dead-lettered as unknown.
-            WHERE ${this.hasArchiveColumns ? 'm.archived_at IS NULL AND s.archived_at IS NULL' : 'TRUE'}`);
+            WHERE ${this.hasArchiveColumns ? 'm.archived_at IS NULL AND s.archived_at IS NULL' : 'TRUE'}
+              ${this.hasUsernameColumn ? "AND m.status <> 'retired'" : ''}`);
         const byId = new Map<string, MeterInfo>();
         const bySerial = new Map<string, MeterInfo>();
         const byUsername = new Map<string, MeterInfo>();
         for (const row of r.rows) {
             const info: MeterInfo = {
                 id: String(row.id),
-                tenantId: String(row.tenant_id),
+                tenantId: row.tenant_id ? String(row.tenant_id) : null,
                 serial: row.serial_number ?? null,
                 thresholds: {
                     // DECIMAL columns arrive as strings from node-postgres.
