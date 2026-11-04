@@ -284,14 +284,15 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
                                         />
                                         {isMultiPhase && <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />}
 
-                                        {/* Reference lines — NRS 048-2 limits */}
+                                        {/* Reference lines: the limits. NRS 048-2 assesses 10-minute values, so a
+                                            chart point beyond a line is a prompt to check the Health Check, not a breach. */}
                                         {measurement.key === 'power_factor_total' && <ReferenceLine y={0.85} stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'Min PF 0.85', fontSize: 10, fill: '#ef4444', position: 'insideBottomRight' }} />}
-                                        {measurement.key === 'thd_voltage_a'      && <ReferenceLine y={8}    stroke="#ef4444" strokeDasharray="4 4" label={{ value: 'NRS048 8%',   fontSize: 10, fill: '#ef4444', position: 'insideTopRight' }} />}
-                                        {measurement.key === 'thd_current_a'      && <ReferenceLine y={25}   stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 25%',  fontSize: 10, fill: '#f97316', position: 'insideTopRight' }} />}
-                                        {measurement.key === 'voltage_a'          && <ReferenceLine y={207}  stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 min', fontSize: 10, fill: '#f97316', position: 'insideBottomRight' }} />}
-                                        {measurement.key === 'voltage_a'          && <ReferenceLine y={253}  stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 max', fontSize: 10, fill: '#f97316', position: 'insideTopRight' }} />}
-                                        {measurement.key === 'frequency'          && <ReferenceLine y={49}   stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 49Hz', fontSize: 10, fill: '#f97316', position: 'insideBottomRight' }} />}
-                                        {measurement.key === 'frequency'          && <ReferenceLine y={51}   stroke="#f97316" strokeDasharray="4 4" label={{ value: 'NRS048 51Hz', fontSize: 10, fill: '#f97316', position: 'insideTopRight' }} />}
+                                        {measurement.key === 'thd_voltage_a'      && <ReferenceLine y={8}    stroke="#ef4444" strokeDasharray="4 4" label={{ value: '8% limit',   fontSize: 10, fill: '#ef4444', position: 'insideTopRight' }} />}
+                                        {measurement.key === 'thd_current_a'      && <ReferenceLine y={25}   stroke="#f97316" strokeDasharray="4 4" label={{ value: '25% guide',  fontSize: 10, fill: '#f97316', position: 'insideTopRight' }} />}
+                                        {measurement.key === 'voltage_a'          && <ReferenceLine y={207}  stroke="#f97316" strokeDasharray="4 4" label={{ value: '207 V', fontSize: 10, fill: '#f97316', position: 'insideBottomRight' }} />}
+                                        {measurement.key === 'voltage_a'          && <ReferenceLine y={253}  stroke="#f97316" strokeDasharray="4 4" label={{ value: '253 V', fontSize: 10, fill: '#f97316', position: 'insideTopRight' }} />}
+                                        {measurement.key === 'frequency'          && <ReferenceLine y={49}   stroke="#f97316" strokeDasharray="4 4" label={{ value: '49 Hz', fontSize: 10, fill: '#f97316', position: 'insideBottomRight' }} />}
+                                        {measurement.key === 'frequency'          && <ReferenceLine y={51}   stroke="#f97316" strokeDasharray="4 4" label={{ value: '51 Hz', fontSize: 10, fill: '#f97316', position: 'insideTopRight' }} />}
 
                                         {/* Single line (non-phase measurements) */}
                                         {!isMultiPhase && (

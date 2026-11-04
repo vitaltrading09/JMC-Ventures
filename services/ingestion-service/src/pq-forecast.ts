@@ -127,29 +127,31 @@ export async function forecastDegradation(
         );
         if (meta.rows.length === 0) return null;
 
+        // Weekly series from readings_1h: percentiles over hourly values
+        // (sample-weighted averages within each hour), samples = raw readings.
         const q = await client.query(`
             WITH base AS (
-                SELECT date_trunc('week', time) AS wk,
-                       voltage_a, voltage_b, voltage_c,
-                       current_a, current_b, current_c,
-                       power_factor_total, thd_voltage_a,
-                       NULLIF((COALESCE(voltage_a,0)+COALESCE(voltage_b,0)+COALESCE(voltage_c,0))/3.0,0) AS v_avg,
-                       NULLIF((COALESCE(current_a,0)+COALESCE(current_b,0)+COALESCE(current_c,0))/3.0,0) AS i_avg
-                FROM meter_readings
-                WHERE meter_id = $1 AND time >= NOW() - ($2 || ' weeks')::INTERVAL
+                SELECT date_trunc('week', bucket) AS wk, n,
+                       voltage_a_avg AS va, voltage_b_avg AS vb, voltage_c_avg AS vc,
+                       current_a_avg AS ia, current_b_avg AS ib, current_c_avg AS ic,
+                       power_factor_total_avg, thd_voltage_a_avg,
+                       NULLIF((COALESCE(voltage_a_avg,0)+COALESCE(voltage_b_avg,0)+COALESCE(voltage_c_avg,0))/3.0,0) AS v_avg,
+                       NULLIF((COALESCE(current_a_avg,0)+COALESCE(current_b_avg,0)+COALESCE(current_c_avg,0))/3.0,0) AS i_avg
+                FROM readings_1h
+                WHERE meter_id = $1 AND bucket >= NOW() - ($2 || ' weeks')::INTERVAL
             ), calc AS (
-                SELECT wk, power_factor_total, thd_voltage_a,
-                    CASE WHEN i_avg IS NOT NULL AND current_b IS NOT NULL AND current_c IS NOT NULL
-                         THEN GREATEST(ABS(current_a-i_avg),ABS(current_b-i_avg),ABS(current_c-i_avg))/i_avg*100 END AS i_unb,
-                    CASE WHEN v_avg IS NOT NULL AND voltage_b IS NOT NULL AND voltage_c IS NOT NULL
-                         THEN GREATEST(ABS(voltage_a-v_avg),ABS(voltage_b-v_avg),ABS(voltage_c-v_avg))/v_avg*100 END AS v_unb
+                SELECT wk, n, power_factor_total_avg, thd_voltage_a_avg,
+                    CASE WHEN i_avg IS NOT NULL AND ib IS NOT NULL AND ic IS NOT NULL
+                         THEN GREATEST(ABS(ia-i_avg),ABS(ib-i_avg),ABS(ic-i_avg))/i_avg*100 END AS i_unb,
+                    CASE WHEN v_avg IS NOT NULL AND vb IS NOT NULL AND vc IS NOT NULL
+                         THEN GREATEST(ABS(va-v_avg),ABS(vb-v_avg),ABS(vc-v_avg))/v_avg*100 END AS v_unb
                 FROM base
             )
-            SELECT wk::date AS week, COUNT(*)::int AS samples,
+            SELECT wk::date AS week, SUM(n)::int AS samples,
                    percentile_cont(0.95) WITHIN GROUP (ORDER BY i_unb) AS i_unb_p95,
                    percentile_cont(0.95) WITHIN GROUP (ORDER BY v_unb) AS v_unb_p95,
-                   percentile_cont(0.95) WITHIN GROUP (ORDER BY thd_voltage_a) AS thd_p95,
-                   AVG(power_factor_total) AS pf_avg
+                   percentile_cont(0.95) WITHIN GROUP (ORDER BY thd_voltage_a_avg) AS thd_p95,
+                   SUM(power_factor_total_avg * n) / NULLIF(SUM(n) FILTER (WHERE power_factor_total_avg IS NOT NULL), 0) AS pf_avg
             FROM calc
             GROUP BY wk
             ORDER BY wk ASC

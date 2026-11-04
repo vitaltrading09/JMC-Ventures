@@ -119,7 +119,7 @@ export default function AlertsPage() {
                 <h1 className="text-3xl font-bold tracking-tight text-white">Alert Thresholds</h1>
                 <p className="text-slate-400 mt-2">
                     NRS 048-2 compliant thresholds for voltage quality, demand, and power quality alerts.
-                    Leave a field blank to use the NRS 048 default.
+                    Leave a field blank to use the NRS 048 default. Voltage and THD limits are compared with 10-minute values, demand limits with 30-minute averages.
                 </p>
             </div>
 

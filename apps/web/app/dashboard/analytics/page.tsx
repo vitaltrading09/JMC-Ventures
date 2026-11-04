@@ -519,14 +519,14 @@ TARIFF RATES (actual configured):
                             label: "THD Voltage",
                             scope: `${meterName} · 7-day avg`,
                             value: avgTHD > 0 ? `${avgTHD.toFixed(2)}%` : "—",
-                            sub: avgTHD === 0 ? "No data" : avgTHD < 8 ? "✓ Within NRS 048" : "✗ Above 8% (NRS 048)",
+                            sub: avgTHD === 0 ? "No data" : avgTHD < 8 ? "✓ Below 8% (chart average)" : "✗ Above 8% (chart average)",
                             cls: avgTHD === 0 ? "text-slate-500" : avgTHD < 8 ? "text-emerald-400" : "text-red-400",
                         },
                         {
                             label: "Voltage Range L1",
                             scope: `${meterName} · 7-day min–max`,
                             value: voltMin != null ? `${voltMin.toFixed(0)}–${voltMax?.toFixed(0)} V` : "—",
-                            sub: voltMin != null && voltMin >= 207 && voltMax! <= 253 ? "✓ NRS 048 (207–253 V)" : voltMin != null ? "⚠ Outside NRS 048" : "No data",
+                            sub: voltMin != null && voltMin >= 207 && voltMax! <= 253 ? "✓ 207–253 V (chart averages)" : voltMin != null ? "⚠ Outside 207–253 V (chart averages)" : "No data",
                             cls: voltMin != null && voltMin >= 207 && voltMax! <= 253 ? "text-emerald-400" : "text-yellow-400",
                         },
                         {
