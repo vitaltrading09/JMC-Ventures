@@ -132,3 +132,78 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
 
 /** Calendar month key in the site's reporting zone (UTC here, as the existing endpoint). */
 export const monthKey = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+
+// ── TOU bands and the database side ─────────────────────────────────────────
+
+export type TouBand = 'peak' | 'standard' | 'offpeak';
+
+/**
+ * SA commercial time-of-use band for a local hour (0-23), the same rule the
+ * analytics page used: peak 07-10 and 18-20, standard 06-22, else off-peak
+ * (hour of day only; no weekday or season split).
+ */
+export function touBand(hour: number): TouBand {
+    if ((hour >= 7 && hour < 10) || (hour >= 18 && hour < 20)) return 'peak';
+    if (hour >= 6 && hour < 22) return 'standard';
+    return 'offpeak';
+}
+
+/** Local calendar date (YYYY-MM-DD) and hour of an instant in a time zone. */
+export function localDateHour(d: Date, timeZone: string): { date: string; hour: number } {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23',
+    }).formatToParts(d);
+    const get = (t: string) => parts.find((p) => p.type === t)!.value;
+    return { date: `${get('year')}-${get('month')}-${get('day')}`, hour: Number(get('hour')) % 24 };
+}
+
+interface Queryable { query(text: string, values?: unknown[]): Promise<{ rows: any[] }> }
+
+/**
+ * Hourly register values (readings_1h) plus the power-integration fallback
+ * per hour: 1-minute averages × the time to the next minute with data, capped
+ * at 900 s (readings_1m). Input for periodEnergy.
+ */
+export async function loadEnergyHours(db: Queryable, meterId: string, since: Date): Promise<EnergyHour[]> {
+    const [reg, pow] = await Promise.all([
+        db.query(`
+            SELECT bucket AS hour,
+                   energy_import_total_first AS reg_first, energy_import_total_last AS reg_last,
+                   t_first, t_last, power_active_total_max AS p_max
+            FROM readings_1h
+            WHERE meter_id = $1 AND bucket >= $2`, [meterId, since]),
+        db.query(`
+            WITH m AS (
+                SELECT bucket, power_active_total_avg AS p,
+                       LEAST(EXTRACT(EPOCH FROM (LEAD(bucket) OVER (ORDER BY bucket) - bucket)), 900) AS dt_s
+                FROM readings_1m
+                WHERE meter_id = $1 AND bucket >= $2 AND power_active_total_avg IS NOT NULL
+            )
+            SELECT time_bucket('1 hour', bucket) AS hour, SUM(p * COALESCE(dt_s, 60)) / 3600.0 AS kwh
+            FROM m GROUP BY 1`, [meterId, since]),
+    ]);
+    const num = (v: any): number | null => (v === null || v === undefined ? null : Number(v));
+    const hours = new Map<number, EnergyHour>();
+    for (const r of reg.rows) {
+        hours.set(new Date(r.hour).getTime(), {
+            hour: new Date(r.hour), regFirst: num(r.reg_first), regLast: num(r.reg_last),
+            tFirst: r.t_first ? new Date(r.t_first) : null, tLast: r.t_last ? new Date(r.t_last) : null,
+            pMaxKw: num(r.p_max), powerKwh: null,
+        });
+    }
+    for (const r of pow.rows) {
+        const k = new Date(r.hour).getTime();
+        const h = hours.get(k) ?? { hour: new Date(r.hour), regFirst: null, regLast: null, tFirst: null, tLast: null, pMaxKw: null, powerKwh: null };
+        h.powerKwh = num(r.kwh);
+        hours.set(k, h);
+    }
+    return [...hours.values()];
+}
+
+/** Combined method label over several periods. */
+export function combinedMethod(methods: EnergyMethod[]): EnergyMethod {
+    const set = new Set(methods.filter((m) => m !== 'none'));
+    if (set.size === 0) return 'none';
+    if (set.size === 1) return [...set][0];
+    return 'mixed';
+}

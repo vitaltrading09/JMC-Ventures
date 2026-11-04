@@ -17,7 +17,7 @@ import { buildRiskProfile } from './risk-profile';
 import { maxDemand, DEFAULT_DEMAND_INTERVAL_MIN } from './demand';
 import { planRead, meterSeriesSql, tenantPowerSql } from './aggregates';
 import { checkTenMinute, checkDemand, checkEvents, checkDataHealth, checkThdITrend } from './alerting';
-import { periodEnergy, monthKey } from './energy';
+import { periodEnergy, monthKey, loadEnergyHours, touBand, localDateHour, combinedMethod } from './energy';
 import { buildRenewalReview, runRenewalSweep } from './renewal';
 import { randomBytes, createHash } from 'crypto';
 import {
@@ -2167,43 +2167,10 @@ app.get('/meters/:id/monthly', authenticateToken, async (req: any, res) => {
         const since = await client.query(
             `SELECT DATE_TRUNC('month', NOW() - ($1 || ' months')::INTERVAL) AS start`, [months - 1]);
         const start: Date = since.rows[0].start;
-        const [reg, pow] = await Promise.all([
-            client.query(`
-                SELECT bucket AS hour,
-                       energy_import_total_first AS reg_first, energy_import_total_last AS reg_last,
-                       t_first, t_last, power_active_total_max AS p_max
-                FROM readings_1h
-                WHERE meter_id = $1 AND bucket >= $2
-            `, [id, start]),
-            client.query(`
-                WITH m AS (
-                    SELECT bucket, power_active_total_avg AS p,
-                           LEAST(EXTRACT(EPOCH FROM (LEAD(bucket) OVER (ORDER BY bucket) - bucket)), 900) AS dt_s
-                    FROM readings_1m
-                    WHERE meter_id = $1 AND bucket >= $2 AND power_active_total_avg IS NOT NULL
-                )
-                SELECT time_bucket('1 hour', bucket) AS hour, SUM(p * COALESCE(dt_s, 60)) / 3600.0 AS kwh
-                FROM m GROUP BY 1
-            `, [id, start]),
-        ]);
-        const num = (v: any): number | null => (v === null || v === undefined ? null : Number(v));
-        const hours = new Map<number, any>();
-        for (const r of reg.rows) {
-            hours.set(new Date(r.hour).getTime(), {
-                hour: new Date(r.hour), regFirst: num(r.reg_first), regLast: num(r.reg_last),
-                tFirst: r.t_first ? new Date(r.t_first) : null, tLast: r.t_last ? new Date(r.t_last) : null,
-                pMaxKw: num(r.p_max), powerKwh: null,
-            });
-        }
-        for (const r of pow.rows) {
-            const k = new Date(r.hour).getTime();
-            const h = hours.get(k) ?? { hour: new Date(r.hour), regFirst: null, regLast: null, tFirst: null, tLast: null, pMaxKw: null, powerKwh: null };
-            h.powerKwh = num(r.kwh);
-            hours.set(k, h);
-        }
+        const hours = await loadEnergyHours(client, id, start);
         const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
         const result = {
-            rows: periodEnergy([...hours.values()], monthKey).map((p) => {
+            rows: periodEnergy(hours, monthKey).map((p) => {
                 const [y, m] = p.period.split('-').map(Number);
                 return {
                     month: MONTHS[m - 1],
@@ -2218,6 +2185,57 @@ app.get('/meters/:id/monthly', authenticateToken, async (req: any, res) => {
         res.json(result.rows);
     } catch (err) {
         console.error('Monthly readings error:', err);
+        res.status(500).json({ error: 'Database error' });
+    } finally {
+        client.release();
+    }
+});
+
+// ── Energy by time-of-use band, per local day (analytics page) ──────────────
+// GET /meters/:id/energy/tou?days=7
+// From the import register (power-integration fallback where the meter has no
+// register), the same source as /monthly, so every kWh figure agrees.
+app.get('/meters/:id/energy/tou', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const days = Math.min(Math.max(parseInt(String(req.query.days || '7')), 1), 31);
+    const { tenantId, role } = req.user;
+    const client = await pool.connect();
+    try {
+        const own = await client.query(`
+            SELECT s.timezone FROM meters m JOIN sites s ON m.site_id = s.id
+            WHERE m.id = $1 ${role === 'super_admin' ? '' : 'AND s.tenant_id = $2'}`,
+            role === 'super_admin' ? [id] : [id, tenantId]);
+        if (own.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
+        // sites.timezone defaults to 'UTC' in the schema; the tariff bands are
+        // South African local time unless a site says otherwise.
+        const tz = own.rows[0].timezone && own.rows[0].timezone !== 'UTC' ? own.rows[0].timezone : 'Africa/Johannesburg';
+
+        const since = new Date(Date.now() - days * 86_400_000);
+        const hours = await loadEnergyHours(client, id, since);
+        const periods = periodEnergy(hours, (h) => {
+            const { date, hour } = localDateHour(h, tz);
+            return `${date}|${touBand(hour)}`;
+        });
+        const byDay = new Map<string, { date: string; peak: number; standard: number; offpeak: number }>();
+        const total = { peak: 0, standard: 0, offpeak: 0 };
+        const quality = { register_resets: 0, implausible_jumps: 0, register_hours: 0, power_hours: 0 };
+        for (const p of periods) {
+            const [date, band] = p.period.split('|') as [string, 'peak' | 'standard' | 'offpeak'];
+            const d = byDay.get(date) ?? { date, peak: 0, standard: 0, offpeak: 0 };
+            d[band] = Math.round((d[band] + p.kwh) * 10) / 10;
+            byDay.set(date, d);
+            total[band] = Math.round((total[band] + p.kwh) * 10) / 10;
+            for (const k of Object.keys(quality) as Array<keyof typeof quality>) quality[k] += p.data_quality[k];
+        }
+        res.json({
+            meter_id: id, days, timezone: tz,
+            method: combinedMethod(periods.map((p) => p.method)),
+            total_kwh: total,
+            by_day: [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date)),
+            data_quality: quality,
+        });
+    } catch (err) {
+        console.error('TOU energy error:', err);
         res.status(500).json({ error: 'Database error' });
     } finally {
         client.release();
