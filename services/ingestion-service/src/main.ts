@@ -3,10 +3,11 @@ import path from 'path';
 import { Pool } from 'pg';
 import cron from 'node-cron';
 import type { MqttClient } from 'mqtt';
-import { initMqtt, bootstrapMqttSchema } from './mqtt';
+import { initMqtt } from './mqtt';
+import { assertSchemaCurrent, SchemaBehindError } from '@gridiq/db';
 import {
     parseRoles, uploadDir, toStoredUploadPath, resolveStoredUploadPath,
-    waitUntil, databaseReachable, ingestSchemaReady, startHealthServer,
+    waitUntil, databaseReachable, startHealthServer,
 } from './roles';
 import { computeAndStoreSiteScore, getLatestSiteScore } from './energy-score';
 import { assessPowerQuality } from './power-quality';
@@ -56,338 +57,23 @@ const pool = new Pool({
     idleTimeoutMillis: 30000,
 });
 
-// Startup schema bootstrap. Runs in the api role only, so two containers never
-// race on the same DDL. Phase 2 replaces this with migrations.
-async function bootstrapSchema() {
-    const client = await pool.connect();
-    try {
-        // Meter active/pause flag + load profile (what the meter actually measures)
-        await client.query(`
-            ALTER TABLE meters
-            ADD COLUMN IF NOT EXISTS is_active        BOOLEAN NOT NULL DEFAULT true,
-            ADD COLUMN IF NOT EXISTS load_types       TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-            ADD COLUMN IF NOT EXISTS load_description TEXT,
-            ADD COLUMN IF NOT EXISTS site_type        VARCHAR(50);
-        `);
-
-        // Created before the ALTERs below. It used to come after them, which
-        // failed the whole bootstrap on an empty database (init.sql does not
-        // create site_settings). No-op on existing databases.
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS site_settings (
-                site_id UUID PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
-                tariff_peak DECIMAL(10,2),
-                peak_times VARCHAR(255),
-                tariff_standard DECIMAL(10,2),
-                standard_times VARCHAR(255),
-                tariff_offpeak DECIMAL(10,2),
-                offpeak_times VARCHAR(255),
-                alert_max_kw DECIMAL(10,2),
-                alert_min_v DECIMAL(10,2),
-                alert_max_thd DECIMAL(10,2),
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-        console.log("DB Schema initialized: site_settings verified");
-
-        // Energy score weight columns (added to existing site_settings)
-        await client.query(`
-            ALTER TABLE site_settings
-            ADD COLUMN IF NOT EXISTS tariff_type VARCHAR(50),
-            ADD COLUMN IF NOT EXISTS weight_pf DECIMAL(4,3),
-            ADD COLUMN IF NOT EXISTS weight_thd DECIMAL(4,3),
-            ADD COLUMN IF NOT EXISTS weight_voltage_unbalance DECIMAL(4,3),
-            ADD COLUMN IF NOT EXISTS weight_voltage_quality DECIMAL(4,3);
-        `);
-
-        // Drop the legacy load_factor weight column if it still exists.
-        // Load factor is no longer a scored component (see energy-score.ts);
-        // values stored there are not transferable to voltage unbalance.
-        await client.query(`
-            DO $$ BEGIN
-                IF EXISTS (SELECT 1 FROM information_schema.columns
-                           WHERE table_name='site_settings' AND column_name='weight_load_factor') THEN
-                    ALTER TABLE site_settings DROP COLUMN weight_load_factor;
-                END IF;
-            END $$;
-        `);
-
-        // NRS 048 alert thresholds + MDI + demand tariff
-        await client.query(`
-            ALTER TABLE site_settings
-            ADD COLUMN IF NOT EXISTS alert_max_v DECIMAL(10,2),
-            ADD COLUMN IF NOT EXISTS alert_min_freq DECIMAL(6,2),
-            ADD COLUMN IF NOT EXISTS alert_max_freq DECIMAL(6,2),
-            ADD COLUMN IF NOT EXISTS contracted_mdi_kva DECIMAL(10,2),
-            ADD COLUMN IF NOT EXISTS tariff_demand DECIMAL(10,2),
-            -- Utility demand integration window. Eskom Megaflex/Miniflex use 30
-            -- minutes; some municipal tariffs use 15. Per-site because it must
-            -- match the client's actual tariff to reconcile against their bill.
-            ADD COLUMN IF NOT EXISTS demand_interval_min INTEGER;
-        `);
-
-        // Energy scores table
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS energy_scores (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                site_id UUID REFERENCES sites(id) ON DELETE CASCADE,
-                score DECIMAL(5,2) NOT NULL,
-                pf_score DECIMAL(5,2), thd_score DECIMAL(5,2),
-                voltage_unbalance_score DECIMAL(5,2), voltage_quality_score DECIMAL(5,2),
-                weight_pf DECIMAL(4,3), weight_thd DECIMAL(4,3),
-                weight_voltage_unbalance DECIMAL(4,3), weight_voltage_quality DECIMAL(4,3),
-                tariff_type VARCHAR(50), calculated_at TIMESTAMPTZ DEFAULT NOW()
-            );
-            CREATE INDEX IF NOT EXISTS idx_energy_scores_site ON energy_scores (site_id, calculated_at DESC);
-        `);
-
-        // For existing databases: add the new unbalance columns and drop the
-        // legacy load_factor ones. Old historical rows lose those columns —
-        // acceptable because score data is recomputed every 5 min anyway.
-        await client.query(`
-            ALTER TABLE energy_scores
-                ADD COLUMN IF NOT EXISTS voltage_unbalance_score DECIMAL(5,2),
-                ADD COLUMN IF NOT EXISTS weight_voltage_unbalance DECIMAL(4,3);
-        `);
-        await client.query(`
-            DO $$ BEGIN
-                IF EXISTS (SELECT 1 FROM information_schema.columns
-                           WHERE table_name='energy_scores' AND column_name='load_factor_score') THEN
-                    ALTER TABLE energy_scores DROP COLUMN load_factor_score;
-                END IF;
-                IF EXISTS (SELECT 1 FROM information_schema.columns
-                           WHERE table_name='energy_scores' AND column_name='weight_load_factor') THEN
-                    ALTER TABLE energy_scores DROP COLUMN weight_load_factor;
-                END IF;
-            END $$;
-        `);
-
-        // Recommendations table — meter_id is nullable so legacy site-wide
-        // recommendations still work; per-meter recs set meter_id.
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS recommendations (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                site_id UUID REFERENCES sites(id) ON DELETE CASCADE,
-                tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
-                type VARCHAR(100) NOT NULL, priority INTEGER DEFAULT 1,
-                title VARCHAR(255) NOT NULL, problem TEXT, solution TEXT,
-                estimated_monthly_saving_zar DECIMAL(12,2) DEFAULT 0,
-                estimated_implementation_cost_zar DECIMAL(12,2) DEFAULT 0,
-                payback_months INTEGER DEFAULT 0,
-                confidence VARCHAR(20) DEFAULT 'MEDIUM',
-                standard_reference VARCHAR(255),
-                status VARCHAR(50) DEFAULT 'ACTIVE',
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            );
-            CREATE INDEX IF NOT EXISTS idx_recommendations_site ON recommendations (site_id, status, created_at DESC);
-            ALTER TABLE recommendations
-            ADD COLUMN IF NOT EXISTS meter_id UUID REFERENCES meters(id) ON DELETE CASCADE;
-            CREATE INDEX IF NOT EXISTS idx_recommendations_meter ON recommendations (meter_id, status, created_at DESC) WHERE meter_id IS NOT NULL;
-        `);
-
-        // Single-line diagrams — one per site. Layout is a free-form JSONB
-        // shape: { nodes: [{id, type, position:{x,y}, data:{...}}], edges: [...] }.
-        // background_pdf_path points at a file on the ingestion-service uploads dir.
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS site_diagrams (
-                site_id             UUID PRIMARY KEY REFERENCES sites(id) ON DELETE CASCADE,
-                layout              JSONB NOT NULL DEFAULT '{"nodes":[],"edges":[]}'::jsonb,
-                background_pdf_path TEXT,
-                background_width    INTEGER,
-                background_height   INTEGER,
-                updated_at          TIMESTAMPTZ DEFAULT NOW()
-            );
-        `);
-
-        // Leads table
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS leads (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                site_id UUID REFERENCES sites(id) ON DELETE CASCADE,
-                tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
-                recommendation_id UUID REFERENCES recommendations(id) ON DELETE SET NULL,
-                status VARCHAR(50) DEFAULT 'NEW',
-                notes TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_at TIMESTAMPTZ DEFAULT NOW()
-            );
-            CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status, created_at DESC);
-        `);
-
-        console.log('DB Schema initialized: energy_scores, recommendations, leads verified');
-
-        // Power quality assessment snapshots — the long-term record behind trend
-        // lines and the value ledger. One row per meter per assessment run.
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS pq_assessments (
-                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                meter_id      UUID REFERENCES meters(id) ON DELETE CASCADE,
-                site_id       UUID REFERENCES sites(id) ON DELETE CASCADE,
-                tenant_id     UUID REFERENCES tenants(id) ON DELETE CASCADE,
-                assessed_at   TIMESTAMPTZ DEFAULT NOW(),
-                period_days   INTEGER,
-                readings      INTEGER,
-                verdict       VARCHAR(32),
-                supply_score  INTEGER,
-                install_score INTEGER,
-                parameters    JSONB,
-                risks         JSONB,
-                degrading     JSONB
-            );
-            CREATE INDEX IF NOT EXISTS idx_pq_meter_time ON pq_assessments (meter_id, assessed_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_pq_tenant_time ON pq_assessments (tenant_id, assessed_at DESC);
-        `);
-        // Cached AI narrative, stored against the snapshot so the wording stays
-        // stable for a given assessment and isn't re-billed on every page view.
-        await client.query(`
-            ALTER TABLE pq_assessments ADD COLUMN IF NOT EXISTS ai_summary TEXT;
-        `);
-        console.log("DB Schema initialized: pq_assessments verified");
-
-        // White-label branding — lets an installer or reseller put their own
-        // identity on the report they hand to their client.
-        await client.query(`
-            ALTER TABLE tenants ADD COLUMN IF NOT EXISTS brand_name TEXT;
-            ALTER TABLE tenants ADD COLUMN IF NOT EXISTS brand_logo_url TEXT;
-            ALTER TABLE tenants ADD COLUMN IF NOT EXISTS brand_footer TEXT;
-        `);
-        console.log("DB Schema initialized: tenant branding verified");
-
-        // Read-only report share links. Only the SHA-256 of the token is stored —
-        // a leaked database must not yield working links. The raw token exists
-        // exactly once, in the response to the issuing request.
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS report_shares (
-                id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tenant_id      UUID REFERENCES tenants(id) ON DELETE CASCADE,
-                site_id        UUID REFERENCES sites(id)   ON DELETE CASCADE,
-                meter_id       UUID REFERENCES meters(id)  ON DELETE CASCADE,
-                token_hash     CHAR(64) NOT NULL UNIQUE,
-                label          TEXT,
-                period_days    INTEGER NOT NULL DEFAULT 7,
-                expires_at     TIMESTAMPTZ NOT NULL,
-                revoked_at     TIMESTAMPTZ,
-                view_count     INTEGER NOT NULL DEFAULT 0,
-                last_viewed_at TIMESTAMPTZ,
-                created_by     UUID REFERENCES users(id) ON DELETE SET NULL,
-                created_at     TIMESTAMPTZ DEFAULT NOW()
-            );
-            CREATE INDEX IF NOT EXISTS idx_shares_meter ON report_shares (meter_id, created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_shares_live  ON report_shares (expires_at) WHERE revoked_at IS NULL;
-        `);
-
-        // Every view of a shared report is logged. A link handed to an outside
-        // party is only defensible if the owner can see how it was used.
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS report_share_access (
-                id          BIGSERIAL PRIMARY KEY,
-                share_id    UUID REFERENCES report_shares(id) ON DELETE CASCADE,
-                accessed_at TIMESTAMPTZ DEFAULT NOW(),
-                ip_address  TEXT,
-                user_agent  TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_share_access ON report_share_access (share_id, accessed_at DESC);
-        `);
-        console.log("DB Schema initialized: report_shares verified");
-
-        // Broker cross-tenant access.
-        //
-        // A broker manages many client organisations, which the tenant model has
-        // no way to express — a user belongs to exactly one tenant, and
-        // super_admin means the whole platform, not a book of clients.
-        //
-        // This is a GRANT table rather than an organisations layer above tenants:
-        // additive, reversible, and it leaves every existing tenant-scoped query
-        // untouched. Cross-tenant reads live only on dedicated /broker endpoints
-        // that resolve this table; no existing endpoint is widened, because
-        // loosening a tenant filter is how multi-tenant data leaks happen.
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS broker_client_access (
-                id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                broker_user_id UUID NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
-                tenant_id      UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-                label          TEXT,
-                granted_at     TIMESTAMPTZ DEFAULT NOW(),
-                granted_by     UUID REFERENCES users(id) ON DELETE SET NULL,
-                revoked_at     TIMESTAMPTZ,
-                UNIQUE (broker_user_id, tenant_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_broker_access_live
-                ON broker_client_access (broker_user_id) WHERE revoked_at IS NULL;
-        `);
-        console.log("DB Schema initialized: broker_client_access verified");
-
-        // Pre-renewal reviews. The renewal date lives on the tenant because a
-        // policy renews per client, not per site.
-        await client.query(`
-            ALTER TABLE tenants ADD COLUMN IF NOT EXISTS renewal_date DATE;
-
-            CREATE TABLE IF NOT EXISTS renewal_reviews (
-                id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                tenant_id    UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-                renewal_date DATE NOT NULL,
-                days_before  INTEGER NOT NULL,
-                summary      JSONB NOT NULL,
-                generated_at TIMESTAMPTZ DEFAULT NOW(),
-                -- One review per milestone per renewal: the sweep is idempotent
-                -- and safe to re-run after downtime.
-                UNIQUE (tenant_id, renewal_date, days_before)
-            );
-            CREATE INDEX IF NOT EXISTS idx_renewal_reviews_tenant
-                ON renewal_reviews (tenant_id, renewal_date DESC, days_before ASC);
-        `);
-        console.log("DB Schema initialized: renewal_reviews verified");
-
-        // ── Compression ──────────────────────────────────────────────────
-        // Measured ~93% saving on this telemetry. The boundary is deliberately
-        // set BEYOND the MQTT backfill window (MAX_BACKFILL_DAYS = 30 in
-        // mqtt.ts): TimescaleDB does NOT enforce unique indexes against
-        // compressed chunks, so a late reading landing in one bypasses the
-        // ON CONFLICT guard and silently writes a duplicate. Keeping every
-        // chunk that can still receive a write uncompressed removes that whole
-        // class of corruption structurally, instead of trusting the database to
-        // catch it. CSV import handles its own case via ensureRangeWritable().
-        // Own try/catch so a compression failure cannot block schema init.
-        try {
-            await client.query(`
-                ALTER TABLE meter_readings SET (
-                    timescaledb.compress,
-                    timescaledb.compress_segmentby = 'meter_id',
-                    timescaledb.compress_orderby   = 'time DESC'
-                );
-            `);
-            await client.query(`
-                SELECT add_compression_policy('meter_readings', INTERVAL '35 days', if_not_exists => TRUE);
-            `);
-            console.log('DB Schema initialized: compression policy verified (35 days)');
-        } catch (e: any) {
-            console.error('Compression setup skipped (non-fatal):', e.message || e);
-        }
-    } catch (e) {
-        console.error("DB Schema initialization failed", e);
-    } finally {
-        client.release();
-    }
-}
-
-// Startup order per role. Each role only touches the database once it is
-// reachable; ingest and jobs additionally wait until the api role has run the
-// bootstrap. Bootstrap failures stay non-fatal, as before the split.
+// Startup. Every role refuses to run against a database that is behind the
+// latest migration (packages/db/migrations; the compose `migrate` service
+// applies them). No role changes the schema.
 let mqttClient: MqttClient | null = null;
 let jobsRegistered = false;
 const startup = (async () => {
     await waitUntil('database', () => databaseReachable(pool));
-    if (ROLES.has('api')) {
-        // MQTT schema first: bootstrapSchema enables compression on
-        // meter_readings, after which TimescaleDB refuses the index/column DDL
-        // in bootstrapMqttSchema. In the old order a fresh database never got
-        // the provenance columns. Existing databases: both remain no-ops.
-        await bootstrapMqttSchema(pool);
-        await bootstrapSchema();
+    try {
+        await assertSchemaCurrent(pool);
+    } catch (e) {
+        if (e instanceof SchemaBehindError) {
+            console.error(`FATAL: ${e.message}`);
+            process.exit(1);
+        }
+        throw e;
     }
-    if (ROLES.has('ingest') || ROLES.has('jobs')) {
-        await waitUntil('schema bootstrap (api role)', () => ingestSchemaReady(pool), { intervalMs: 5_000 });
-    }
+    startHttp();
     if (ROLES.has('ingest')) {
         // Start MQTT Listener bridging Mosquitto to TimescaleDB
         mqttClient = await initMqtt(pool);
@@ -3054,13 +2740,17 @@ app.delete('/sites/:id/diagram/pdf', authenticateToken, async (req: any, res) =>
     }
 });
 
-if (ROLES.has('api')) {
-    app.listen(port, () => {
-        console.log(`Ingestion Service API running on port ${port}`);
-    });
-} else {
-    // ingest/jobs containers: tiny internal /health for the Docker HEALTHCHECK
-    startHealthServer(Number(process.env.HEALTH_PORT || 9090), roleHealth);
+// Called by startup() once the schema is confirmed current, so nothing is
+// served from an outdated database.
+function startHttp() {
+    if (ROLES.has('api')) {
+        app.listen(port, () => {
+            console.log(`Ingestion Service API running on port ${port}`);
+        });
+    } else {
+        // ingest/jobs containers: tiny internal /health for the Docker HEALTHCHECK
+        startHealthServer(Number(process.env.HEALTH_PORT || 9090), roleHealth);
+    }
 }
 
 console.log('Ingestion Service started.');

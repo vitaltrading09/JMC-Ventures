@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { Pool } from 'pg';
+import { assertSchemaCurrent, SchemaBehindError } from '@gridiq/db';
 
 // Load .env from the service directory regardless of CWD
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
@@ -251,6 +252,28 @@ app.post('/users', requireSuperAdmin, async (req: any, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Auth Service running on port ${port}`);
-});
+// Refuse to serve against a database that is behind the latest migration
+// (packages/db/migrations; the compose `migrate` service applies them).
+// Retries while the database is still starting.
+(async () => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await assertSchemaCurrent(pool);
+      break;
+    } catch (e: any) {
+      if (e instanceof SchemaBehindError) {
+        console.error(`FATAL: ${e.message}`);
+        process.exit(1);
+      }
+      if (attempt >= 60) {
+        console.error('FATAL: database unreachable:', e?.message || e);
+        process.exit(1);
+      }
+      console.log(`Waiting for database (${e?.message || e})`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  app.listen(port, () => {
+    console.log(`Auth Service running on port ${port}`);
+  });
+})();

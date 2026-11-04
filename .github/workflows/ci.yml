@@ -75,6 +75,9 @@ jobs:
       - name: Test ingestion-service
         run: npm test --prefix services/ingestion-service
 
+      - name: Test packages/db (migrations, schema check, compression vs backfill)
+        run: npm test -w packages/db
+
       # Last because it is by far the slowest step: fail fast on the cheap ones.
       - name: Build web
         run: npm run build --prefix apps/web
@@ -82,6 +85,37 @@ jobs:
           # Build-time only (baked into the bundle); next.config.js refuses to
           # build without it. The images get the real value as a build arg.
           NEXT_PUBLIC_API_URL: http://localhost:8081
+
+  # The migrations against a real, empty TimescaleDB: apply, re-run (must be a
+  # no-op), check nothing is pending.
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      timescaledb:
+        image: timescale/timescaledb:2.25.2-pg16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci -d ci" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://ci:ci@localhost:5432/ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: migrate up (empty database)
+        run: node packages/db/bin/migrate.js up
+      - name: migrate up again (no-op)
+        run: node packages/db/bin/migrate.js up
+      - name: nothing pending
+        run: node packages/db/bin/migrate.js status
 
   # Every image must build for the Oracle A1 (arm64) VM and for amd64.
   docker-images:

@@ -6,7 +6,7 @@ import { Pool } from 'pg';
 // Process roles
 //
 // One image runs as three containers. ROLES picks which parts start:
-//   api    — REST endpoints (app.listen) and the startup schema bootstrap
+//   api    — REST endpoints (app.listen)
 //   ingest — MQTT → DB only
 //   jobs   — every cron.schedule
 // Local dev runs all three in one process (the default).
@@ -62,10 +62,7 @@ export function resolveStoredUploadPath(stored: string, root: string = uploadDir
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-/**
- * Polls until `check` returns true. Used by ingest/jobs, which must not touch
- * the database before it is reachable and the api role has bootstrapped it.
- */
+/** Polls until `check` returns true, e.g. until the database accepts connections. */
 export async function waitUntil(
     label: string,
     check: () => Promise<boolean>,
@@ -91,26 +88,6 @@ export async function waitUntil(
 export async function databaseReachable(pool: Pool): Promise<boolean> {
     await pool.query('SELECT 1');
     return true;
-}
-
-/**
- * True once the objects ingest depends on exist: the unique index behind the
- * ON CONFLICT guard, the provenance columns and the dead-letter table. Ingest
- * must never start writing without the guard in place.
- */
-export async function ingestSchemaReady(pool: Pool): Promise<boolean> {
-    const r = await pool.query(`
-        SELECT
-            to_regclass('public.idx_meter_readings_unique') IS NOT NULL AS has_unique,
-            to_regclass('public.dead_letter_payloads')      IS NOT NULL AS has_dead_letter,
-            EXISTS (SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'meter_readings' AND column_name = 'time_source') AS has_provenance,
-            -- alert thresholds read by mqtt.ts on every message (main bootstrap)
-            EXISTS (SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'site_settings' AND column_name = 'contracted_mdi_kva') AS has_alert_cols
-    `);
-    const row = r.rows[0];
-    return !!(row.has_unique && row.has_dead_letter && row.has_provenance && row.has_alert_cols);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

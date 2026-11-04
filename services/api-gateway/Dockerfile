@@ -11,6 +11,7 @@ COPY apps/web/package.json apps/web/
 COPY services/auth-service/package.json services/auth-service/
 COPY services/api-gateway/package.json services/api-gateway/
 COPY services/ingestion-service/package.json services/ingestion-service/
+COPY packages/db/package.json packages/db/
 
 # ── Production dependencies ────────────────────────────────────────────────
 FROM manifests AS deps

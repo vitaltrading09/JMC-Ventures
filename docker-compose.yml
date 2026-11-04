@@ -99,7 +99,7 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  # REST endpoints + (until Phase 2) the startup schema bootstrap.
+  # REST endpoints.
   api:
     <<: [*restart, *ingestion-image]
     environment:
@@ -149,12 +149,13 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  # One-shot: creates the base schema on an empty DB (Phase 2: real migrations).
-  # Not restarted: it exits 0 when done.
+  # One-shot: applies pending migrations (packages/db/migrations) and exits 0.
+  # Every app service waits for it and refuses to start on an outdated schema.
+  # deploy.sh runs it before `up -d`. Not restarted.
   migrate:
     <<: *ingestion-image
     restart: "no"
-    command: ["node", "dist/migrate.js"]
+    command: ["node", "/app/packages/db/bin/migrate.js", "up"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
     healthcheck:
@@ -195,8 +196,10 @@ services:
 
   timescaledb:
     <<: *restart
-    # Must match the production extension version before a restore (plan Part D5).
-    image: timescale/timescaledb:2.17.2-pg16
+    # Upgrading the image is safe: `migrate` runs ALTER EXTENSION timescaledb
+    # UPDATE when the image ships a newer version than the database has.
+    # Restoring a dump: see deploy/scripts/restore-dump.sh.
+    image: timescale/timescaledb:2.25.2-pg16
     environment:
       # Only used when the data directory is first initialised.
       POSTGRES_USER: ${POSTGRES_USER}
