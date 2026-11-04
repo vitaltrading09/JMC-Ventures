@@ -221,7 +221,25 @@ async function refreshAggregates(db, from = null, to = null) {
     for (const view of AGGREGATE_VIEWS) {
         const exists = await db.query(`SELECT to_regclass($1) IS NOT NULL AS present`, [`public.${view}`]);
         if (!exists.rows[0].present) continue;
-        await db.query(`CALL refresh_continuous_aggregate($1::regclass, $2::timestamptz, $3::timestamptz)`, [view, from, to]);
+        await refreshWithRetry(db, `CALL refresh_continuous_aggregate($1::regclass, $2::timestamptz, $3::timestamptz)`, [view, from, to]);
+    }
+}
+
+/**
+ * TimescaleDB refuses a refresh whose range overlaps one in progress (SQLSTATE
+ * 22023, "overlaps with existing range"): the background refresh policy, a CSV
+ * import or another migrate run. Waiting for it to finish and trying again is
+ * safe, because a refresh is idempotent.
+ */
+async function refreshWithRetry(db, sql, params, { attempts = 20, waitMs = 3000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+    for (let i = 1; ; i++) {
+        try {
+            return await db.query(sql, params);
+        } catch (e) {
+            const overlap = e && e.code === '22023' && /overlaps with existing range/.test(String(e.message));
+            if (!overlap || i >= attempts) throw e;
+            await sleep(waitMs);
+        }
     }
 }
 
@@ -249,7 +267,7 @@ async function materialiseNewAggregates(db) {
         const matFirst = m.rows[0].first;
         // Covered when the earliest bucket starts within a day of the earliest reading.
         if (matFirst && new Date(matFirst).getTime() - new Date(rawFirst).getTime() <= 86_400_000) continue;
-        await db.query(`CALL refresh_continuous_aggregate($1::regclass, NULL, $2::timestamptz)`, [view, matFirst]);
+        await refreshWithRetry(db, `CALL refresh_continuous_aggregate($1::regclass, NULL, $2::timestamptz)`, [view, matFirst]);
         done.push(view);
     }
     return done;
@@ -257,6 +275,7 @@ async function materialiseNewAggregates(db) {
 
 module.exports = {
     refreshAggregates,
+    refreshWithRetry,
     materialiseNewAggregates,
     MAX_BACKFILL_DAYS,
     COMPRESSION_AFTER_DAYS,

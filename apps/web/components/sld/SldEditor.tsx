@@ -1,13 +1,18 @@
 "use client";
 
-// Interactive Single-Line Diagram editor.
+// Interactive Single-Line Diagram editor, for one project (Phase 8: pins are
+// bound to measurement points).
 //
-// - PDF backdrop: clients upload their existing electrical SLD PDF; we render
-//   the first page as a static image behind the canvas. The builder drops meter
-//   pins on top to align with the PDF.
-// - Meter pins (custom React Flow node) display live kW/V/PF and alert state.
-// - Edit mode toggles palette + drag-to-position + Save Layout.
-// - View mode is read-only; perfect for client login.
+// - PDF backdrop: the site's existing electrical SLD PDF, rendered behind the
+//   canvas. Ops drops point pins on top to align with it.
+// - Point pins (custom React Flow node) show the point's live 1-minute kW/V/PF
+//   (corrected, from the point views) and the open alerts of its current box.
+// - Edit mode (ops only: `editable`) toggles palette + drag + Save Layout.
+// - View mode is read-only: the client portal's Metering layout.
+//
+// Stored layouts keep the key `meterId` for the pin binding; it holds a point
+// id. Meters migrated in Phase 6 have point id = meter id, so older layouts
+// keep working; a pin holding a device id is matched to that device's point.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pdfjs } from "react-pdf";
@@ -34,13 +39,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 
 const API = process.env.NEXT_PUBLIC_API_URL;
 
-interface Site  { id: string; name: string; }
-interface Meter {
-    id: string; name: string; site_id: string; is_active?: boolean;
-    latest_reading?: {
-        power_active_total?: number; voltage_a?: number;
-        power_factor_total?: number; time: string;
-    } | null;
+interface Point {
+    id: string; name: string; metered: boolean; device_id: string | null;
+    live: { at: string; kw: number | null; pf: number | null; v: number | null } | null;
 }
 interface Alert {
     id: string; meter_id: string; severity: "INFO" | "WARNING" | "CRITICAL";
@@ -51,12 +52,11 @@ interface Alert {
 // the reference is stable — React Flow warns if nodeTypes changes per render.
 const nodeTypes = { meter: MeterNode, "pdf-backdrop": PdfBackdropNode };
 
-function Inner() {
+function Inner({ projectId, editable }: { projectId: string; editable: boolean }) {
     const rf = useReactFlow();
+    const siteId = projectId;
 
-    const [sites,        setSites]        = useState<Site[]>([]);
-    const [siteId,       setSiteId]       = useState<string>("");
-    const [meters,       setMeters]       = useState<Meter[]>([]);
+    const [points,       setPoints]       = useState<Point[]>([]);
     const [alerts,       setAlerts]       = useState<Alert[]>([]);
 
     const [nodes,        setNodes]        = useState<Node<MeterNodeData>[]>([]);
@@ -70,34 +70,21 @@ function Inner() {
     const [dirty,        setDirty]        = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // ── Fetch sites + meters + alerts ─────────────────────────────────────────
+    // ── Points (with live values) + alerts; refreshed every 12 s ──────────────
     useEffect(() => {
-        (async () => {
-            const [s, m, a] = await Promise.all([
-                fetch(`${API}/ingestion/sites`,   { credentials: 'include' }).then(r => r.ok ? r.json() : []),
-                fetch(`${API}/ingestion/meters`,  { credentials: 'include' }).then(r => r.ok ? r.json() : []),
-                fetch(`${API}/ingestion/alerts`,  { credentials: 'include' }).then(r => r.ok ? r.json() : []),
-            ]);
-            setSites(Array.isArray(s) ? s : []);
-            setMeters(Array.isArray(m) ? m : []);
-            setAlerts(Array.isArray(a) ? a : []);
-            if (Array.isArray(s) && s.length > 0) setSiteId(s[0].id);
-            setLoading(false);
-        })();
-    }, []);
-
-    // Refresh live data (meters + alerts) every 12s while page is open
-    useEffect(() => {
-        const iv = setInterval(async () => {
-            const [m, a] = await Promise.all([
-                fetch(`${API}/ingestion/meters`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
+        const load = async () => {
+            const [p, a] = await Promise.all([
+                fetch(`${API}/ingestion/portal/projects/${projectId}`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
                 fetch(`${API}/ingestion/alerts`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
             ]);
-            if (Array.isArray(m)) setMeters(m);
+            if (p && Array.isArray(p.points)) setPoints(p.points);
             if (Array.isArray(a)) setAlerts(a);
-        }, 12_000);
+            setLoading(false);
+        };
+        load();
+        const iv = setInterval(load, 12_000);
         return () => clearInterval(iv);
-    }, []);
+    }, [projectId]);
 
     // ── Load diagram for selected site ─────────────────────────────────────────
     useEffect(() => {
@@ -160,14 +147,16 @@ function Inner() {
         zIndex:     -1,
     } : null;
 
+    // A pin's point: by point id, or (older layouts) by the device now at a point.
+    const pointFor = (id: string) => points.find(p => p.id === id) ?? points.find(p => p.device_id === id);
     const meterNodes: Node<MeterNodeData>[] = nodes.map(n => {
-        const meter = meters.find(m => m.id === n.data.meterId);
-        const meterAlerts = alerts.filter(a => a.meter_id === n.data.meterId && !a.is_read);
+        const point = pointFor(n.data.meterId);
+        const meterAlerts = alerts.filter(a => !!point?.device_id && a.meter_id === point.device_id && !a.is_read);
         const worst = meterAlerts.find(a => a.severity === "CRITICAL")
             ?? meterAlerts.find(a => a.severity === "WARNING")
             ?? meterAlerts[0];
-        const isLive = !!meter?.latest_reading?.time
-            && (Date.now() - new Date(meter.latest_reading.time).getTime()) < 180_000;
+        const isLive = !!point?.live?.at
+            && (Date.now() - new Date(point.live.at).getTime()) < 180_000;
         return {
             ...n,
             type: "meter",
@@ -175,11 +164,11 @@ function Inner() {
             // Always selectable so view-mode users can click a pin to expand its details.
             selectable: true,
             data: {
-                label:         meter?.name ?? n.data.label ?? "Unknown",
-                meterId:       n.data.meterId,
-                powerKw:       meter?.latest_reading?.power_active_total ?? null,
-                voltage:       meter?.latest_reading?.voltage_a ?? null,
-                pf:            meter?.latest_reading?.power_factor_total ?? null,
+                label:         point?.name ?? n.data.label ?? "Unknown",
+                meterId:       point?.id ?? n.data.meterId,
+                powerKw:       point?.live?.kw ?? null,
+                voltage:       point?.live?.v ?? null,
+                pf:            point?.live?.pf ?? null,
                 isLive,
                 alertSeverity: worst?.severity ?? null,
                 alertCount:    meterAlerts.length,
@@ -202,8 +191,8 @@ function Inner() {
         if (realChanges.some(c => c.type === "position" && (c as any).dragging === false)) setDirty(true);
     }, [editMode]);
 
-    const handleAddMeter = (meterId: string) => {
-        const meter = meters.find(m => m.id === meterId);
+    const handleAddMeter = (pointId: string) => {
+        const meter = points.find(p => p.id === pointId);
         if (!meter) return;
         // Drop in the centre of the current viewport
         const center = rf.screenToFlowPosition({
@@ -211,7 +200,7 @@ function Inner() {
             y: window.innerHeight / 2,
         });
         const newNode: Node<MeterNodeData> = {
-            id: `meter-${meter.id}`,
+            id: `point-${meter.id}`,
             type: "meter",
             position: center,
             data: { label: meter.name, meterId: meter.id },
@@ -238,7 +227,8 @@ function Inner() {
                     id:       n.id,
                     type:     n.type ?? "meter",
                     position: n.position,
-                    data:     { label: n.data.label, meterId: n.data.meterId },
+                    // meterId holds the point id (see the header).
+                    data:     { label: n.data.label, meterId: pointFor(n.data.meterId)?.id ?? n.data.meterId },
                 })),
                 edges: [] as Edge[],
             };
@@ -301,9 +291,9 @@ function Inner() {
         }
     };
 
-    // Meters available to add — only those for the current site that aren't on the diagram yet
-    const placedMeterIds = new Set(nodes.map(n => n.data.meterId));
-    const availableMeters = meters.filter(m => m.site_id === siteId && m.is_active !== false && !placedMeterIds.has(m.id));
+    // Points available to add: those of this project not on the diagram yet
+    const placedMeterIds = new Set(nodes.map(n => pointFor(n.data.meterId)?.id ?? n.data.meterId));
+    const availableMeters = points.filter(p => !placedMeterIds.has(p.id));
 
     if (loading) return (
         <div className="flex items-center justify-center h-[60vh] text-slate-500">
@@ -311,10 +301,10 @@ function Inner() {
         </div>
     );
 
-    if (sites.length === 0) return (
+    if (points.length === 0) return (
         <Card className="p-12 text-center">
             <MapPin className="w-10 h-10 text-slate-700 mx-auto mb-3" />
-            <p className="text-slate-400">No sites yet — create a site first.</p>
+            <p className="text-slate-400">No measurement points yet.</p>
         </Card>
     );
 
@@ -322,20 +312,10 @@ function Inner() {
         <div className="space-y-4 animate-in fade-in duration-500">
             {/* Header */}
             <div className="flex items-center justify-between gap-3 flex-wrap">
-                <div>
-                    <h1 className="text-3xl font-bold tracking-tight text-white">Single-Line Diagram</h1>
-                    <p className="text-slate-400 mt-1 text-sm">
-                        Pin meters onto your existing SLD. Live kW + alerts overlay automatically.
-                    </p>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                    <select
-                        value={siteId}
-                        onChange={e => setSiteId(e.target.value)}
-                        className="bg-slate-900 border border-slate-800 text-slate-300 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                    >
-                        {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
+                <p className="text-slate-400 text-sm">
+                    Measurement points pinned on the single-line diagram, with live 1-minute values and open alerts.
+                </p>
+                {editable && <div className="flex items-center gap-2 flex-wrap">
                     <button
                         onClick={() => setEditMode(m => !m)}
                         className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition ${
@@ -347,11 +327,11 @@ function Inner() {
                         {editMode ? <Eye className="w-4 h-4" /> : <Edit className="w-4 h-4" />}
                         {editMode ? "View mode" : "Edit"}
                     </button>
-                </div>
+                </div>}
             </div>
 
             {/* Edit mode toolbar */}
-            {editMode && (
+            {editable && editMode && (
                 <Card className="p-3 border-blue-500/20 bg-blue-950/30">
                     <div className="flex items-center gap-3 flex-wrap">
                         <span className="text-xs font-semibold uppercase tracking-wider text-blue-300">Edit toolbar</span>
@@ -365,7 +345,7 @@ function Inner() {
                                 className="bg-slate-900 border border-slate-700 text-slate-200 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-40"
                             >
                                 <option value="">
-                                    {availableMeters.length === 0 ? "All meters placed" : "+ Add meter…"}
+                                    {availableMeters.length === 0 ? "All points placed" : "+ Add point…"}
                                 </option>
                                 {availableMeters.map(m => (
                                     <option key={m.id} value={m.id}>{m.name}</option>
@@ -426,7 +406,7 @@ function Inner() {
                         </button>
                     </div>
                     <p className="text-[11px] text-slate-500 mt-2">
-                        Drop meters from the dropdown, drag to align with your PDF, click to select then Remove.
+                        Drop points from the dropdown, drag to align with your PDF, click to select then Remove.
                         Click <strong>Save layout</strong> to persist. Pan/zoom with the canvas controls (bottom-left).
                     </p>
                 </Card>
@@ -469,8 +449,8 @@ function Inner() {
                             <FileText className="w-10 h-10 mx-auto mb-3 opacity-40" />
                             <p className="text-sm">
                                 {editMode
-                                    ? "Upload your client's SLD PDF, then drop meter pins on top to match the topology."
-                                    : "No diagram drawn yet. Click Edit to upload your SLD and add meters."}
+                                    ? "Upload the site's SLD PDF, then drop point pins on top to match the topology."
+                                    : editable ? "No diagram drawn yet. Click Edit to upload the SLD and add points." : "No single-line diagram for this site yet."}
                             </p>
                         </div>
                     </div>
@@ -492,10 +472,10 @@ function Inner() {
 
 // React Flow requires a Provider context. We supply it here so all
 // useReactFlow hooks (fitView, screenToFlowPosition) work inside <Inner>.
-export default function SldEditor() {
+export default function SldEditor({ projectId, editable = false }: { projectId: string; editable?: boolean }) {
     return (
         <ReactFlowProvider>
-            <Inner />
+            <Inner projectId={projectId} editable={editable} />
         </ReactFlowProvider>
     );
 }

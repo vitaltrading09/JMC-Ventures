@@ -152,7 +152,7 @@ export default function DataImportPage() {
                             <option value="">— Select a site —</option>
                             {sites.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                         </select>
-                        {sites.length === 0 && <p className="text-xs text-slate-500 mt-1.5">No sites yet — <a href="/dashboard/sites" className="text-blue-400 hover:underline">create one first</a>.</p>}
+                        {sites.length === 0 && <p className="text-xs text-slate-500 mt-1.5">No sites yet — <a href="/ops/projects" className="text-blue-400 hover:underline">create one first</a>.</p>}
                     </div>
 
                     {selectedSiteId && (
@@ -315,7 +315,7 @@ export default function DataImportPage() {
                     </div>
                     <p className="text-slate-400 text-sm">Your data is now available in the site chart. You can filter by date and measurement.</p>
                     <div className="flex items-center justify-center gap-3 pt-2">
-                        <a href={`/dashboard/sites/${result.meterId}`}
+                        <a href={`/ops/fleet/${result.meterId}`}
                             className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-colors">
                             View on Chart <ArrowRight className="w-4 h-4" />
                         </a>

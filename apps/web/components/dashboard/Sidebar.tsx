@@ -68,20 +68,13 @@ export function Sidebar() {
         setIsOpen(false);
     }, [pathname]);
 
+    // Since Phase 8 the client pages are in /portal. What is left under
+    // /dashboard are the sizing and value tools, behind NEXT_PUBLIC_FEATURE_TOOLS.
     const links = [
-        { name: "Overview",        href: "/dashboard",                  icon: LayoutDashboard },
-        // Flagship deliverable — the standards-cited report clients buy.
-        { name: "Health Check",    href: "/dashboard/health-check",     icon: ShieldCheck },
+        { name: "Back to portal",  href: "/portal",                     icon: LayoutDashboard },
         // The running record of what monitoring has caught — the renewal argument.
         { name: "What We Caught",  href: "/dashboard/value",            icon: ClipboardCheck },
-        { name: "Sites",           href: "/dashboard/sites",            icon: Building2 },
-        { name: "SLD",             href: "/dashboard/sld",              icon: Network },
-        { name: "Alerts",          href: "/dashboard/alerts",           icon: Bell },
-        { name: "Recommendations", href: "/dashboard/recommendations",  icon: Lightbulb },
-        { name: "Analytics",       href: "/dashboard/analytics",        icon: LineChart },
         { name: "Savings",         href: "/dashboard/savings",          icon: PieChart },
-        { name: "Reports",         href: "/dashboard/reports",          icon: FileText },
-        { name: "Settings",        href: "/dashboard/settings",         icon: Settings },
     ];
 
     return (
@@ -167,49 +160,6 @@ export function Sidebar() {
                             <span className="font-medium text-sm">PV Sizer</span>
                         </Link>
 
-                        <Link
-                            href="/dashboard/settings/data"
-                            className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 group ${pathname === "/dashboard/settings/data"
-                                ? "bg-blue-600/10 text-blue-400 border border-blue-500/20"
-                                : "text-slate-400 hover:bg-slate-900 hover:text-white"
-                                }`}
-                        >
-                            <FileSpreadsheet className="h-5 w-5 text-emerald-500 group-hover:text-emerald-400 transition-colors" />
-                            <span className="font-medium text-sm">Data Import</span>
-                        </Link>
-
-                        <Link
-                            href="/dashboard/settings/tariffs"
-                            className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 group ${pathname === "/dashboard/settings/tariffs"
-                                ? "bg-blue-600/10 text-blue-400 border border-blue-500/20"
-                                : "text-slate-400 hover:bg-slate-900 hover:text-white"
-                                }`}
-                        >
-                            <BadgeDollarSign className="h-5 w-5 text-indigo-500 group-hover:text-indigo-400 transition-colors" />
-                            <span className="font-medium text-sm">Tariff Config</span>
-                        </Link>
-
-                        <Link
-                            href="/dashboard/settings/alerts"
-                            className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 group ${pathname === "/dashboard/settings/alerts"
-                                ? "bg-red-600/10 text-red-400 border border-red-500/20"
-                                : "text-slate-400 hover:bg-slate-900 hover:text-white"
-                                }`}
-                        >
-                            <AlertCircle className="h-5 w-5 text-red-500 group-hover:text-red-400 transition-colors" />
-                            <span className="font-medium text-sm">Alerts Config</span>
-                        </Link>
-
-                        <Link
-                            href="/dashboard/settings/branding"
-                            className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 group ${pathname === "/dashboard/settings/branding"
-                                ? "bg-purple-600/10 text-purple-400 border border-purple-500/20"
-                                : "text-slate-400 hover:bg-slate-900 hover:text-white"
-                                }`}
-                        >
-                            <Palette className="h-5 w-5 text-purple-500 group-hover:text-purple-400 transition-colors" />
-                            <span className="font-medium text-sm">Report Branding</span>
-                        </Link>
                     </div>
                 </nav>
 

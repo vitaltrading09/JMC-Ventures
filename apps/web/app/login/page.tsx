@@ -35,8 +35,9 @@ export default function LoginPage() {
             // Only store non-sensitive display info in localStorage.
             localStorage.setItem("user", JSON.stringify(data.user));
 
-            // Redirect to dashboard
-            router.push("/dashboard");
+            // Grid-IQ staff to the ops console, everyone else to the client portal.
+            const role = data.user?.role;
+            router.push(role === "super_admin" || role === "engineer" ? "/ops" : "/portal");
 
         } catch (err: any) {
             setError(err.message);

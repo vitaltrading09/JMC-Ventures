@@ -235,7 +235,7 @@ export default function SavingsPage() {
                         Run an AI analysis on your sites to generate recommendations and see projected savings here.
                     </p>
                     <Link
-                        href="/dashboard/recommendations"
+                        href="/portal/projects"
                         className="mt-6 inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium"
                     >
                         <Zap className="h-4 w-4" /> Go to Recommendations
@@ -355,7 +355,7 @@ export default function SavingsPage() {
                             </div>
                             <div className="shrink-0">
                                 <Link
-                                    href="/dashboard/recommendations"
+                                    href="/portal/projects"
                                     className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium shadow-[0_0_15px_rgba(37,99,235,0.3)] transition-all"
                                 >
                                     <Zap className="h-4 w-4" /> Unlock More Savings

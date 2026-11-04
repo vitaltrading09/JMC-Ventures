@@ -79,3 +79,22 @@ test('mqtt.ts takes MAX_BACKFILL_DAYS from @gridiq/db instead of its own literal
     assert.match(src, /import\s*\{[^}]*\bMAX_BACKFILL_DAYS\b[^}]*\}\s*from\s*'@gridiq\/db'/);
     assert.doesNotMatch(src, /const\s+MAX_BACKFILL_DAYS\s*=/);
 });
+
+test('refreshWithRetry waits out a concurrent refresh, and only that', async (t) => {
+    const { refreshWithRetry } = require('..');
+    const overlap = Object.assign(new Error('materialization range [a, b) overlaps with existing range [c, d) in materialization_ranges table'), { code: '22023' });
+    await t.test('retries an overlap until the other refresh is done', async () => {
+        let calls = 0;
+        const db = { query: async () => { calls++; if (calls < 3) throw overlap; return { rows: [] }; } };
+        await refreshWithRetry(db, 'CALL x', [], { sleep: async () => {} });
+        assert.strictEqual(calls, 3);
+    });
+    await t.test('gives up after the attempts, and never retries other errors', async () => {
+        const always = { query: async () => { throw overlap; } };
+        await assert.rejects(refreshWithRetry(always, 'CALL x', [], { attempts: 2, sleep: async () => {} }), /overlaps/);
+        let calls = 0;
+        const other = { query: async () => { calls++; throw Object.assign(new Error('boom'), { code: '42P01' }); } };
+        await assert.rejects(refreshWithRetry(other, 'CALL x', [], { sleep: async () => {} }), /boom/);
+        assert.strictEqual(calls, 1);
+    });
+});

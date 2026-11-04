@@ -13,6 +13,7 @@ import { apiGet, apiSend, fmtDate, fmtDateTime, TZ_LABEL } from "@/lib/api";
 import { num } from "@/lib/format";
 import { ROLE_LABEL } from "@/lib/ops";
 import { BalanceView, Balance } from "@/components/fleet/BalanceView";
+import { SldView } from "@/components/sld/SldView";
 import { PageHeader, Panel, Table, Badge, Loading, ErrorBox, Empty, Button, Field, inputClass } from "@/components/ops/ui";
 
 interface Point {
@@ -70,6 +71,10 @@ export default function OpsProjectPage() {
             {!p.live_data_visible && <p className="text-sm text-amber-300 -mt-3">Live data is hidden from the client until a report for this project is published.</p>}
 
             <Points projectId={id} points={live} onChange={refresh} />
+
+            <Panel title="Metering layout" subtitle="Single-line diagram with the project's points pinned on it. Edit to upload the site's SLD PDF and place the points.">
+                <SldView projectId={id} editable />
+            </Panel>
 
             <Panel title="Energy balance" subtitle={balance.data ? `${fmtDateTime(balance.data.from)} – ${fmtDateTime(balance.data.to)} ${TZ_LABEL}, from the kWh registers (power-integrated where a meter has none)` : "Last 30 days"}>
                 {balance.isLoading ? <Loading /> : balance.error ? <ErrorBox error={balance.error} /> : balance.data && <BalanceView b={balance.data} />}
