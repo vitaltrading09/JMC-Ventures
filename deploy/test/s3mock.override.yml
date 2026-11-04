@@ -1,0 +1,9 @@
+# LOCAL TEST ONLY: an S3-compatible endpoint for deploy/test/backup-drill.sh.
+# (The plan names MinIO; its images are no longer published on Docker Hub, so
+# this uses Adobe's S3Mock, which speaks the S3 API the aws cli uses.)
+services:
+  s3mock:
+    image: adobe/s3mock:5.2.3
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: gridiq-backups
+      COM_ADOBE_TESTING_S3MOCK_STORE_RETAIN_FILES_ON_EXIT: "false"

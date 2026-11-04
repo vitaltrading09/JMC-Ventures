@@ -3,7 +3,8 @@ import path from 'path';
 import { Pool } from 'pg';
 import cron from 'node-cron';
 import { initMqtt, IngestRuntime } from './mqtt';
-import { assertSchemaCurrent, SchemaBehindError, assertRetentionConsistent, RetentionMismatchError, refreshAggregates } from '@gridiq/db';
+import { assertSchemaCurrent, SchemaBehindError, assertRetentionConsistent, RetentionMismatchError, refreshAggregates, appliedMigrations, compareMigrations, listMigrations } from '@gridiq/db';
+import { evaluateDeepHealth, deepHealthConfig, healthTokenValid, DeepHealthFacts } from './health';
 import {
     parseRoles, uploadDir, toStoredUploadPath, resolveStoredUploadPath,
     waitUntil, databaseReachable, startHealthServer,
@@ -356,6 +357,50 @@ const authenticateToken = (req: any, res: any, next: any) => {
         next();
     });
 };
+
+// Deep health for an external uptime monitor (src/health.ts). Token header,
+// no JWT: the monitor is not a user. Disabled unless HEALTH_TOKEN is set.
+app.get('/health/deep', async (req: any, res) => {
+    if (!process.env.HEALTH_TOKEN) return res.sendStatus(404);
+    if (!healthTokenValid(process.env.HEALTH_TOKEN, req.headers['x-health-token'])) return res.sendStatus(401);
+    const cfg = deepHealthConfig();
+    const facts: DeepHealthFacts = {
+        dbOk: false, pendingMigrations: null, ingestAliveAgeS: null, ingestFlushAgeS: null,
+        metersReportingRecently: 0, metersSilent: 0, backupAgeS: null,
+    };
+    try {
+        const applied = await appliedMigrations(pool);
+        facts.dbOk = true;
+        facts.pendingMigrations = compareMigrations(listMigrations(), applied).pending.length;
+        const r = await pool.query(`
+            SELECT
+                (SELECT extract(epoch FROM NOW() - alive_at)      FROM service_heartbeats WHERE service = 'ingest') AS alive_age,
+                (SELECT extract(epoch FROM NOW() - last_flush_at) FROM service_heartbeats WHERE service = 'ingest') AS flush_age,
+                (SELECT extract(epoch FROM NOW() - max(finished_at)) FROM backup_runs WHERE ok) AS backup_age,
+                (SELECT count(*) FROM (
+                    SELECT m.id, (SELECT max(time) FROM meter_readings r WHERE r.meter_id = m.id AND r.time >= NOW() - INTERVAL '1 day') AS last
+                    FROM meters m WHERE m.is_active) x WHERE last IS NOT NULL) AS reporting,
+                (SELECT count(*) FROM (
+                    SELECT m.id, (SELECT max(time) FROM meter_readings r WHERE r.meter_id = m.id AND r.time >= NOW() - INTERVAL '1 day') AS last
+                    FROM meters m WHERE m.is_active) x WHERE last < NOW() - make_interval(mins => $1)
+                ) + (SELECT count(*) FROM meters m WHERE m.is_active
+                       AND NOT EXISTS (SELECT 1 FROM meter_readings r WHERE r.meter_id = m.id AND r.time >= NOW() - INTERVAL '1 day')
+                       AND EXISTS (SELECT 1 FROM meter_readings r WHERE r.meter_id = m.id AND r.time >= NOW() - INTERVAL '7 days')) AS silent
+        `, [cfg.silentMinutes]);
+        const row = r.rows[0];
+        const n = (v: any) => (v === null || v === undefined ? null : Number(v));
+        facts.ingestAliveAgeS = n(row.alive_age);
+        facts.ingestFlushAgeS = n(row.flush_age);
+        facts.backupAgeS = n(row.backup_age);
+        facts.metersReportingRecently = Number(row.reporting) || 0;
+        facts.metersSilent = Number(row.silent) || 0;
+    } catch (e: any) {
+        if (!facts.dbOk) facts.dbError = e?.message || 'unreachable';
+        else console.error('Deep health query failed:', e?.message || e);
+    }
+    const result = evaluateDeepHealth(facts, cfg);
+    res.status(result.ok ? 200 : 503).json({ ...result, checked_at: new Date().toISOString() });
+});
 
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'ingestion-service', mode: [...ROLES].join(',') });

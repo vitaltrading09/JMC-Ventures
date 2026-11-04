@@ -227,7 +227,9 @@ Log in as `demo@grid-iq.co.za` with the `DEMO_USER_PASSWORD` you chose.
 ### Day-to-day commands
 
 ```bash
-bash deploy/deploy.sh                 # git pull, build, migrate, up -d, cert sync, health summary
+bash deploy/deploy.sh                 # git pull, build (IMAGE_TAG = commit), migrate, up -d, cert sync, health summary
+bash deploy/rollback.sh               # previous image tag, no rebuild/migrate
+bash deploy/scripts/backup.sh         # backup now (cron runs it daily; see docs/RUNBOOK.md)
 bash deploy/status.sh                 # state + health
 bash deploy/logs.sh ingest            # follow one service
 docker compose stop api               # ingestion keeps running: api, ingest and jobs are separate
@@ -285,8 +287,13 @@ Compose stack behind Caddy with a real domain. The steps are in
   dump into an empty DB (the old local dev DB is `./local/prod.dump`, TimescaleDB
   2.25.0, gitignored), then quarantine duplicates and migrate (`packages/db/README.md`).
 - The old systemd / `npx tsx` runtime files were deleted in Phase 1.
-- Backups (`deploy/backup-db.sh`, `deploy/scripts/backup-*.sh`) still target the legacy
-  `powerguard-db` container; Phase 5 replaces them.
+- Operations: `docs/RUNBOOK.md` (deploy, rollback by image tag, restore, MQTT users, logs).
+  Backups: `deploy/scripts/backup.sh` (pg_dump → S3-compatible `BACKUP_S3_*`, verified, 7/4/6
+  retention, status in `backup_runs`), weekly `restore-drill.sh`, `install-cron.sh`. The S3 client
+  is the `awscli` compose service (profile `tools`). Local test: `deploy/test/backup-drill.sh` (S3Mock).
+- External monitor: `/api/health/deep` (header `x-health-token: $HEALTH_TOKEN`; `src/health.ts`):
+  DB, pending migrations, ingest heartbeat + last flush (`service_heartbeats`, written by ingest
+  every 30 s), last successful backup, silent meters. 200 / 503.
 
 ---
 

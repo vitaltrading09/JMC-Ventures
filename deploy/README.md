@@ -21,12 +21,17 @@ else publishes a port. Persistent data lives under `${DATA_DIR}`
 ## Scripts
 
 ```bash
-bash deploy/deploy.sh                 # git pull, build, migrate, up -d, cert sync, health summary
+bash deploy/deploy.sh                 # git pull, build (tag = commit), migrate, up -d, cert sync, health summary
+bash deploy/rollback.sh [tag]         # back to the previous image tag (no rebuild, no migrate)
 bash deploy/status.sh                 # state + health of every service
 bash deploy/logs.sh ingest [lines]    # follow one service's logs
 sudo bash deploy/scripts/sync-mqtt-certs.sh   # copy Caddy's MQTT cert to Mosquitto (daily cron in Phase 5)
 bash deploy/scripts/build-multiarch.sh        # linux/arm64 + linux/amd64 images via buildx
 bash deploy/scripts/restore-dump.sh <dump> <ts-version>   # restore a pg_dump into an EMPTY database
+bash deploy/scripts/backup.sh         # pg_dump → S3-compatible storage, 7 daily / 4 weekly / 6 monthly
+bash deploy/scripts/restore-drill.sh  # restore the newest backup into a throwaway container, compare counts
+sudo bash deploy/scripts/install-cron.sh   # backup 02:00, cert sync 03:30, drill Sun 04:00, prune Sun 05:00
+bash deploy/test/backup-drill.sh      # local: backup + drill against S3Mock
 ```
 
 ## First start on a server
@@ -40,8 +45,7 @@ Follow plan Part D (`docs/planning/GRIDIQ_ORACLE_PLAN.md`). In short:
 3. `bash deploy/deploy.sh`. Mosquitto waits until `sync-mqtt-certs.sh` has
    copied the certificate Caddy obtained for `MQTT_DOMAIN`.
 
-## Not yet migrated
-
-Backups (`deploy/backup-db.sh`, `deploy/scripts/backup-*.sh`, `README-BACKUPS.md`)
-are still the AWS-era scripts (S3, EC2 snapshots, `powerguard-db` container).
-They do not work with this stack; Phase 5 replaces them.
+Operating procedures (deploy, rollback, restore, MQTT users, logs):
+[docs/RUNBOOK.md](../docs/RUNBOOK.md). External uptime monitor:
+`GET https://app.<domain>/api/health/deep` with header `x-health-token: $HEALTH_TOKEN`
+(200 healthy / 503 degraded, with detail).

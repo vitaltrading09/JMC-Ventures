@@ -109,6 +109,12 @@ services:
     environment:
       <<: *ingestion-env
       ROLES: api
+      # /api/health/deep for the external uptime monitor (disabled when empty)
+      HEALTH_TOKEN: ${HEALTH_TOKEN:-}
+      HEALTH_MAX_FLUSH_AGE_S: ${HEALTH_MAX_FLUSH_AGE_S:-300}
+      HEALTH_MAX_BACKUP_AGE_H: ${HEALTH_MAX_BACKUP_AGE_H:-26}
+      HEALTH_REQUIRE_BACKUP: ${HEALTH_REQUIRE_BACKUP:-true}
+      METER_SILENT_MINUTES: ${METER_SILENT_MINUTES:-5}
     volumes:
       - ${DATA_DIR:-./.data}/uploads:/data/uploads
     depends_on:
@@ -181,6 +187,18 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+
+  # Tools (profile "tools": never started by `up`). The S3 client that
+  # deploy/scripts/backup.sh and restore-drill.sh run with `compose run`.
+  awscli:
+    image: amazon/aws-cli:2.38.0
+    profiles: [tools]
+    environment:
+      AWS_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${BACKUP_S3_REGION:-auto}
+    volumes:
+      - ${DATA_DIR:-./.data}/backups:/backups
 
   mosquitto:
     <<: *restart

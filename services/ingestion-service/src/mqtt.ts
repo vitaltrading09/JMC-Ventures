@@ -87,6 +87,28 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
     const countersTimer = setInterval(() => { void flushCounters(); }, 60_000);
     countersTimer.unref();
 
+    // Heartbeat for /api/health/deep (api role reads it): alive every 30 s,
+    // plus the time of the last flush that committed readings.
+    let lastRowsFlushAt: Date | null = null;
+    const heartbeat = async () => {
+        try {
+            await pool.query(`
+                INSERT INTO service_heartbeats (service, alive_at, last_flush_at, detail)
+                VALUES ('ingest', NOW(), $1, $2)
+                ON CONFLICT (service) DO UPDATE SET
+                    alive_at = EXCLUDED.alive_at,
+                    last_flush_at = COALESCE(EXCLUDED.last_flush_at, service_heartbeats.last_flush_at),
+                    detail = EXCLUDED.detail`,
+                [lastRowsFlushAt, { mqtt: mqttClientRef?.connected ? 'connected' : 'disconnected', queue: writer.size, unacked: gateRef?.pending ?? 0 }]);
+        } catch (e: any) {
+            console.error('[ingest] heartbeat write failed:', e?.message || e);
+        }
+    };
+    const heartbeatTimer = setInterval(() => { void heartbeat(); }, 30_000);
+    heartbeatTimer.unref();
+    let mqttClientRef: mqtt.MqttClient | null = null;
+    let gateRef: { pending: number } | null = null;
+
     const writer = new BatchWriter({
         db: pool,
         columns: CHANNEL_COLUMNS,
@@ -99,6 +121,7 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
         },
         onCommitted: (inserted, info) => {
             const now = Date.now();
+            if (info.rows > 0) lastRowsFlushAt = new Date();
             for (const row of inserted) count(row.meterId, 'rows');
             windowRows += info.inserted;
             windowConflicts += info.conflicts;
@@ -168,6 +191,9 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
     const mqttClient = mqtt.connect(brokerUrl, { ...connectOptions, manualConnect: true });
     const gate = installAckGate(mqttClient as any);
     let closing = false;
+    mqttClientRef = mqttClient;
+    gateRef = gate;
+    void heartbeat();
 
     mqttClient.on('connect', (connack) => {
         console.log(`[MQTT] Connected to broker: ${brokerUrl} (session present: ${!!connack?.sessionPresent})`);
@@ -291,7 +317,9 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
             writer.stop();
             const drained = await writer.drain(20_000);
             clearInterval(countersTimer);
+            clearInterval(heartbeatTimer);
             await flushCounters();
+            await heartbeat();
             console.log(drained
                 ? `[MQTT] Shutdown: queue flushed and acked (${writer.totals.inserted} rows written this run)`
                 : `[MQTT] Shutdown: ${writer.size} row(s) not flushed; left unacked, the broker redelivers them`);
