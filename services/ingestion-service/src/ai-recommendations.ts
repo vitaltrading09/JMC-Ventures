@@ -224,7 +224,7 @@ PERFORMANCE METRICS (last 7 days of available data):
   Avg Voltage:        ${metrics.avgV?.toFixed(1) ?? 'N/A'} V  (SA nominal 230 V phase-neutral / 400 V line-line)
   Min Voltage:        ${metrics.minV?.toFixed(1) ?? 'N/A'} V
   Max Voltage:        ${metrics.maxV?.toFixed(1) ?? 'N/A'} V
-  Monthly Energy:     ${metrics.energyKwh?.toFixed(0) ?? 'N/A'} kWh
+  Energy (30 days):   ${metrics.energyKwh?.toFixed(0) ?? 'N/A'} kWh
 
 TARIFF CONFIGURATION:
 ${tariffContext}

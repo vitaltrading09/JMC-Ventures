@@ -34,7 +34,7 @@ export default function DataImportPage() {
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const [uploading, setUploading] = useState(false);
-    const [result, setResult] = useState<{ count: number; skipped: number; meterId: string } | null>(null);
+    const [result, setResult] = useState<{ count: number; skipped: number; duplicates: number; meterId: string } | null>(null);
     const [error, setError] = useState("");
 
 
@@ -99,7 +99,7 @@ export default function DataImportPage() {
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Upload failed');
-            setResult({ count: data.count, skipped: data.skipped || 0, meterId: selectedMeterId });
+            setResult({ count: data.count, skipped: data.skipped || 0, duplicates: data.duplicates || 0, meterId: selectedMeterId });
             setStep(3);
         } catch (e: any) { setError(e.message); }
         finally { setUploading(false); }
@@ -311,6 +311,7 @@ export default function DataImportPage() {
                     <div>
                         <h2 className="text-2xl font-bold text-white">{result.count.toLocaleString()} rows imported</h2>
                         {result.skipped > 0 && <p className="text-slate-400 text-sm mt-1">{result.skipped} rows skipped (missing timestamp)</p>}
+                        {result.duplicates > 0 && <p className="text-slate-400 text-sm mt-1">{result.duplicates.toLocaleString()} rows already existed for this meter and time, and were left unchanged</p>}
                     </div>
                     <p className="text-slate-400 text-sm">Your data is now available in the site chart. You can filter by date and measurement.</p>
                     <div className="flex items-center justify-center gap-3 pt-2">

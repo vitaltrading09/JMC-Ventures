@@ -34,7 +34,7 @@ export interface EnergyScoreResult {
         avgVb:            number | null;
         avgVc:            number | null;
         unbalancePct:     number | null;
-        energyKwh:        number | null;
+        energyKwh:        number | null;   // last 30 days
     };
 }
 
@@ -206,12 +206,7 @@ export async function computeAndStoreSiteScore(
                     FILTER (WHERE mr.voltage_c > 50)
                     AS avg_vc,
                 COUNT(*)
-                    AS reading_count,
-                ROUND(
-                    (SUM(mr.power_active_total * 5.0 / 60.0)
-                        FILTER (WHERE mr.power_active_total > 0))::numeric,
-                    1
-                ) AS energy_kwh
+                    AS reading_count
             FROM meter_readings mr
             JOIN meters m ON mr.meter_id = m.id
             WHERE m.site_id = $1
@@ -223,6 +218,20 @@ export async function computeAndStoreSiteScore(
         if (!row || Number(row.reading_count) < 3) {
             return null; // Not enough data to produce a meaningful score
         }
+
+        // Energy over the last 30 days, integrated from hourly averages over the
+        // minutes that carried data. (It used to be SUM(kW × 5/60) per reading,
+        // which assumed 5-minute readings: ~300× too high at 1 Hz.)
+        const energyRes = await client.query(`
+            SELECT ROUND(SUM(v.power_active_total_avg * v.minutes / 60.0)
+                       FILTER (WHERE v.power_active_total_avg > 0)::numeric, 1) AS energy_kwh
+            FROM readings_1h v
+            JOIN meters m ON v.meter_id = m.id
+            WHERE m.site_id = $1
+              AND v.bucket >= NOW() - INTERVAL '30 days'
+              ${metricFilter}
+        `, metricParams);
+        const energyKwh = energyRes.rows[0]?.energy_kwh;
 
         const avgKw  = row.avg_kw  ? Number(row.avg_kw)  : null;
         const peakKw = row.peak_kw ? Number(row.peak_kw) : null;
@@ -299,7 +308,7 @@ export async function computeAndStoreSiteScore(
                 loadFactor: lf,
                 avgV, minV, maxV,
                 avgVa, avgVb, avgVc, unbalancePct,
-                energyKwh: row.energy_kwh ? Number(row.energy_kwh) : null,
+                energyKwh: energyKwh ? Number(energyKwh) : null,
             },
         };
     } finally {

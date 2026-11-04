@@ -801,12 +801,15 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
         // averages × the time to the next minute with data, capped at 900 s.
         const monthlyQuery = `
             WITH iv AS (
-                SELECT v.bucket, AVG(v.kw_demand) AS iv_kw, AVG(v.kva_demand) AS iv_kva
+                -- Per meter: each meter's own billed-demand figure. Meters are
+                -- neither averaged (understates) nor summed (a main incomer
+                -- plus its sub-meters would be counted twice).
+                SELECT m.name AS meter_name, MAX(v.kw_demand) AS iv_kw, MAX(v.kva_demand) AS iv_kva
                 FROM readings_30m v
                 JOIN meters m ON v.meter_id = m.id
                 JOIN sites s ON m.site_id = s.id
                 WHERE v.bucket >= date_trunc('month', NOW()) AND v.minutes >= 0.8 * 30 ${tenantClause}
-                GROUP BY v.bucket
+                GROUP BY v.meter_id, m.name
             ), mins AS (
                 SELECT v.power_active_total_avg AS p, v.power_active_total_max AS p_max,
                        LEAST(EXTRACT(EPOCH FROM (LEAD(v.bucket) OVER (PARTITION BY v.meter_id ORDER BY v.bucket) - v.bucket)), 900) AS dt_s
@@ -818,9 +821,9 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
             SELECT
                 (SELECT ROUND((SUM(p * COALESCE(dt_s, 60)) / 3600.0)::numeric, 1) FROM mins) AS kwh_this_month,
                 (SELECT ROUND(MAX(p_max)::numeric, 1) FROM mins)                            AS peak_instant_kw,
-                ROUND(MAX(iv_kw)::numeric, 1)  AS demand_kw_30min,
-                ROUND(MAX(iv_kva)::numeric, 1) AS demand_kva_30min
-            FROM iv
+                (SELECT string_agg(format('%s %s kVA / %s kW', meter_name, ROUND(iv_kva::numeric, 1), ROUND(iv_kw::numeric, 1)), '; '
+                                   ORDER BY iv_kva DESC NULLS LAST)
+                 FROM (SELECT * FROM iv ORDER BY iv_kva DESC NULLS LAST LIMIT 5) top) AS demand_by_meter
         `;
         const monthlyResult = await client.query(monthlyQuery, monthlyParams);
         const monthly = monthlyResult.rows[0];
@@ -854,8 +857,10 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
         // Monthly summary
         contextString += `\nMONTHLY USAGE (current month):\n`;
         contextString += `• Estimated Energy: ${monthly?.kwh_this_month ?? 'N/A'} kWh\n`;
-        contextString += `• Maximum demand (BILLED BASIS — highest 30-min time-weighted average, matches the utility's method): `
-            + `${monthly?.demand_kw_30min ?? 'N/A'} kW / ${monthly?.demand_kva_30min ?? 'N/A'} kVA\n`;
+        contextString += `• Maximum demand per meter this month (BILLED BASIS — highest 30-min time-weighted average, matches the utility's method): `
+            + `${monthly?.demand_by_meter ?? 'N/A'}\n`
+            + `  (Each meter's own figure. A site's billed demand is the figure of its main incomer / utility metering point; `
+            + `sub-meters are part of it and are not added on top.)\n`;
         contextString += `• Highest instantaneous reading (NOT what is billed — a brief spike does not move a 30-min average): `
             + `${monthly?.peak_instant_kw ?? 'N/A'} kW\n`;
         contextString += `  When asked about peak or maximum demand, quote the BILLED BASIS figure. Only mention the `
@@ -1981,12 +1986,14 @@ app.get('/value-ledger', authenticateToken, async (req: any, res) => {
         if (effectiveTenantId) { where = 'WHERE s.tenant_id = $1'; params.push(effectiveTenantId); }
 
         // Monitoring effort: how much data has actually been examined.
+        // From readings_1d (n = raw readings per day): a COUNT(*) over every raw
+        // reading would scan the whole hypertable (86,400 rows per meter per day at 1 Hz).
         const coverage = await client.query(`
-            SELECT COUNT(*)::bigint AS readings,
-                   MIN(mr.time) AS since,
-                   COUNT(DISTINCT mr.meter_id) AS meters
-            FROM meter_readings mr
-            JOIN meters m ON mr.meter_id = m.id
+            SELECT COALESCE(SUM(v.n), 0)::bigint AS readings,
+                   MIN(v.t_first) AS since,
+                   COUNT(DISTINCT v.meter_id) AS meters
+            FROM readings_1d v
+            JOIN meters m ON v.meter_id = m.id
             JOIN sites s ON m.site_id = s.id
             ${where}
         `, params);
@@ -2277,6 +2284,7 @@ app.post('/upload', authenticateToken, upload.single('file') as any, async (req:
                 fs.unlinkSync(req.file.path);
                 let inserted = 0;
                 let skipped = 0;
+                let duplicates = 0;
                 try {
                     // Any chunk this import touches must be writable before the
                     // insert loop starts, or ON CONFLICT silently duplicates.
@@ -2298,12 +2306,15 @@ app.post('/upload', authenticateToken, upload.single('file') as any, async (req:
                     for (const raw of results) {
                         const r = mapRow(raw);
                         if (!r.time) { skipped++; continue; }
-                        await client.query(`
+                        // time_source 'IMPORT': the timestamp came from the uploaded
+                        // file, not from a meter clock or arrival time.
+                        const ins = await client.query(`
                             INSERT INTO meter_readings (
                                 time, meter_id,
                                 power_active_total, power_reactive_total, power_apparent_total,
-                                power_factor_total, voltage_a, current_a, thd_voltage_a, energy_import_total
-                            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                                power_factor_total, voltage_a, current_a, thd_voltage_a, energy_import_total,
+                                time_source
+                            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'IMPORT')
                             ON CONFLICT DO NOTHING
                         `, [
                             r.time, meterId,
@@ -2316,10 +2327,17 @@ app.post('/upload', authenticateToken, upload.single('file') as any, async (req:
                             r.thd_voltage_a ?? null,
                             r.energy_import_total ?? null,
                         ]);
-                        inserted++;
+                        // A row whose (meter, time) already exists is skipped by
+                        // ON CONFLICT and must not be reported as imported.
+                        if (ins.rowCount === 1) inserted++; else duplicates++;
                     }
                     await client.query('COMMIT');
-                    res.json({ success: true, count: inserted, skipped, total: results.length, message: `Successfully imported ${inserted} rows.` });
+                    res.json({
+                        success: true, count: inserted, skipped, duplicates, total: results.length,
+                        message: `Successfully imported ${inserted} rows`
+                            + (duplicates ? `; ${duplicates} already existed and were left unchanged` : '')
+                            + (skipped ? `; ${skipped} had no readable timestamp` : '') + '.',
+                    });
                     // Imported history may be older than the aggregates' refresh
                     // window; materialise the imported range so charts, demand and
                     // energy see it. In the background: the import is already committed.
