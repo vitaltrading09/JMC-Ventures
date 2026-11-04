@@ -45,7 +45,8 @@ const corsOptions = {
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
-    exposedHeaders: ['Set-Cookie'],
+    // X-Readings-Source: the aggregate and bucket behind a chart (its stated basis).
+    exposedHeaders: ['Set-Cookie', 'X-Readings-Source'],
     credentials: true,
 };
 app.use(cors(corsOptions));

@@ -30,6 +30,7 @@ export function middleware(request: NextRequest) {
     const isDashboardRoute = request.nextUrl.pathname.startsWith('/dashboard');
     const isAdminRoute = request.nextUrl.pathname.startsWith('/admin');
     const isBrokerRoute = request.nextUrl.pathname.startsWith('/broker');
+    const isOpsRoute = request.nextUrl.pathname.startsWith('/ops');
     const isLoginRoute = request.nextUrl.pathname === '/login';
 
     // 1. Handle Login Route
@@ -37,7 +38,7 @@ export function middleware(request: NextRequest) {
         const payload = decodeJwt(token);
         if (payload) {
             if (isInternal(payload.role)) {
-                return NextResponse.redirect(new URL('/admin', request.url));
+                return NextResponse.redirect(new URL('/ops', request.url));
             }
             // A broker has no tenant data of their own — /dashboard would be
             // empty for them. Their home is the portfolio.
@@ -49,7 +50,7 @@ export function middleware(request: NextRequest) {
     }
 
     // 2. Protect Authenticated Routes
-    if (!token && (isDashboardRoute || isAdminRoute || isBrokerRoute)) {
+    if (!token && (isDashboardRoute || isAdminRoute || isBrokerRoute || isOpsRoute)) {
         return NextResponse.redirect(new URL('/login', request.url));
     }
 
@@ -66,15 +67,15 @@ export function middleware(request: NextRequest) {
 
         const role = payload.role;
 
-        // Route: Client trying to access Admin area
-        if (isAdminRoute && !isInternal(role)) {
+        // Route: Client trying to access Admin area or the ops console
+        if ((isAdminRoute || isOpsRoute) && !isInternal(role)) {
             return NextResponse.redirect(new URL(role === 'broker' && BROKER_ENABLED ? '/broker' : '/dashboard', request.url));
         }
 
         // The portfolio is broker-only, and off unless the feature flag is set.
         // super_admin is the platform operator, not a broker, and holds no client grants.
         if (isBrokerRoute && (role !== 'broker' || !BROKER_ENABLED)) {
-            return NextResponse.redirect(new URL(isInternal(role) ? '/admin' : '/dashboard', request.url));
+            return NextResponse.redirect(new URL(isInternal(role) ? '/ops' : '/dashboard', request.url));
         }
 
         // A broker landing on the tenant dashboard sees nothing useful.
@@ -86,7 +87,7 @@ export function middleware(request: NextRequest) {
         // Note: We might allow admins to access /dashboard/sites/[id] later for impersonation, 
         // so we specifically only redirect the root /dashboard
         if (isDashboardRoute && request.nextUrl.pathname === '/dashboard' && isInternal(role)) {
-            return NextResponse.redirect(new URL('/admin', request.url));
+            return NextResponse.redirect(new URL('/ops', request.url));
         }
     }
 
@@ -95,5 +96,5 @@ export function middleware(request: NextRequest) {
 
 export const config = {
     // Run middleware on these paths
-    matcher: ['/dashboard/:path*', '/admin/:path*', '/broker/:path*', '/login'],
+    matcher: ['/dashboard/:path*', '/admin/:path*', '/broker/:path*', '/ops/:path*', '/login'],
 };

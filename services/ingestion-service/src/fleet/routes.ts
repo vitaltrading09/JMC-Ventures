@@ -191,7 +191,13 @@ export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, ne
             SELECT p.*, t.name AS tenant_name,
                    (SELECT count(*) FROM measurement_points mp WHERE mp.project_id = p.id AND mp.archived_at IS NULL)::int AS points,
                    (SELECT count(*) FROM deployments d JOIN measurement_points mp ON mp.id = d.measurement_point_id
-                    WHERE mp.project_id = p.id AND d.removed_at IS NULL)::int AS active_deployments
+                    WHERE mp.project_id = p.id AND d.removed_at IS NULL)::int AS active_deployments,
+                   -- Coverage of the active deployments (each at its box's own interval), averaged.
+                   (SELECT ROUND(AVG(COALESCE(device_coverage(d.device_id, GREATEST(NOW() - INTERVAL '24 hours', d.installed_at)), 0))::numeric, 3)
+                    FROM deployments d JOIN measurement_points mp ON mp.id = d.measurement_point_id
+                    WHERE mp.project_id = p.id AND d.removed_at IS NULL) AS coverage_24h,
+                   (SELECT max(rp.period_end) FROM reports rp WHERE rp.project_id = p.id AND rp.status = 'published') AS last_report_end,
+                   (SELECT count(*) FROM reports rp WHERE rp.project_id = p.id AND rp.status <> 'published')::int AS reports_in_progress
             FROM projects p JOIN tenants t ON t.id = p.tenant_id
             ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
             ORDER BY t.name, p.name`, vals);
@@ -456,13 +462,10 @@ export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, ne
                        min(abs(extract(epoch FROM ingested_at - device_time))) AS lag_s
                 FROM meter_readings
                 WHERE time >= NOW() - INTERVAL '75 minutes' AND ingested_at >= NOW() - INTERVAL '1 hour'
-                  AND device_time IS NOT NULL
+                  AND device_time IS NOT NULL AND time_source = 'DEVICE'   -- not imported or simulated rows
                 GROUP BY 1, 2
             ), drift AS (
                 SELECT meter_id, percentile_cont(0.5) WITHIN GROUP (ORDER BY lag_s) AS drift_s FROM lag GROUP BY 1
-            ), cover AS (
-                SELECT meter_id, count(*) AS minutes FROM readings_1m
-                WHERE bucket >= NOW() - INTERVAL '24 hours' GROUP BY 1
             ), bytes AS (
                 SELECT meter_id, SUM(payload_bytes) AS b FROM ingest_stats
                 WHERE hour >= date_trunc('hour', NOW()) - INTERVAL '23 hours' GROUP BY 1
@@ -473,7 +476,9 @@ export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, ne
                    mp.id AS point_id, mp.name AS point_name, mp.role AS point_role,
                    pr.id AS project_id, pr.name AS project_name, t.name AS tenant_name,
                    (SELECT max(time) FROM meter_readings r WHERE r.meter_id = dv.id AND r.time >= NOW() - INTERVAL '30 days') AS last_seen,
-                   ROUND(COALESCE(cover.minutes, 0) / 1440.0, 3) AS coverage_24h,
+                   -- Against the box's own reporting interval, since the later of 24 h ago and the install.
+                   ROUND(device_coverage(dv.id, GREATEST(NOW() - INTERVAL '24 hours', COALESCE(dep.installed_at, NOW() - INTERVAL '24 hours')))::numeric, 3) AS coverage_24h,
+                   ROUND(device_spacing_s(dv.id, NOW() - INTERVAL '24 hours')::numeric, 1) AS spacing_s,
                    ROUND(drift.drift_s::numeric, 1) AS clock_drift_s,
                    COALESCE(bytes.b, 0)::bigint AS payload_bytes_24h
             FROM devices dv
@@ -481,7 +486,6 @@ export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, ne
             LEFT JOIN measurement_points mp ON mp.id = dep.measurement_point_id
             LEFT JOIN projects pr ON pr.id = mp.project_id
             LEFT JOIN tenants t ON t.id = pr.tenant_id
-            LEFT JOIN cover ON cover.meter_id = dv.id
             LEFT JOIN drift ON drift.meter_id = dv.id
             LEFT JOIN bytes ON bytes.meter_id = dv.id
             ${where}

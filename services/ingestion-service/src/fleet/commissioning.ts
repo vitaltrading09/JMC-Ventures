@@ -1,15 +1,20 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Commissioning checklist for a new deployment (plan Phase 6, item 9).
 //
-// Evaluated by the jobs role every minute for the first 15 minutes after an
-// install, over the raw readings since installed_at, and stored in
-// deployments.commissioning. After 15 minutes the result is final.
+// Evaluated by the jobs role every minute for the first 15 minutes of data
+// after an install, over the raw readings, and stored in
+// deployments.commissioning. The window starts at the box's first reading at
+// or after installed_at (a meter added in the app before its box is wired up
+// would otherwise fail on an empty window). After 15 minutes the result is
+// final. No reading within a day of the install is a final failure.
 //
 // The checks use the deployment's corrections (power_sign, scale_correction),
 // so a reversed CT fixed in the deployment passes the sign check.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const COMMISSIONING_WINDOW_MIN = 15;
+/** How long after the install the first reading may take before commissioning fails. */
+export const FIRST_READING_WAIT_MS = 86_400_000;
 
 export type CheckStatus = 'pass' | 'warn' | 'fail' | 'pending' | 'not_evaluated' | 'not_reported' | 'not_applicable';
 
@@ -27,6 +32,7 @@ export interface Commissioning {
     final: boolean;
     overall: 'pass' | 'warn' | 'fail' | 'pending';
     checks: CommissioningCheck[];
+    note?: string;
 }
 
 export interface CommissioningInput {
@@ -42,6 +48,8 @@ export interface CommissioningInput {
         total: number;
         deviceSourced: number;
         minutesWithData: number;
+        /** Median gap between consecutive readings in the window (s); null with fewer than two. */
+        spacingS: number | null;
         /** Median per-minute freshest |ingested_at − device_time| (s); null without device times. */
         driftS: number | null;
         vA: number | null; vB: number | null; vC: number | null;
@@ -155,13 +163,18 @@ export function evaluateCommissioning(inp: CommissioningInput): Commissioning {
                 : iMax < inp.ctPrimaryA ? { status: 'pass', detail: `max ${round(iMax)} A of ${inp.ctPrimaryA} A` }
                     : { status: 'fail', detail: `max ${round(iMax)} A ≥ CT primary ${inp.ctPrimaryA} A: check the CT ratio` });
 
-    // 8. Coverage
-    const coverage = s.minutesWithData / elapsedMin;
+    // 8. Coverage, at the box's own reporting interval (minutes with data
+    // would fail a meter that reports every 5 minutes).
+    const elapsedS = Math.max(1, (windowEnd.getTime() - inp.installedAt.getTime()) / 1000);
+    const expected = s.spacingS && s.spacingS > 0 ? Math.max(1, Math.floor(elapsedS / s.spacingS)) : elapsedMin;
+    const got = s.spacingS && s.spacingS > 0 ? s.total : s.minutesWithData;
+    const unit = s.spacingS && s.spacingS > 0 ? `expected readings (every ${round(s.spacingS)} s)` : 'minutes';
+    const coverage = got / expected;
     add('coverage', 'Coverage ≥ 95 %',
         noData ? waiting('No readings yet')
-            : coverage >= COVERAGE_MIN ? { status: 'pass', detail: `${s.minutesWithData} of ${elapsedMin} minutes` }
-                : final ? { status: 'fail', detail: `${s.minutesWithData} of ${elapsedMin} minutes: check signal and the reporting interval` }
-                    : { status: 'pending', detail: `${s.minutesWithData} of ${elapsedMin} minutes so far` });
+            : coverage >= COVERAGE_MIN ? { status: 'pass', detail: `${Math.min(got, expected)} of ${expected} ${unit}` }
+                : final ? { status: 'fail', detail: `${got} of ${expected} ${unit}: check signal and the reporting interval` }
+                    : { status: 'pending', detail: `${got} of ${expected} ${unit} so far` });
 
     const has = (st: CheckStatus) => checks.some((c) => c.status === st);
     const overall = has('fail') ? 'fail' : has('pending') ? 'pending' : has('warn') ? 'warn' : 'pass';
@@ -188,20 +201,36 @@ export async function runCommissioning(db: Queryable, now = new Date()): Promise
                p.role, p.nominal_voltage_v, p.ct_primary_a
         FROM deployments d JOIN measurement_points p ON p.id = d.measurement_point_id
         WHERE d.removed_at IS NULL
-          AND d.created_at >= $1::timestamptz - INTERVAL '1 day'
+          AND d.created_at >= $1::timestamptz - INTERVAL '2 days'
           AND d.installed_at <= $1::timestamptz
           AND COALESCE((d.commissioning->>'final')::boolean, false) = false`, [now]);
     for (const d of due.rows) {
-        const result = evaluateCommissioning({
+        const installedAt = new Date(d.installed_at);
+        const first = (await db.query(
+            `SELECT min(time) AS t FROM meter_readings WHERE meter_id = $1 AND time >= $2 AND time <= $3`,
+            [d.device_id, installedAt, now])).rows[0]?.t;
+        let result: Commissioning;
+        if (!first && now.getTime() - installedAt.getTime() < FIRST_READING_WAIT_MS) {
+            result = {
+                evaluated_at: now.toISOString(), window_from: installedAt.toISOString(), window_to: installedAt.toISOString(),
+                final: false, overall: 'pending', checks: [], note: 'Waiting for the first reading from the box',
+            };
+            await db.query(`UPDATE deployments SET commissioning = $2 WHERE id = $1`, [d.id, JSON.stringify(result)]);
+            continue;
+        }
+        // From the first reading; with none after a day, the window has long ended: a final failure.
+        const windowStart = first ? new Date(first) : installedAt;
+        result = evaluateCommissioning({
             now,
-            installedAt: new Date(d.installed_at),
+            installedAt: windowStart,
             role: d.role,
             nominalV: num(d.nominal_voltage_v),
             ctPrimaryA: num(d.ct_primary_a),
             powerSign: Number(d.power_sign),
             scale: Number(d.scale_correction),
-            stats: await commissioningStats(db, d.device_id, new Date(d.installed_at), now),
+            stats: await commissioningStats(db, d.device_id, windowStart, now),
         });
+        if (!first) result.note = 'No reading arrived within a day of the install';
         await db.query(`UPDATE deployments SET commissioning = $2 WHERE id = $1`, [d.id, JSON.stringify(result)]);
     }
     return due.rows.length;
@@ -212,6 +241,8 @@ async function commissioningStats(db: Queryable, deviceId: string, from: Date, n
     const r = await db.query(`
         WITH w AS (
             SELECT * FROM meter_readings WHERE meter_id = $1 AND time >= $2 AND time < $3
+        ), gaps AS (
+            SELECT extract(epoch FROM time - lag(time) OVER (ORDER BY time)) AS gap_s FROM w
         ), lag AS (
             SELECT date_trunc('minute', ingested_at) AS minute,
                    min(abs(extract(epoch FROM ingested_at - device_time))) AS lag_s
@@ -221,6 +252,7 @@ async function commissioningStats(db: Queryable, deviceId: string, from: Date, n
                count(*) FILTER (WHERE time_source = 'DEVICE') AS device_n,
                count(DISTINCT date_trunc('minute', time)) AS minutes,
                (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY lag_s) FROM lag) AS drift_s,
+               (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY gap_s) FROM gaps WHERE gap_s > 0) AS spacing_s,
                avg(voltage_a) AS va, avg(voltage_b) AS vb, avg(voltage_c) AS vc,
                avg(power_active_total) AS p, avg(power_factor_total) AS pf,
                avg(GREATEST(current_a, current_b, current_c)) AS i_avg,
@@ -228,7 +260,7 @@ async function commissioningStats(db: Queryable, deviceId: string, from: Date, n
         FROM w`, [deviceId, from, to]);
     const x = r.rows[0];
     return {
-        total: Number(x.total), deviceSourced: Number(x.device_n), minutesWithData: Number(x.minutes),
+        total: Number(x.total), deviceSourced: Number(x.device_n), minutesWithData: Number(x.minutes), spacingS: num(x.spacing_s),
         driftS: num(x.drift_s), vA: num(x.va), vB: num(x.vb), vC: num(x.vc),
         pAvgKw: num(x.p), pfAvg: num(x.pf), currentAvgA: num(x.i_avg), currentMaxA: num(x.i_max),
     };

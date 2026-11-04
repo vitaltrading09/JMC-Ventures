@@ -202,6 +202,7 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
 | `/admin` | Admin overview | ✅ Done |
 | `/admin/clients` | Client portfolio deep-dive (scores, sites, meters, leads) | ✅ Done |
 | `/admin/leads` | Leads management | ✅ Done |
+| `/ops` | **Ops console (Phase 8, internal roles):** Home, Fleet (+ device), Install wizard, Deployment (commissioning, corrections, remove), Review (findings, reports), Projects (+ project: points, energy balance, tariffs, live-data switch), Data health, Clients, Leads. Staff land here after login | ✅ Done |
 | `/api/chat` | AI chat route (OpenAI — pending migration to Claude). Caddy routes `/api/chat*` to web, all other `/api/*` to the gateway | ✅ Done |
 
 ### Backend Services
@@ -411,7 +412,8 @@ Compose stack behind Caddy with a real domain. The steps are in
 - Also inject energy score + top recommendations as context so chat is site-aware
 
 ### 3. Oracle migration (plan phases 2–5, then Part D)
-- Phases 2–7 done (6 fleet model, 7 roles/scoping/review). Next: Phase 8 (ops console and portal: page list needs approval first), Phase 9 (public API). Part D is the owner's go-live runbook.
+- Phases 2–7 done (6 fleet model, 7 roles/scoping/review). Phase 8 (approved page list, three PRs): PR 1 ops console done; next PR 2 portal project pages (`/portal`), PR 3 redirects/flags/old pages removed. Then Phase 9 (public API). Part D is the owner's go-live runbook.
+- Phase 8 conventions: new pages use TanStack Query and `apps/web/lib/api.ts` (`apiGet`, `apiSend`, SAST date helpers: every chart and date states its basis and time zone); ops UI blocks in `components/ops/ui.tsx`; fleet health rules in `lib/ops.ts` (`deviceHealth`, `projectFlags`). Setup (projects, points, installs, CSV import) is ops-only; client_admin manages its own users.
 
 ### 4. Security hardening
 - Replace localStorage JWT storage with HTTPOnly cookies
