@@ -65,6 +65,8 @@ services:
       args:
         # Baked into the client bundle; the browser calls the API via Caddy.
         NEXT_PUBLIC_API_URL: https://${APP_DOMAIN}/api
+        # The broker host shown to installers on the Add Meter screen.
+        NEXT_PUBLIC_MQTT_HOST: ${MQTT_DOMAIN}
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-}

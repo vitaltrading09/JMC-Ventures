@@ -598,7 +598,7 @@ export default function SitesPage() {
                                 </div>
                                 <div>
                                     <h2 className="text-xl font-semibold text-white">Meter Created ✓</h2>
-                                    <p className="text-xs text-slate-400 mt-0.5">Configure your Acuvim II with these MQTT settings</p>
+                                    <p className="text-xs text-slate-400 mt-0.5">Configure the meter's AXM-WEB2 module with these MQTT settings</p>
                                 </div>
                             </div>
                             <button onClick={() => setMqttConfig(null)} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
@@ -606,12 +606,15 @@ export default function SitesPage() {
 
                         <div className="mt-5 space-y-3">
                             {[
-                                { label: "Broker IP / Host",  value: window.location.hostname === 'localhost' ? '(your PC IP on local network)' : window.location.hostname, note: "Your Grid-IQ server IP — use ifconfig/ipconfig to find it on local network" },
-                                { label: "Port",              value: "1883",                        note: "Plain TCP — no TLS for local setup" },
-                                { label: "Username",          value: "acuvim_meter",                note: "MQTT client username" },
-                                { label: "Password",          value: "change_me_in_production",     note: "From mosquitto passwd file — update before going live" },
-                                { label: "Topic",             value: `acuvim/${mqttConfig.meterId}/telemetry`, note: "This is unique to this meter — copy exactly" },
-                            ].map(({ label, value, note }) => (
+                                // Baked in at build time from MQTT_DOMAIN (compose build arg).
+                                { label: "Broker host",  value: process.env.NEXT_PUBLIC_MQTT_HOST || "(not configured: set MQTT_DOMAIN and rebuild web)", note: "Hostname, not an IP: the TLS certificate is issued for it", copy: true },
+                                { label: "Port",         value: "8883",                                 note: "MQTT over TLS. Plain 1883 is not open on the server", copy: true },
+                                { label: "TLS",          value: "On",                                   note: "Public certificate (Let's Encrypt): no CA file needed on firmware with an up-to-date trust store", copy: false },
+                                { label: "Username",     value: mqttConfig.meterId,                     note: "Must be exactly this meter's id: the broker only lets it publish to its own topic", copy: true },
+                                { label: "Password",     value: "Issued by Grid-IQ ops",                note: "Created on the server for this username (docs/RUNBOOK.md → Add a meter box); never shown here", copy: false },
+                                { label: "Topic",        value: `acuvim/${mqttConfig.meterId}/telemetry`, note: "Unique to this meter — copy exactly", copy: true },
+                                { label: "QoS",          value: "1",                                    note: "So nothing is lost if the connection drops", copy: true },
+                            ].map(({ label, value, note, copy }) => (
                                 <div key={label} className="rounded-lg bg-slate-950 border border-slate-800 p-3">
                                     <div className="flex items-center justify-between gap-3">
                                         <div className="min-w-0">
@@ -619,11 +622,13 @@ export default function SitesPage() {
                                             <p className="text-sm font-mono text-white break-all">{value}</p>
                                             <p className="text-xs text-slate-600 mt-1">{note}</p>
                                         </div>
+                                        {copy && (
                                         <button
                                             onClick={() => copyToClipboard(value, label)}
                                             className="flex-shrink-0 p-2 text-slate-500 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
                                             {copied === label ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                                         </button>
+                                        )}
                                     </div>
                                 </div>
                             ))}
@@ -631,7 +636,10 @@ export default function SitesPage() {
 
                         <div className="mt-4 p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
                             <p className="text-xs text-blue-300">
-                                <span className="font-semibold">On the Acuvim II:</span> Go to <span className="font-mono">Communication → MQTT</span>, enter these values, then set the telemetry interval to 60s. Once connected, this meter will appear live in your dashboard.
+                                <span className="font-semibold">On the AXM-WEB2:</span> enter these values under <span className="font-mono">Communication → MQTT</span>,
+                                turn on <span className="font-semibold">store-and-forward</span> (readings buffered during an outage are replayed with their own timestamps)
+                                and <span className="font-semibold">NTP</span> (the meter clock timestamps every reading). Telemetry interval: 1 s for power-quality detail,
+                                up to 60 s on a tight cellular data budget. Once connected, this meter appears live in your dashboard.
                             </p>
                         </div>
 
