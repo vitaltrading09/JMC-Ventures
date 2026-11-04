@@ -133,6 +133,39 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     without a project still ingest; retired ones are dead-lettered.
   - DB tests: `TEST_DATABASE_URL=... node --test services/ingestion-service/test/db/*.test.js`
     (CI runs them in the migrations job).
+- **Roles and scoping (Phase 7, `src/scope.ts`, migration `1793805838000_roles-review-reports.sql`)**:
+  - Roles: `super_admin` and `engineer` (internal tenant, `tenants.kind = 'internal'`);
+    `client_admin` and `client_viewer` (client tenants); `broker`. The old `admin` maps to
+    `client_admin`, `user`/`viewer` to `client_viewer` (DB migrated; old tokens mapped by
+    `normaliseRole`).
+  - `client_viewer` is read-only. The only writes it may make are compliance Q&A, marking
+    alerts read and recommendation notify, enforced in `authenticateToken`.
+  - `authenticateToken` builds `req.scope` (`userId`, `role`, `tenantId`, `isInternal`,
+    `filterTenantId`). An internal user may name one tenant with `?tenant_id=` or
+    `body.tenant_id`; clients are always confined to their own.
+  - Routes never write their own tenant filter. They use `meterParam` / `siteParam`
+    middleware and `findSite`, `findMeter`, `findOwned`, `tenantSql`, `telemetrySql`,
+    `exclusiveDeviceSql`. `forClient` strips `internal_notes` and `reviewed_by`.
+  - `projects.live_data_visible = false` hides telemetry (readings, health check, demand,
+    energy, scores, alerts, AI context) from clients until a report for the project is
+    published.
+  - The legacy per-meter routes only reach a device for a client while every deployment
+    of it was at that client's projects. A moved box is reached through the point views.
+  - Review workflow (`src/review.ts`):
+    - `recommendations.review_status` (draft/in_review/published/dismissed), next to the
+      unchanged `status` (ACTIVE/SUPERSEDED). Engines write drafts with `evidence`.
+    - Internal: `GET /review/recommendations`, `PATCH /recommendations/:id/review`
+      (`supersede_previous` retires the client's earlier published set).
+    - `reports` (project + period, draft → approved → published): `POST /reports`, then
+      `/reports/:id/approve|publish|withdraw`. Clients read published ones (`GET /reports`).
+    - Share links (`report_shares.report_id`) need a published report. The public page
+      serves the report's own period (`assessPowerQuality(..., endAt)`) and returns 410
+      `not_published` otherwise.
+    - Every transition is written to `audit_log`.
+  - Broker portfolio: off unless `FEATURE_BROKER=true` (API routes 404, renewal sweep off,
+    web `/broker` hidden; build arg `NEXT_PUBLIC_FEATURE_BROKER`).
+  - Cross-tenant test: `test/db/scoping.test.js` calls every route with tenant A's token
+    aimed at tenant B.
 - The ingest container reaches the broker as `mqtts://${MQTT_DOMAIN}:8883`.
   `MQTT_DOMAIN` is a network alias of the mosquitto container, so the TLS
   hostname matches the certificate without leaving the host.
@@ -260,7 +293,7 @@ ALLOW_DEMO_SEED=true DEMO_USER_PASSWORD='<choose one>'   DATABASE_URL='postgres:
 ```
 The seed scripts (`services/auth-service/src/seed.ts`, `scripts/seed.ts`,
 `scripts/fix_password.ts`, `scripts/seed-readings.ts`) refuse to run without `ALLOW_DEMO_SEED=true`. Never set it on a server.
-Log in as `demo@grid-iq.co.za` with the `DEMO_USER_PASSWORD` you chose.
+Log in as `demo@grid-iq.co.za` (client_admin) or `ops@grid-iq.co.za` (super_admin, internal tenant) with the `DEMO_USER_PASSWORD` you chose.
 
 **Synthetic readings (local dev only).** There is no production data, so
 `scripts/seed-readings.ts` fills `meter_readings` for the 5 seeded demo meters
@@ -378,7 +411,7 @@ Compose stack behind Caddy with a real domain. The steps are in
 - Also inject energy score + top recommendations as context so chat is site-aware
 
 ### 3. Oracle migration (plan phases 2–5, then Part D)
-- Phases 2–5 done; Phase 6 (fleet model) done. Next: Phase 7 (roles, scoping, review workflow), Phase 8 (ops console and portal: page list needs approval first), Phase 9 (public API). Part D is the owner's go-live runbook.
+- Phases 2–7 done (6 fleet model, 7 roles/scoping/review). Next: Phase 8 (ops console and portal: page list needs approval first), Phase 9 (public API). Part D is the owner's go-live runbook.
 
 ### 4. Security hardening
 - Replace localStorage JWT storage with HTTPOnly cookies
@@ -409,7 +442,8 @@ Compose stack behind Caddy with a real domain. The steps are in
 
 - **API calls:** All frontend calls go through `NEXT_PUBLIC_API_URL` (the API gateway). Never call auth/ingestion services directly.
 - **Auth:** JWT stored in localStorage (to be migrated to HTTPOnly cookies). Sent as `Authorization: Bearer <token>`.
-- **Tenant isolation:** Every API query is scoped by `tenant_id` decoded from JWT.
+- **Tenant isolation:** through `req.scope` and the repository functions in `services/ingestion-service/src/scope.ts` only; no route writes its own `role === 'super_admin'` / `tenant_id = $n` check. A new route must be covered by `test/db/scoping.test.js` (it scans the sources for routes).
+- **Roles:** check `req.scope.isInternal` / `canWrite(req.scope)`, never role strings; client data shown to clients goes through `forClient`.
 - **New tables and queries** use `projects`, `devices`, `measurement_points`, `deployments`; attribute readings to a project or point only through `point_readings_*` (never by `devices.site_id`).
 - **Delete = archive:** `DELETE /meters/:id` and `/sites/:id` set `archived_at` (+ `is_active = false`);
   lists hide archived rows (`?archived=1` shows them), ingest dead-letters archived meters, admins

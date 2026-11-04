@@ -335,27 +335,49 @@ JSON schema for each item:
     try {
         // Supersede only recs in the same scope (per-meter OR site-wide).
         // Re-running a site analysis must NOT wipe per-meter recs and vice versa.
+        // Review workflow (Phase 7): the new run is a set of DRAFTS. Earlier
+        // unpublished drafts are replaced; published ones stay what the client
+        // sees until a reviewer publishes the new ones (supersede_previous) or
+        // dismisses them.
         if (meterId) {
             await dbClient.query(
                 `UPDATE recommendations SET status = 'SUPERSEDED'
-                 WHERE meter_id = $1 AND status = 'ACTIVE'`,
+                 WHERE meter_id = $1 AND status = 'ACTIVE' AND review_status <> 'published'`,
                 [meterId]
             );
         } else {
             await dbClient.query(
                 `UPDATE recommendations SET status = 'SUPERSEDED'
-                 WHERE site_id = $1 AND meter_id IS NULL AND status = 'ACTIVE'`,
+                 WHERE site_id = $1 AND meter_id IS NULL AND status = 'ACTIVE' AND review_status <> 'published'`,
                 [siteId]
             );
         }
+
+        // What the reviewer needs to check a finding: where, when, on what basis.
+        const point = meterId
+            ? (await dbClient.query(
+                `SELECT measurement_point_id FROM deployments WHERE device_id = $1 AND removed_at IS NULL`, [meterId])).rows[0]
+            : undefined;
+        const now = new Date();
+        const evidenceFor = (rec: Recommendation) => JSON.stringify({
+            site_id: siteId,
+            meter_id: meterId ?? null,
+            measurement_point_id: point?.measurement_point_id ?? null,
+            from: new Date(now.getTime() - 7 * 86_400_000).toISOString(),
+            to: now.toISOString(),
+            metric: rec.type,
+            calculation: 'ai-recommendations: energy score components and 7-day metrics (readings_1h)',
+            score: { total: score.score, components: score.components ?? null },
+            chart: meterId ? { meter_id: meterId, days: 7 } : { site_id: siteId, days: 7 },
+        });
 
         for (const rec of recommendations) {
             await dbClient.query(`
                 INSERT INTO recommendations (
                     site_id, meter_id, tenant_id, type, priority, title, problem, solution,
                     estimated_monthly_saving_zar, estimated_implementation_cost_zar,
-                    payback_months, confidence, standard_reference, status
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'ACTIVE')
+                    payback_months, confidence, standard_reference, status, review_status, evidence
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'ACTIVE', 'draft', $14)
             `, [
                 siteId, meterId ?? null, tenantId,
                 rec.type, rec.priority, rec.title, rec.problem, rec.solution,
@@ -364,6 +386,7 @@ JSON schema for each item:
                 rec.payback_months,
                 rec.confidence,
                 rec.standard_reference ?? null,
+                evidenceFor(rec),
             ]);
         }
     } finally {
@@ -373,12 +396,17 @@ JSON schema for each item:
     return recommendations;
 }
 
+/** Client roles: published only. Internal users: everything not dismissed. */
+const reviewFilter = (includeUnpublished: boolean) =>
+    includeUnpublished ? `r.review_status <> 'dismissed'` : `r.review_status = 'published'`;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Fetch stored active recommendations for a site (all scopes — site + meters)
 // ─────────────────────────────────────────────────────────────────────────────
 export async function getSiteRecommendations(
     pool:   Pool,
     siteId: string,
+    includeUnpublished = false,   // internal users: drafts and items in review too
 ): Promise<any[]> {
     const client = await pool.connect();
     try {
@@ -389,6 +417,7 @@ export async function getSiteRecommendations(
             LEFT JOIN meters m ON r.meter_id = m.id
             WHERE r.site_id = $1
               AND r.status = 'ACTIVE'
+              AND ${reviewFilter(includeUnpublished)}
             ORDER BY r.priority ASC, r.estimated_monthly_saving_zar DESC
         `, [siteId]);
         return res.rows;
@@ -401,6 +430,7 @@ export async function getSiteRecommendations(
 export async function getMeterRecommendations(
     pool:    Pool,
     meterId: string,
+    includeUnpublished = false,
 ): Promise<any[]> {
     const client = await pool.connect();
     try {
@@ -411,6 +441,7 @@ export async function getMeterRecommendations(
             JOIN meters m ON r.meter_id = m.id
             WHERE r.meter_id = $1
               AND r.status = 'ACTIVE'
+              AND ${reviewFilter(includeUnpublished)}
             ORDER BY r.priority ASC, r.estimated_monthly_saving_zar DESC
         `, [meterId]);
         return res.rows;
@@ -424,7 +455,8 @@ export async function getMeterRecommendations(
 // ─────────────────────────────────────────────────────────────────────────────
 export async function getTenantRecommendations(
     pool:      Pool,
-    tenantId:  string | null,   // null = all tenants (super_admin)
+    tenantId:  string | null,   // null = all tenants (internal users)
+    includeUnpublished = false,
 ): Promise<any[]> {
     const client = await pool.connect();
     try {
@@ -434,6 +466,7 @@ export async function getTenantRecommendations(
             JOIN sites s ON r.site_id = s.id
             LEFT JOIN meters m ON r.meter_id = m.id
             WHERE r.status = 'ACTIVE'
+              AND ${reviewFilter(includeUnpublished)}
         `;
         const params: any[] = [];
         if (tenantId) {

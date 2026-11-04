@@ -43,6 +43,10 @@ export default function HealthCheckPage() {
     const [issuing,     setIssuing]     = useState(false);
     const [freshLink,   setFreshLink]   = useState<string | null>(null);
     const [copied,      setCopied]      = useState(false);
+    // Share links carry published reports only (reviewed by Grid-IQ).
+    const [reports,     setReports]     = useState<{ id: string; title: string | null; period_start: string; period_end: string }[]>([]);
+    const [reportId,    setReportId]    = useState("");
+    const [shareError,  setShareError]  = useState<string | null>(null);
 
     // Print stylesheet — the report must come out of a printer looking like a
     // document an engineer would sign, not a screenshot of a web page.
@@ -126,7 +130,15 @@ export default function HealthCheckPage() {
             const res = await fetch(`${API}/ingestion/meters/${meterId}/shares`, { credentials: "include" });
             setShares(res.ok ? await res.json() : []);
         } catch { setShares([]); }
-    }, [meterId]);
+        const siteId = meters.find(m => m.id === meterId)?.site_id;
+        if (!siteId) return;
+        try {
+            const res = await fetch(`${API}/ingestion/reports?project_id=${siteId}`, { credentials: "include" });
+            const list = res.ok ? (await res.json()).filter((r: any) => r.status === "published") : [];
+            setReports(list);
+            setReportId(list[0]?.id ?? "");
+        } catch { setReports([]); }
+    }, [meterId, meters]);
 
     useEffect(() => { if (shareOpen) loadShares(); }, [shareOpen, loadShares]);
 
@@ -134,18 +146,21 @@ export default function HealthCheckPage() {
         if (!meterId || issuing) return;
         setIssuing(true);
         setFreshLink(null);
+        setShareError(null);
         try {
             const res = await fetch(`${API}/ingestion/meters/${meterId}/shares`, {
                 method: "POST",
                 credentials: "include",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ label: shareLabel, days_valid: shareDays, period_days: days }),
+                body: JSON.stringify({ label: shareLabel, days_valid: shareDays, report_id: reportId }),
             });
             if (res.ok) {
                 const data = await res.json();
                 setFreshLink(`${window.location.origin}${data.path}`);
                 setShareLabel("");
                 loadShares();
+            } else {
+                setShareError((await res.json().catch(() => null))?.error ?? "Could not create the link");
             }
         } catch { /* modal stays open; user can retry */ }
         finally { setIssuing(false); }
@@ -402,6 +417,26 @@ export default function HealthCheckPage() {
                             ) : (
                                 <>
                                     <div>
+                                        <label className="block text-xs font-medium text-slate-600 mb-1">Report</label>
+                                        {reports.length === 0 ? (
+                                            <p className="text-sm text-slate-500">
+                                                No published report for this site yet. Share links carry reports that Grid-IQ has reviewed and published.
+                                            </p>
+                                        ) : (
+                                            <select
+                                                value={reportId}
+                                                onChange={e => setReportId(e.target.value)}
+                                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-900"
+                                            >
+                                                {reports.map(r => (
+                                                    <option key={r.id} value={r.id}>
+                                                        {r.title || "Report"}: {new Date(r.period_start).toLocaleDateString("en-ZA")} – {new Date(r.period_end).toLocaleDateString("en-ZA")}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        )}
+                                    </div>
+                                    <div>
                                         <label className="block text-xs font-medium text-slate-600 mb-1">
                                             Who is this for? <span className="text-slate-400">(optional, for your records)</span>
                                         </label>
@@ -425,9 +460,10 @@ export default function HealthCheckPage() {
                                             <option value={365}>1 year</option>
                                         </select>
                                     </div>
+                                    {shareError && <p className="text-sm text-red-600">{shareError}</p>}
                                     <button
                                         onClick={issueLink}
-                                        disabled={issuing}
+                                        disabled={issuing || !reportId}
                                         className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg text-sm font-medium"
                                     >
                                         {issuing ? <Loader2 className="h-4 w-4 animate-spin" /> : <LinkIcon className="h-4 w-4" />}

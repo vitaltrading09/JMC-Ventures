@@ -30,6 +30,8 @@ x-ingestion-env: &ingestion-env
   # policies at startup; migrate applies them.
   MAX_BACKFILL_DAYS: ${MAX_BACKFILL_DAYS:-14}
   COMPRESS_AFTER_DAYS: ${COMPRESS_AFTER_DAYS:-15}
+  # Broker portfolio routes and the renewal sweep (kept, off by default).
+  FEATURE_BROKER: ${FEATURE_BROKER:-false}
 
 services:
   caddy:
@@ -67,6 +69,7 @@ services:
         NEXT_PUBLIC_API_URL: https://${APP_DOMAIN}/api
         # The broker host shown to installers on the Add Meter screen.
         NEXT_PUBLIC_MQTT_HOST: ${MQTT_DOMAIN}
+        NEXT_PUBLIC_FEATURE_BROKER: ${FEATURE_BROKER:-false}
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-}

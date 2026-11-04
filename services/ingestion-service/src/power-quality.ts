@@ -155,6 +155,8 @@ export async function assessPowerQuality(
     pool:    Pool,
     meterId: string,
     days:    number = 7,
+    /** End of the assessed period; now by default. A published report passes its own period end. */
+    endAt:   Date = new Date(),
 ): Promise<ComplianceReport | null> {
     const client = await pool.connect();
     try {
@@ -165,7 +167,7 @@ export async function assessPowerQuality(
         );
         if (meta.rows.length === 0) return null;
 
-        // Metrics for one observation window, expressed as an offset from now.
+        // Metrics for one observation window, expressed as an offset from endAt (now).
         // Running this for the current window AND the one immediately before it is
         // what turns a point-in-time audit into degradation tracking — the whole
         // reason continuous monitoring is worth more than a one-off survey.
@@ -194,8 +196,8 @@ export async function assessPowerQuality(
                        NULLIF((COALESCE(current_a_avg,0)+COALESCE(current_b_avg,0)+COALESCE(current_c_avg,0))/3.0, 0) AS i_avg
                 FROM readings_10m
                 WHERE meter_id = $1
-                  AND bucket >= NOW() - ($2 || ' days')::INTERVAL
-                  AND bucket <  NOW() - ($7 || ' days')::INTERVAL
+                  AND bucket >= $11::timestamptz - ($2 || ' days')::INTERVAL
+                  AND bucket <  $11::timestamptz - ($7 || ' days')::INTERVAL
             ), peak AS (
                 -- Stands in for IEEE 519's "maximum demand current". Uses the
                 -- 99th percentile rather than the maximum on purpose: a single
@@ -224,8 +226,8 @@ export async function assessPowerQuality(
                        LAG(n_interrupt > 0) OVER (ORDER BY bucket) AS prev_intr
                 FROM readings_1m
                 WHERE meter_id = $1
-                  AND bucket >= NOW() - ($2 || ' days')::INTERVAL
-                  AND bucket <  NOW() - ($7 || ' days')::INTERVAL
+                  AND bucket >= $11::timestamptz - ($2 || ' days')::INTERVAL
+                  AND bucket <  $11::timestamptz - ($7 || ' days')::INTERVAL
             ), interrupts AS (
                 -- Count interruption EVENTS, not readings: a two-hour outage is
                 -- one event a client can act on, not 400 alarming rows.
@@ -297,7 +299,7 @@ export async function assessPowerQuality(
             FROM calc
         `, [
             meterId, startDaysAgo, V_MIN, V_MAX, F_MIN, F_MAX, endDaysAgo,
-            F_PLAUSIBLE_MIN, F_PLAUSIBLE_MAX, I_LOAD_FLOOR,
+            F_PLAUSIBLE_MIN, F_PLAUSIBLE_MAX, I_LOAD_FLOOR, endAt,
         ]);
 
         // Current window, and the equal-length window immediately preceding it.

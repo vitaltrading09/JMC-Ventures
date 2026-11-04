@@ -54,11 +54,29 @@ async function main() {
         if (userCheck.rows.length === 0) {
             await client.query(`
                 INSERT INTO users (tenant_id, email, password_hash, role) 
-                VALUES ($1, 'demo@grid-iq.co.za', $2, 'admin')
+                VALUES ($1, 'demo@grid-iq.co.za', $2, 'client_admin')
             `, [tenantId, hashedPassword]);
             console.log(`Created User: demo@grid-iq.co.za`);
         } else {
             console.log("User demo@grid-iq.co.za already exists.");
+        }
+
+        // 2b. Internal tenant and an ops user (super_admin), for the review
+        // workflow and the fleet API locally. Same password as the demo user.
+        let opsTenantId;
+        const opsTenant = await client.query("SELECT id FROM tenants WHERE kind = 'internal' ORDER BY created_at LIMIT 1");
+        if (opsTenant.rows.length > 0) {
+            opsTenantId = opsTenant.rows[0].id;
+        } else {
+            opsTenantId = (await client.query(
+                `INSERT INTO tenants (name, kind, slug) VALUES ('Grid-IQ (demo ops)', 'internal', 'grid-iq-demo-ops') RETURNING id`)).rows[0].id;
+        }
+        const opsCheck = await client.query("SELECT id FROM users WHERE email = 'ops@grid-iq.co.za'");
+        if (opsCheck.rows.length === 0) {
+            await client.query(
+                `INSERT INTO users (tenant_id, email, password_hash, role) VALUES ($1, 'ops@grid-iq.co.za', $2, 'super_admin')`,
+                [opsTenantId, hashedPassword]);
+            console.log('Created User: ops@grid-iq.co.za (super_admin)');
         }
 
         // 3. Create Sites & Meters (5 Demo Sites)
