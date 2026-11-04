@@ -26,6 +26,8 @@ DATA_DIR="$(setting DATA_DIR)"; DATA_DIR="${DATA_DIR:-./.data}"
 PGUSER="$(setting POSTGRES_USER)"; PGDB="$(setting POSTGRES_DB)"
 ENDPOINT="$(setting BACKUP_S3_ENDPOINT)"; BUCKET="$(setting BACKUP_S3_BUCKET)"
 PREFIX="$(setting BACKUP_PREFIX)"; PREFIX="${PREFIX:-gridiq}"
+# Private age key for encrypted backups (root-only on the server).
+IDENTITY="$(setting BACKUP_AGE_IDENTITY_FILE)"; IDENTITY="${IDENTITY:-/etc/gridiq/backup-age.key}"
 BACKUP_DIR="$DATA_DIR/backups"; LOG="$BACKUP_DIR/restore-drill.log"
 mkdir -p "$BACKUP_DIR/drill"
 
@@ -36,12 +38,26 @@ live() { docker compose exec -T timescaledb psql -X -U "$PGUSER" -d "$PGDB" -tA 
 C="gridiq-restore-drill-$$"
 cleanup() { docker rm -f "$C" >/dev/null 2>&1 || true; rm -f "$BACKUP_DIR/drill/"*.dump; }
 trap cleanup EXIT
+# (cleanup also removes decrypted copies: *.dump)
 
 # ── Latest backup ──────────────────────────────────────────────────────────
-LATEST="$({ s3 s3 ls "s3://$BUCKET/$PREFIX/daily/" || true; } | awk '{print $4}' | { grep -E '^gridiq-.*\.dump$' || true; } | sort | tail -n1)"
+LATEST="$({ s3 s3 ls "s3://$BUCKET/$PREFIX/daily/" || true; } | awk '{print $4}' | { grep -E '^gridiq-.*\.dump(\.age)?$' || true; } | sort | tail -n1)"
 [ -n "$LATEST" ] || { log "FAILED: no backups under s3://$BUCKET/$PREFIX/daily/"; exit 1; }
 log "drill: $LATEST"
 s3 s3 cp "s3://$BUCKET/$PREFIX/daily/$LATEST" "/backups/drill/$LATEST" --only-show-errors
+if [[ "$LATEST" == *.age ]]; then
+    [ -r "$IDENTITY" ] || { log "FAILED: $LATEST is encrypted and the key $IDENTITY is not readable (run as root?)"; exit 1; }
+    # Mount the key's directory read-only and name the file inside it. Under
+    # Git Bash the host path must be in Windows form for Docker (cygpath).
+    KEY_DIR="$(cd "$(dirname "$IDENTITY")" && pwd)"
+    command -v cygpath >/dev/null 2>&1 && KEY_DIR="$(cygpath -m "$KEY_DIR")"
+    docker compose run --rm --no-deps -T -v "$KEY_DIR:/keys:ro" age \
+        -d -i "/keys/$(basename "$IDENTITY")" -o "/backups/drill/${LATEST%.age}" "/backups/drill/$LATEST" \
+        || { log "FAILED: could not decrypt $LATEST with $IDENTITY"; exit 1; }
+    rm -f "$BACKUP_DIR/drill/$LATEST"
+    LATEST="${LATEST%.age}"
+    log "decrypted with $IDENTITY"
+fi
 
 # Backup start time, from the name gridiq-YYYY-MM-DDTHHMMSSZ.dump
 STAMP="$(echo "$LATEST" | sed -E 's/^gridiq-([0-9-]+)T([0-9]{2})([0-9]{2})([0-9]{2})Z\.dump$/\1 \2:\3:\4+00/')"

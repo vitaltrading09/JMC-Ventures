@@ -65,6 +65,8 @@ services:
       args:
         # Baked into the client bundle; the browser calls the API via Caddy.
         NEXT_PUBLIC_API_URL: https://${APP_DOMAIN}/api
+        # The broker host shown to installers on the Add Meter screen.
+        NEXT_PUBLIC_MQTT_HOST: ${MQTT_DOMAIN}
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-}
@@ -197,6 +199,15 @@ services:
       AWS_ACCESS_KEY_ID: ${BACKUP_S3_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${BACKUP_S3_SECRET_ACCESS_KEY:-}
       AWS_DEFAULT_REGION: ${BACKUP_S3_REGION:-auto}
+    volumes:
+      - ${DATA_DIR:-./.data}/backups:/backups
+
+  # age, for encrypting backups before upload (deploy/scripts/backup.sh) and
+  # decrypting them for the restore drill. Profile "tools": never started by `up`.
+  age:
+    image: gridiq/age:1.2.1
+    build: deploy/tools/age
+    profiles: [tools]
     volumes:
       - ${DATA_DIR:-./.data}/backups:/backups
 

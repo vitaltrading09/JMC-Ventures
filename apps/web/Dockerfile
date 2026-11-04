@@ -16,7 +16,10 @@ COPY packages/db/package.json packages/db/
 RUN npm ci -w apps/web --include-workspace-root=false --no-audit --no-fund
 COPY apps/web apps/web
 ARG NEXT_PUBLIC_API_URL
+# Shown on the Add Meter screen as the broker host meters connect to.
+ARG NEXT_PUBLIC_MQTT_HOST
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
+    NEXT_PUBLIC_MQTT_HOST=${NEXT_PUBLIC_MQTT_HOST} \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build -w apps/web
 

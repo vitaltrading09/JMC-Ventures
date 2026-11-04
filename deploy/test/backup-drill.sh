@@ -18,6 +18,16 @@ export BACKUP_S3_ACCESS_KEY_ID=test BACKUP_S3_SECRET_ACCESS_KEY=test BACKUP_S3_R
 export BACKUP_PREFIX=drill-test
 
 docker compose up -d --wait s3mock timescaledb
+
+# A throwaway age keypair for this test (the real one is made once per server,
+# docs/RUNBOOK.md → Backups).
+DATA_DIR="${DATA_DIR:-$(grep -E '^DATA_DIR=' .env | tail -n1 | cut -d= -f2-)}"; DATA_DIR="${DATA_DIR:-./.data}"
+mkdir -p "$DATA_DIR/backups"
+rm -f "$DATA_DIR/backups/test-age.key"
+docker compose run --rm --no-deps -T --entrypoint age-keygen age -o /backups/test-age.key 2>/dev/null
+export BACKUP_AGE_RECIPIENT="$(docker compose run --rm --no-deps -T --entrypoint age-keygen age -y /backups/test-age.key)"
+export BACKUP_AGE_IDENTITY_FILE="$DATA_DIR/backups/test-age.key"
+echo "test recipient: $BACKUP_AGE_RECIPIENT"
 echo "==> backup.sh"
 bash deploy/scripts/backup.sh
 echo "==> objects in the bucket"

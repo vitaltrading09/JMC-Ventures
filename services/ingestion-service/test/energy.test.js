@@ -95,3 +95,36 @@ test('periods split by month', () => {
     assert.deepStrictEqual(out.map((p) => p.period), ['2026-10', '2026-11']);
     assert.ok(out.every((p) => p.kwh > 0));
 });
+
+test('TOU bands (SA commercial hours, as the analytics page used)', () => {
+    const { touBand } = require('../dist/energy.js');
+    const bands = Array.from({ length: 24 }, (_, h) => touBand(h)[0]).join('');
+    // hours 00..23: off-peak to 06, standard 06, peak 07-10, standard 10-18, peak 18-20, standard 20-22, off-peak 22-24
+    assert.strictEqual(bands, 'oooooosppps' + 'ssssssss'.slice(0, 7) + 'pp' + 'ss' + 'oo');
+    assert.strictEqual(touBand(6), 'standard');
+    assert.strictEqual(touBand(7), 'peak');
+    assert.strictEqual(touBand(9), 'peak');
+    assert.strictEqual(touBand(10), 'standard');
+    assert.strictEqual(touBand(18), 'peak');
+    assert.strictEqual(touBand(20), 'standard');
+    assert.strictEqual(touBand(22), 'offpeak');
+    assert.strictEqual(touBand(5), 'offpeak');
+});
+
+test('local date and hour in Africa/Johannesburg (UTC+2)', () => {
+    const { localDateHour } = require('../dist/energy.js');
+    assert.deepStrictEqual(localDateHour(new Date('2026-11-03T22:30:00Z'), 'Africa/Johannesburg'), { date: '2026-11-04', hour: 0 });
+    assert.deepStrictEqual(localDateHour(new Date('2026-11-04T05:00:00Z'), 'Africa/Johannesburg'), { date: '2026-11-04', hour: 7 });
+});
+
+test('energy split by local day and TOU band from the register', () => {
+    const { periodEnergy, touBand, localDateHour } = require('../dist/energy.js');
+    // 24 hours of steady 10 kW starting at local midnight (22:00 UTC)
+    const rows = steady(24, { start: Date.parse('2026-11-03T22:00:00Z') });
+    const out = periodEnergy(rows, (h) => { const { date, hour } = localDateHour(h, 'Africa/Johannesburg'); return `${date}|${touBand(hour)}`; });
+    const by = Object.fromEntries(out.map((p) => [p.period, p.kwh]));
+    // peak 07-10 + 18-20 = 5 h, standard 06-22 minus peak = 11 h, off-peak 8 h (last hour 1 minute short)
+    assert.ok(Math.abs(by['2026-11-04|peak'] - 50) < 0.5, JSON.stringify(by));
+    assert.ok(Math.abs(by['2026-11-04|standard'] - 110) < 0.5, JSON.stringify(by));
+    assert.ok(Math.abs(by['2026-11-04|offpeak'] - 79.8) < 0.5, JSON.stringify(by));
+});

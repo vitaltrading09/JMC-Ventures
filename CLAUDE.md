@@ -292,9 +292,12 @@ Compose stack behind Caddy with a real domain. The steps are in
   2.25.0, gitignored), then quarantine duplicates and migrate (`packages/db/README.md`).
 - The old systemd / `npx tsx` runtime files were deleted in Phase 1.
 - Operations: `docs/RUNBOOK.md` (deploy, rollback by image tag, restore, MQTT users, logs).
-  Backups: `deploy/scripts/backup.sh` (pg_dump → S3-compatible `BACKUP_S3_*`, verified, 7/4/6
-  retention, status in `backup_runs`), weekly `restore-drill.sh`, `install-cron.sh`. The S3 client
-  is the `awscli` compose service (profile `tools`). Local test: `deploy/test/backup-drill.sh` (S3Mock).
+  Backups: `deploy/scripts/backup.sh` (pg_dump → verified → encrypted with age to
+  `BACKUP_AGE_RECIPIENT` → Cloudflare R2 via `BACKUP_S3_*`, 7/4/6 retention, status in `backup_runs`),
+  weekly `restore-drill.sh` (decrypts with `BACKUP_AGE_IDENTITY_FILE`, default
+  `/etc/gridiq/backup-age.key`, root only; an offline copy of the key must exist), `install-cron.sh`.
+  The S3 client and age are the `awscli` and `age` compose services (profile `tools`). Local test:
+  `deploy/test/backup-drill.sh` (S3Mock, throwaway age key).
 - External monitor: `/api/health/deep` (header `x-health-token: $HEALTH_TOKEN`; `src/health.ts`):
   DB, pending migrations, ingest heartbeat + last flush (`service_heartbeats`, written by ingest
   every 30 s), last successful backup, silent meters. 200 / 503.
@@ -346,6 +349,10 @@ Compose stack behind Caddy with a real domain. The steps are in
 - **API calls:** All frontend calls go through `NEXT_PUBLIC_API_URL` (the API gateway). Never call auth/ingestion services directly.
 - **Auth:** JWT stored in localStorage (to be migrated to HTTPOnly cookies). Sent as `Authorization: Bearer <token>`.
 - **Tenant isolation:** Every API query is scoped by `tenant_id` decoded from JWT.
+- **Delete = archive:** `DELETE /meters/:id` and `/sites/:id` set `archived_at` (+ `is_active = false`);
+  lists hide archived rows (`?archived=1` shows them), ingest dead-letters archived meters, admins
+  restore with `POST .../restore`. Raw readings are removed only by `deploy/scripts/purge-archived-meter.sh`
+  (backup first, documented in docs/RUNBOOK.md). New queries listing meters/sites must filter `archived_at IS NULL`.
 - **Energy score colour thresholds:** `≥80` green, `≥60` amber/yellow, `<60` red.
 - **NRS 048-2 limits:** PF min 0.85, THD max 8%, voltage 207–253V (±10% of 230V), frequency 49–51Hz.
 - **Recharts:** Used for all charts. PieChart for donuts, BarChart for consumption, LineChart for time-series. Always use `<Cell>` per bar for colour control.

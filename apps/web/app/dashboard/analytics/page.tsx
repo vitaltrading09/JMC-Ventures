@@ -47,68 +47,40 @@ interface TariffCost {
     avgRate: number;
 }
 
-/** Returns the TOU time-of-use band for a given hour (0-23), using SA commercial defaults */
-function getTouBand(hour: number, settings: SiteSettings): "peak" | "standard" | "offpeak" {
-    // Default SA peak: 07:00-10:00 and 18:00-20:00 weekdays
-    // We simplify to hour-of-day only (no weekday check without date)
-    if (hour >= 7 && hour < 10) return "peak";
-    if (hour >= 18 && hour < 20) return "peak";
-    if (hour >= 6 && hour < 22) return "standard";
-    return "offpeak";
+/** Energy per time-of-use band, from the backend (/meters/:id/energy/tou). */
+interface TouKwh { peak: number; standard: number; offpeak: number; }
+interface TouEnergy {
+    method: "register" | "power_integration" | "mixed" | "none";
+    total_kwh: TouKwh;
+    by_day: Array<TouKwh & { date: string }>;
+    data_quality: { register_resets: number; implausible_jumps: number; register_hours: number; power_hours: number };
 }
 
-/** Calculate TOU cost breakdown from readings array */
-function calcTariffCost(readings: Reading[], settings: SiteSettings): TariffCost {
+/**
+ * TOU cost from banded energy. The energy comes from the meter's kWh register
+ * (power-integration fallback where there is none), the same source as the
+ * monthly report, so every kWh figure on the platform agrees.
+ */
+function costFromKwh(kwh: TouKwh | null | undefined, settings: SiteSettings): TariffCost {
     const rPeak     = Number(settings.tariff_peak)     || 5.00;
     const rStd      = Number(settings.tariff_standard) || 2.00;
     const rOffpeak  = Number(settings.tariff_offpeak)  || 1.20;
-
-    // Time-weighted energy: hold each reading's power for the ACTUAL time until
-    // the next reading, rather than assuming a fixed interval. The readings API
-    // returns dynamically-bucketed data (the bucket width varies with the range),
-    // so a hardcoded 5-min step was wrong whenever the bucket wasn't 5 min. This
-    // matches the backend /monthly integration, keeping every kWh figure consistent.
-    const sorted = readings
-        .filter(r => r.power_active_total != null && r.time)
-        .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
-
-    // Cap each gap at 1.5x the typical spacing so an offline period (a jump across
-    // missing buckets) isn't billed as continuous power, whatever the bucket width.
-    const gaps: number[] = [];
-    for (let i = 1; i < sorted.length; i++) {
-        gaps.push(new Date(sorted[i].time).getTime() - new Date(sorted[i - 1].time).getTime());
-    }
-    const median = gaps.length ? [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)] : 0;
-    const capMs = median > 0 ? median * 1.5 : Infinity;
-
-    let peakKwh = 0, standardKwh = 0, offpeakKwh = 0;
-
-    for (let i = 0; i < sorted.length; i++) {
-        const r = sorted[i];
-        const next = sorted[i + 1];
-        // Last reading has no following interval; give it the median step so the
-        // final bucket's energy isn't dropped.
-        const dtMs = next
-            ? Math.min(new Date(next.time).getTime() - new Date(r.time).getTime(), capMs)
-            : (median || 0);
-        if (dtMs <= 0) continue;
-        const kwh = (r.power_active_total as number) * (dtMs / 3_600_000);
-        const hour = new Date(r.time).getHours();
-        const band = getTouBand(hour, settings);
-        if (band === "peak")     peakKwh     += kwh;
-        else if (band === "standard") standardKwh += kwh;
-        else                    offpeakKwh  += kwh;
-    }
-
+    const peakKwh = kwh?.peak ?? 0, standardKwh = kwh?.standard ?? 0, offpeakKwh = kwh?.offpeak ?? 0;
     const peakCost    = peakKwh    * rPeak;
     const standardCost = standardKwh * rStd;
     const offpeakCost = offpeakKwh * rOffpeak;
     const totalCost   = peakCost + standardCost + offpeakCost;
     const totalKwh    = peakKwh + standardKwh + offpeakKwh;
     const avgRate     = totalKwh > 0 ? totalCost / totalKwh : 0;
-
     return { peakKwh, standardKwh, offpeakKwh, peakCost, standardCost, offpeakCost, totalCost, avgRate };
 }
+
+const ENERGY_METHOD_LABEL: Record<TouEnergy["method"], string> = {
+    register: "from the meter's kWh register",
+    power_integration: "estimated from power (this meter has no kWh register)",
+    mixed: "from the kWh register, estimated from power where it was missing",
+    none: "no energy data",
+};
 
 interface MeterOption { id: string; name: string; site_id: string; is_active?: boolean; }
 interface Recommendation {
@@ -120,6 +92,7 @@ interface Recommendation {
 
 export default function AnalyticsPage() {
     const [readings,        setReadings]        = useState<Reading[]>([]);
+    const [touEnergy,       setTouEnergy]       = useState<TouEnergy | null>(null);
     const [loading,         setLoading]         = useState(true);
     const [aiInsight,       setAiInsight]       = useState<string>("");
     const [aiLoading,       setAiLoading]       = useState(false);
@@ -168,6 +141,10 @@ export default function AnalyticsPage() {
                 { credentials: 'include' }
             );
             if (readRes.ok) setReadings(await readRes.json());
+
+            // Energy per TOU band per day (register-based, same as the monthly report)
+            const touRes = await fetch(`${API}/ingestion/meters/${mid}/energy/tou?days=7`, { credentials: 'include' });
+            setTouEnergy(touRes.ok ? await touRes.json() : null);
 
             // Per-meter recommendations
             setRecsLoading(true);
@@ -238,7 +215,7 @@ export default function AnalyticsPage() {
             const mdi      = settings.contracted_mdi_kva ? `${settings.contracted_mdi_kva} kVA` : "not set";
 
             // 7-day cost estimate
-            const cost7d = calcTariffCost(readings, settings);
+            const cost7d = costFromKwh(touEnergy?.total_kwh, settings);
             const projMonthly = (cost7d.totalCost / 7 * 30).toFixed(0);
 
             // 7-day averages are the headline figures shown on the KPI tiles. Send
@@ -280,6 +257,7 @@ TARIFF RATES (actual configured):
   Standard energy: ${cost7d.standardKwh.toFixed(0)} kWh → R${cost7d.standardCost.toFixed(0)}
   Off-peak energy: ${cost7d.offpeakKwh.toFixed(0)} kWh → R${cost7d.offpeakCost.toFixed(0)}
   Total 7-day cost: R${cost7d.totalCost.toFixed(0)}
+  Energy source: ${ENERGY_METHOD_LABEL[touEnergy?.method ?? 'none']}
   Effective average rate: R${cost7d.avgRate.toFixed(3)}/kWh
   Projected monthly cost: R${projMonthly}
 `;
@@ -348,22 +326,19 @@ TARIFF RATES (actual configured):
     const voltMax      = voltReadings.length ? Math.max(...voltReadings.map(r => r.voltage_a!)) : null;
 
     // Tariff cost breakdown (7 days)
-    const cost = calcTariffCost(readings, settings);
+    const cost = costFromKwh(touEnergy?.total_kwh, settings);
     const projMonthly = cost.totalCost / 7 * 30;
 
     // Daily cost chart data (cost per day by band)
-    const costByDay = Object.entries(demandByDay)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([day]) => {
-            const dayReadings = readings.filter(r => r.time?.slice(0, 10) === day);
-            const c = calcTariffCost(dayReadings, settings);
-            return {
-                day: new Date(day).toLocaleDateString("en-ZA", { month: "short", day: "numeric" }),
-                Peak: Math.round(c.peakCost),
-                Standard: Math.round(c.standardCost),
-                "Off-peak": Math.round(c.offpeakCost),
-            };
-        });
+    const costByDay = (touEnergy?.by_day ?? []).map((d) => {
+        const c = costFromKwh(d, settings);
+        return {
+            day: new Date(d.date).toLocaleDateString("en-ZA", { month: "short", day: "numeric" }),
+            Peak: Math.round(c.peakCost),
+            Standard: Math.round(c.standardCost),
+            "Off-peak": Math.round(c.offpeakCost),
+        };
+    });
 
     const rPeak   = Number(settings.tariff_peak)     || 5.00;
     const rStd    = Number(settings.tariff_standard) || 2.00;
@@ -561,6 +536,11 @@ TARIFF RATES (actual configured):
                                 Peak R{rPeak.toFixed(2)} · Std R{rStd.toFixed(2)} · Off-peak R{rOffpk.toFixed(2)}/kWh
                             </span>
                         </div>
+                        <p className="-mt-2 mb-4 text-xs text-slate-500">
+                            Energy {ENERGY_METHOD_LABEL[touEnergy?.method ?? "none"]}
+                            {touEnergy && touEnergy.data_quality.register_resets > 0 &&
+                                ` · ${touEnergy.data_quality.register_resets} register reset(s) skipped`}
+                        </p>
                         <div className="grid grid-cols-3 gap-3 mb-4">
                             {[
                                 { label: "Peak", kwh: cost.peakKwh, cost: cost.peakCost, color: "text-red-400" },
