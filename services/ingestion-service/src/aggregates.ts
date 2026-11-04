@@ -106,3 +106,20 @@ export function tenantPowerSql(source: Source, tenantFilter: string): string {
         GROUP BY bucket
         ORDER BY bucket ASC`;
 }
+
+/**
+ * The chart series for one measurement point, from the corrected point views
+ * (point_readings_*): $1 bucket interval, $2 point id, $3 from, $4 to. Same
+ * columns as meterSeriesSql. There is no raw point view, so short ranges read
+ * point_readings_1m (1-minute resolution at least).
+ */
+export function pointSeriesSql(source: Source): string {
+    const view = source === 'raw' ? 'point_readings_1m' : `point_${source}`;
+    return `
+        SELECT time_bucket($1::interval, bucket) AS time,
+               ${AVG_COLUMNS.map((c) => `SUM(${c}_avg * n) / NULLIF(SUM(n) FILTER (WHERE ${c}_avg IS NOT NULL), 0) AS ${c}`).join(', ')},
+               MAX(energy_import_total_last) AS energy_import_total
+        FROM ${view}
+        WHERE measurement_point_id = $2 AND bucket >= time_bucket($1::interval, $3::timestamptz) AND bucket <= $4
+        GROUP BY 1 ORDER BY 1 ASC`;
+}

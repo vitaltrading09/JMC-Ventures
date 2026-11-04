@@ -31,6 +31,8 @@ export function middleware(request: NextRequest) {
     const isAdminRoute = request.nextUrl.pathname.startsWith('/admin');
     const isBrokerRoute = request.nextUrl.pathname.startsWith('/broker');
     const isOpsRoute = request.nextUrl.pathname.startsWith('/ops');
+    // Client portal (Phase 8). Internal users may open it too (it shows every tenant's projects).
+    const isPortalRoute = request.nextUrl.pathname.startsWith('/portal');
     const isLoginRoute = request.nextUrl.pathname === '/login';
 
     // 1. Handle Login Route
@@ -50,7 +52,7 @@ export function middleware(request: NextRequest) {
     }
 
     // 2. Protect Authenticated Routes
-    if (!token && (isDashboardRoute || isAdminRoute || isBrokerRoute || isOpsRoute)) {
+    if (!token && (isDashboardRoute || isAdminRoute || isBrokerRoute || isOpsRoute || isPortalRoute)) {
         return NextResponse.redirect(new URL('/login', request.url));
     }
 
@@ -96,5 +98,5 @@ export function middleware(request: NextRequest) {
 
 export const config = {
     // Run middleware on these paths
-    matcher: ['/dashboard/:path*', '/admin/:path*', '/broker/:path*', '/ops/:path*', '/login'],
+    matcher: ['/dashboard/:path*', '/admin/:path*', '/broker/:path*', '/ops/:path*', '/portal/:path*', '/login'],
 };

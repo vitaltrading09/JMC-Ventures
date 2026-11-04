@@ -12,6 +12,7 @@ import { Plus } from "lucide-react";
 import { apiGet, apiSend, fmtDate, fmtDateTime, TZ_LABEL } from "@/lib/api";
 import { num } from "@/lib/format";
 import { ROLE_LABEL } from "@/lib/ops";
+import { BalanceView, Balance } from "@/components/fleet/BalanceView";
 import { PageHeader, Panel, Table, Badge, Loading, ErrorBox, Empty, Button, Field, inputClass } from "@/components/ops/ui";
 
 interface Point {
@@ -23,13 +24,6 @@ interface ProjectDetail {
     id: string; tenant_id: string; name: string; end_client_name: string | null; address: string | null; status: string;
     starts_on: string | null; ends_on: string | null; live_data_visible: boolean; notes: string | null; timezone: string;
     points: Point[];
-}
-interface Balance {
-    from: string; to: string; complete: boolean; not_available: string[];
-    grid_import_kwh: number | null; grid_export_kwh: number | null; pv_generation_kwh: number | null;
-    bess_discharge_kwh: number | null; bess_charge_kwh: number | null; generator_kwh: number | null;
-    site_consumption_kwh: number | null; sub_loads_kwh: number | null; unmetered_kwh: number | null;
-    points: { id: string; name: string; role: string; import_kwh: number | null; export_kwh: number | null; coverage: number; method: string }[];
 }
 
 const DETAIL_FIELDS = ["name", "end_client_name", "address", "status", "starts_on", "ends_on", "notes"] as const;
@@ -194,36 +188,6 @@ function Points({ projectId, points, onChange }: { projectId: string; points: Po
             )}
             <ErrorBox error={archive.error} />
         </Panel>
-    );
-}
-
-function BalanceView({ b }: { b: Balance }) {
-    const kwh = (v: number | null) => (v === null ? <span className="text-amber-300">not available</span> : `${num(v)} kWh`);
-    const rows: [string, number | null][] = [
-        ["Grid import", b.grid_import_kwh], ["Grid export", b.grid_export_kwh], ["PV generation", b.pv_generation_kwh],
-        ["Battery discharge", b.bess_discharge_kwh], ["Battery charge", b.bess_charge_kwh], ["Generator", b.generator_kwh],
-        ["Site consumption", b.site_consumption_kwh], ["Metered sub-loads", b.sub_loads_kwh], ["Unmetered remainder", b.unmetered_kwh],
-    ];
-    return (
-        <div className="grid lg:grid-cols-2 gap-6">
-            <div>
-                <dl className="divide-y divide-slate-800 text-sm">
-                    {rows.map(([l, v]) => <div key={l} className="flex justify-between py-1.5"><dt className="text-slate-400">{l}</dt><dd className="text-slate-100">{kwh(v)}</dd></div>)}
-                </dl>
-                {!b.complete && <p className="text-xs text-amber-300 mt-2">Incomplete: {b.not_available.length ? b.not_available.join("; ") : "a point has under 95 % coverage"}.</p>}
-            </div>
-            <Table head={["Point", "Import", "Export", "Coverage", "Basis"]}>
-                {b.points.map((x) => (
-                    <tr key={x.id}>
-                        <td className="py-1.5 pr-3">{x.name} <span className="text-slate-500 text-xs">{ROLE_LABEL[x.role] ?? x.role}</span></td>
-                        <td className="py-1.5 pr-3">{x.import_kwh === null ? "–" : num(x.import_kwh)}</td>
-                        <td className="py-1.5 pr-3">{x.export_kwh === null ? "–" : num(x.export_kwh)}</td>
-                        <td className="py-1.5 pr-3">{Math.round(x.coverage * 100)} %</td>
-                        <td className="py-1.5 pr-3 text-xs text-slate-500">{x.method.replace("_", " ")}</td>
-                    </tr>
-                ))}
-            </Table>
-        </div>
     );
 }
 

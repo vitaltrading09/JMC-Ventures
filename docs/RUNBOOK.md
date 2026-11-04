@@ -123,7 +123,7 @@ The calls below are what the console uses, for scripting (`https://app.<domain>/
 - Grid-IQ staff are `super_admin` or `engineer`, in the internal tenant.
 - Client users are `client_admin` (can change things) or `client_viewer` (read only).
 
-**Create a user** as super_admin (`POST /api/auth/users {"email","password","tenant_id","role"}`). The role must match the tenant: internal roles only in the internal tenant.
+**Create a user** as super_admin (`POST /api/auth/users {"email","password","tenant_id","role"}`). The role must match the tenant: internal roles only in the internal tenant. A client's own admin can add, change and remove its team's users in the portal (Settings → Users), with client roles only.
 
 **Findings.**
 - AI recommendations are created as drafts. Clients see a finding only after you publish it:
