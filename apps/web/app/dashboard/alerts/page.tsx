@@ -186,7 +186,7 @@ export default function AlertsPage() {
                             {filter === "unread" ? "No unread alerts — all clear" : "No alerts match this filter"}
                         </p>
                         <p className="text-sm text-slate-600">
-                            Alerts are generated automatically when meter readings breach NRS 048 thresholds
+                            Alerts are evaluated on 10-minute values (voltage, THD), 30-minute averages (demand), power-quality events and data health; each alert states its basis
                         </p>
                     </div>
                 </Card>

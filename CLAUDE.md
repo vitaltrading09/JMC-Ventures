@@ -61,12 +61,40 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   and **exit** if a migration is pending. See `packages/db/README.md`.
   - The baseline migration is the only idempotent one (safe on empty and existing
     DBs). Later migrations are normal, non-idempotent DDL.
-  - `MAX_BACKFILL_DAYS` (30, mqtt.ts) and `COMPRESSION_AFTER_DAYS` (35, the
-    compression policy) both live in `packages/db/index.js`; a test fails if
-    compression <= backfill.
+  - Retention windows are env-configurable: `MAX_BACKFILL_DAYS` (default 14; the
+    device-timestamp window in mqtt.ts) and `COMPRESS_AFTER_DAYS` (default 15; raw
+    compression AND the continuous-aggregate refresh window), validated in
+    `packages/db/index.js` (`retentionConfig`: compress must be > backfill). The
+    migrate step applies them to the DB policies (`reconcileRetention`); every
+    ingestion role exits at startup if the DB disagrees (`assertRetentionConsistent`).
   - Old databases with duplicate `(meter_id, time)` readings: the baseline stops;
     run the explicit `quarantine-duplicate-readings.js` step (moves them to
     `meter_readings_quarantine`, deletes nothing for good), then migrate.
+- **Aggregates (Phase 4)**: continuous aggregates `readings_1m` (from raw), then
+  hierarchical `readings_10m`, `readings_30m`, `readings_1h`, `readings_1d`. Core
+  channels only (V/I per phase, P/Q/S/PF totals, frequency, THD V/I per phase,
+  unbalance) as `<col>_avg/_min/_max`, voltage mean square `<col>_ms` (true RMS),
+  energy registers `<col>_first/_last`, `n` (samples), `minutes`, `n_interrupt`
+  (samples below 23 V). Averages are re-weighted by `n`, so they equal the plain
+  raw average. `readings_30m.kva_demand` / `kw_demand` are minute-weighted (billed
+  demand). The first migrate run on a DB with history materialises everything once;
+  CSV imports refresh their range (`refreshAggregates`).
+  - Read path (`src/aggregates.ts` `planRead`): ~300–700 points per chart, raw only for
+    ranges ≤ 2 h; response shapes unchanged (`X-Readings-Source` header says which view).
+  - Demand (`src/demand.ts`) from `readings_30m` / `readings_1m`, intervals need ≥ 80 %
+    of minutes covered. Monthly energy (`src/energy.ts`) from register deltas per hour;
+    a negative delta is a reset (`data_quality.register_resets`, never summed through);
+    power-integration fallback (900 s gap cap) only where registers are absent; each
+    month reports `method`.
+  - Compliance (`power-quality.ts`) on 10-minute values (NRS 048-2 basis), interruptions
+    at 1-minute resolution; forecast on `readings_1h`; AI context on 30m/1m/1h.
+- **Alerting (jobs role, `src/alerting.ts`)**: 10-minute voltage/THD (and THD-I vs a
+  site-declared `alert_max_thd_i`, else a weekly trend notice), 30-minute demand vs
+  contracted MDI / `alert_max_kw`, instantaneous MDI early warning, `pq_events` by
+  duration (`EVENT_ALERT_MIN_SECONDS` / `site_settings.event_alert_min_s`), data health
+  (silent > `METER_SILENT_MINUTES`, coverage < 95 %/h, clock drift, rising conflicts from
+  `ingest_stats`). Every message states its basis; dedupe via `alerts.dedupe_key`
+  (unique per meter/type/key) plus memory.
 - The ingest container reaches the broker as `mqtts://${MQTT_DOMAIN}:8883`.
   `MQTT_DOMAIN` is a network alias of the mosquitto container, so the TLS
   hostname matches the certificate without leaving the host.
@@ -110,7 +138,7 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
 | Service | Key Features | Status |
 |---|---|---|
 | `auth-service` | Register, login, tenant management, JWT | ✅ Done |
-| `ingestion-service` | MQTT ingest (durable, batched), meter readings, pq_events, energy scoring, AI recommendations, MDI tracking. Per-reading NRS 048 alerts were removed from ingest in Phase 3; Phase 4 re-adds alerting from aggregates | ✅ Done |
+| `ingestion-service` | MQTT ingest (durable, batched), continuous aggregates read path, pq_events, alerting on 10/30-minute aggregates + events + data health (jobs), energy from registers, energy scoring, AI recommendations | ✅ Done |
 | `api-gateway` | Proxy, CORS, rate limiting, helmet | ✅ Done |
 
 ### Key Backend Files
@@ -120,11 +148,12 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   - **Batched** (`src/ingest/batch-writer.ts`): one multi-row `INSERT ... ON CONFLICT (meter_id, time) DO NOTHING RETURNING` per flush (`INGEST_FLUSH_MS` 1000 / `INGEST_FLUSH_ROWS` 500); the bounded queue (`INGEST_MAX_QUEUE` 50,000) applies backpressure, never drops.
   - **Mapping is data** (`src/ingest/channels.ts`): column → candidate param names, ~42 columns including L-L voltages, neutral current, per-phase P/Q/S/PF, THD per phase, unbalance, kvarh, demand. Add new firmware names there; tests use `test/fixtures/` payloads. Unmapped names are logged once per meter per hour, and payload bytes/msg per meter hourly (`src/ingest/stats.ts`).
   - **Meter cache** (`src/ingest/meter-cache.ts`): refreshed every 60 s and on a miss; topic segment matches id, serial, then `mqtt_username` (Phase 6). Unknown meters are dead-lettered (`unknown meter`).
-  - **No alert queries in ingest.** The per-reading NRS 048 alerts (`alerts` table) were removed from this path; Phase 4 reintroduces alerting from aggregates. Ingest feeds an in-memory event detector (`src/ingest/event-detector.ts`) that writes voltage/frequency excursions to `pq_events` (ongoing after `EVENT_MIN_SECONDS`, updated when they end). 1-second data cannot resolve sub-second dips.
+  - **No alert queries in ingest.** Alerting runs in the jobs role on aggregates (see Alerting above). Ingest feeds an in-memory event detector (`src/ingest/event-detector.ts`) that writes voltage/frequency excursions to `pq_events` (ongoing after `EVENT_MIN_SECONDS`, updated when they end). 1-second data cannot resolve sub-second dips.
   - Mosquitto `max_inflight_messages 1000`: with deferred PUBACKs the default 20 would cap ingest at ~20 msg/flush.
 - `services/ingestion-service/src/energy-score.ts` — Calculates energy score (0–100) from PF, THD, load factor, voltage quality. Stores in `site_scores` table.
 - `services/ingestion-service/src/ai-recommendations.ts` — Claude-powered recommendation engine. Generates contextual recommendations per site based on score components.
-- `services/ingestion-service/src/main.ts` — NRS 048-2 alert logic, MDI (Max Demand Indicator) tracking, tariff-aware analytics endpoints.
+- `services/ingestion-service/src/main.ts` — REST endpoints (readings via aggregates, demand, monthly energy, compliance, AI context), role startup, cron registration.
+- `services/ingestion-service/src/alerting.ts` — all alert rules (jobs role); `src/energy.ts` — register-based period energy; `src/aggregates.ts` — chart read planning.
 
 ### Report Page Architecture (`/dashboard/reports`)
 

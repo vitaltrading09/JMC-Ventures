@@ -57,15 +57,49 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
     let windowRows = 0, windowConflicts = 0, windowDeadLetters = 0;
     let windowLatencies: number[] = [];
 
+    // Per-meter counters persisted to ingest_stats once a minute: the jobs
+    // role alerts on rising duplicate-timestamp counts, which only ingest sees.
+    let perMeter = new Map<string, { rows: number; conflicts: number }>();
+    const count = (meterId: string, field: 'rows' | 'conflicts') => {
+        const c = perMeter.get(meterId) ?? { rows: 0, conflicts: 0 };
+        c[field]++;
+        perMeter.set(meterId, c);
+    };
+    const flushCounters = async () => {
+        if (perMeter.size === 0) return;
+        const batch = perMeter;
+        perMeter = new Map();
+        try {
+            for (const [meterId, c] of batch) {
+                await pool.query(`
+                    INSERT INTO ingest_stats (meter_id, hour, rows_written, conflicts)
+                    VALUES ($1, date_trunc('hour', NOW()), $2, $3)
+                    ON CONFLICT (meter_id, hour) DO UPDATE SET
+                        rows_written = ingest_stats.rows_written + EXCLUDED.rows_written,
+                        conflicts    = ingest_stats.conflicts + EXCLUDED.conflicts`,
+                    [meterId, c.rows, c.conflicts]);
+            }
+        } catch (e: any) {
+            // Observability only: never let it affect ingestion. Counts are lost, not retried.
+            console.error('[ingest] ingest_stats write failed:', e?.message || e);
+        }
+    };
+    const countersTimer = setInterval(() => { void flushCounters(); }, 60_000);
+    countersTimer.unref();
+
     const writer = new BatchWriter({
         db: pool,
         columns: CHANNEL_COLUMNS,
         flushMs: envInt('INGEST_FLUSH_MS', 1000),
         flushRows: envInt('INGEST_FLUSH_ROWS', 500),
         maxQueue: envInt('INGEST_MAX_QUEUE', 50_000),
-        onConflict: noteConflict,
+        onConflict: (meterId) => {
+            noteConflict(meterId);
+            count(meterId, 'conflicts');
+        },
         onCommitted: (inserted, info) => {
             const now = Date.now();
+            for (const row of inserted) count(row.meterId, 'rows');
             windowRows += info.inserted;
             windowConflicts += info.conflicts;
             for (const row of inserted) windowLatencies.push(now - row.receivedAt);
@@ -256,6 +290,8 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
             stats.stop();
             writer.stop();
             const drained = await writer.drain(20_000);
+            clearInterval(countersTimer);
+            await flushCounters();
             console.log(drained
                 ? `[MQTT] Shutdown: queue flushed and acked (${writer.totals.inserted} rows written this run)`
                 : `[MQTT] Shutdown: ${writer.size} row(s) not flushed; left unacked, the broker redelivers them`);

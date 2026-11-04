@@ -169,104 +169,128 @@ export async function assessPowerQuality(
         // Running this for the current window AND the one immediately before it is
         // what turns a point-in-time audit into degradation tracking — the whole
         // reason continuous monitoring is worth more than a one-off survey.
+        //
+        // Basis: 10-minute values from readings_10m, which is how NRS 048-2
+        // assesses voltage magnitude, harmonics and unbalance (95 % of 10-minute
+        // values over the assessment period). Voltage is the 10-minute RMS
+        // (from the per-minute mean square), not a single 1-second sample. A
+        // 10-minute interval containing an interruption is excluded from the
+        // quality statistics: an interruption is the absence of a measurement.
+        // Interruptions themselves are counted at 1-minute resolution from
+        // readings_1m. Short excursions inside a 10-minute value are what
+        // pq_events records.
         const windowMetrics = (startDaysAgo: number, endDaysAgo: number) => client.query(`
-            WITH base AS (
-                SELECT time, voltage_a, voltage_b, voltage_c,
-                       current_a, current_b, current_c,
-                       power_factor_total, thd_voltage_a, thd_current_a, frequency, power_active_total,
-                       NULLIF((COALESCE(voltage_a,0)+COALESCE(voltage_b,0)+COALESCE(voltage_c,0))/3.0, 0) AS v_avg,
-                       NULLIF((COALESCE(current_a,0)+COALESCE(current_b,0)+COALESCE(current_c,0))/3.0, 0) AS i_avg
-                       ,
-                       (voltage_a IS NOT NULL AND voltage_a < $9) AS is_interrupt,
-                       LEAST(EXTRACT(EPOCH FROM (
-                           LEAD(time) OVER (ORDER BY time) - time
-                       )), 900) AS dt_s
-                FROM meter_readings
+            WITH iv AS (
+                SELECT bucket, n, n_interrupt, t_first, t_last,
+                       (n_interrupt > 0)                                AS is_interrupt,
+                       sqrt(voltage_a_ms)                               AS v_rms,
+                       voltage_a_avg, voltage_b_avg, voltage_c_avg,
+                       current_a_avg, current_b_avg, current_c_avg,
+                       power_factor_total_avg, power_factor_total_min,
+                       thd_voltage_a_avg, thd_current_a_avg, voltage_unbalance_avg,
+                       frequency_avg, frequency_min, frequency_max,
+                       power_active_total_avg, power_active_total_max,
+                       NULLIF((COALESCE(voltage_a_avg,0)+COALESCE(voltage_b_avg,0)+COALESCE(voltage_c_avg,0))/3.0, 0) AS v_mean,
+                       NULLIF((COALESCE(current_a_avg,0)+COALESCE(current_b_avg,0)+COALESCE(current_c_avg,0))/3.0, 0) AS i_avg
+                FROM readings_10m
                 WHERE meter_id = $1
-                  AND time >= NOW() - ($2 || ' days')::INTERVAL
-                  AND time <  NOW() - ($7 || ' days')::INTERVAL
-            ), marked AS (
-                -- Count interruption EVENTS, not readings: a two-hour outage is
-                -- one event a client can act on, not 400 alarming rows.
-                SELECT *,
-                    CASE WHEN is_interrupt
-                              AND NOT COALESCE(LAG(is_interrupt) OVER (ORDER BY time), false)
-                         THEN 1 ELSE 0 END AS interrupt_start
-                FROM base
+                  AND bucket >= NOW() - ($2 || ' days')::INTERVAL
+                  AND bucket <  NOW() - ($7 || ' days')::INTERVAL
             ), peak AS (
                 -- Stands in for IEEE 519's "maximum demand current". Uses the
                 -- 99th percentile rather than the maximum on purpose: a single
-                -- sampling spike would inflate this denominator and make TDD
-                -- look better than it is, and a risk report must never be
-                -- biased toward reassurance.
+                -- spike would inflate this denominator and make TDD look better
+                -- than it is, and a risk report must never be biased toward
+                -- reassurance.
                 SELECT percentile_cont(0.99) WITHIN GROUP (ORDER BY i_avg) AS i_peak
-                FROM marked WHERE i_avg IS NOT NULL AND NOT is_interrupt
+                FROM iv WHERE i_avg IS NOT NULL AND NOT is_interrupt
             ), calc AS (
-                SELECT b.*, pk.i_peak,
-                    CASE WHEN v_avg IS NOT NULL AND voltage_b IS NOT NULL AND voltage_c IS NOT NULL
-                         THEN GREATEST(ABS(voltage_a-v_avg),ABS(voltage_b-v_avg),ABS(voltage_c-v_avg))/v_avg*100 END AS v_unb,
-                    CASE WHEN i_avg IS NOT NULL AND current_b IS NOT NULL AND current_c IS NOT NULL
-                         THEN GREATEST(ABS(current_a-i_avg),ABS(current_b-i_avg),ABS(current_c-i_avg))/i_avg*100 END AS i_unb
-                FROM marked b CROSS JOIN peak pk
+                SELECT iv.*, pk.i_peak,
+                    -- The meter's own unbalance value when it publishes one,
+                    -- otherwise the NEMA definition from the phase averages.
+                    COALESCE(voltage_unbalance_avg,
+                        CASE WHEN v_mean IS NOT NULL AND voltage_b_avg IS NOT NULL AND voltage_c_avg IS NOT NULL
+                             THEN GREATEST(ABS(voltage_a_avg-v_mean),ABS(voltage_b_avg-v_mean),ABS(voltage_c_avg-v_mean))/v_mean*100 END) AS v_unb,
+                    CASE WHEN i_avg IS NOT NULL AND current_b_avg IS NOT NULL AND current_c_avg IS NOT NULL
+                         THEN GREATEST(ABS(current_a_avg-i_avg),ABS(current_b_avg-i_avg),ABS(current_c_avg-i_avg))/i_avg*100 END AS i_unb
+                FROM iv CROSS JOIN peak pk
+            ), minutes AS (
+                SELECT n, n_interrupt, (n_interrupt > 0) AS intr,
+                       LAG(n_interrupt > 0) OVER (ORDER BY bucket) AS prev_intr
+                FROM readings_1m
+                WHERE meter_id = $1
+                  AND bucket >= NOW() - ($2 || ' days')::INTERVAL
+                  AND bucket <  NOW() - ($7 || ' days')::INTERVAL
+            ), interrupts AS (
+                -- Count interruption EVENTS, not readings: a two-hour outage is
+                -- one event a client can act on, not 400 alarming rows.
+                SELECT COALESCE(SUM(CASE WHEN intr AND NOT COALESCE(prev_intr, false) THEN 1 ELSE 0 END), 0) AS events,
+                       COALESCE(SUM(n_interrupt), 0)                                                      AS samples,
+                       -- each minute's share of samples below the threshold × 60 s
+                       COALESCE(SUM(CASE WHEN intr THEN n_interrupt::float / n * 60 ELSE 0 END), 0)      AS seconds
+                FROM minutes
             )
             SELECT
-                COUNT(*)                                                            AS n,
-                -- Readings the quality assessment actually stands on: an
-                -- interruption is the absence of a measurement, not one.
-                COUNT(*) FILTER (WHERE NOT is_interrupt)                             AS n_assessed,
-                SUM(interrupt_start)                                                AS interruption_events,
-                COUNT(*) FILTER (WHERE is_interrupt)                                 AS interruption_readings,
-                SUM(CASE WHEN is_interrupt THEN COALESCE(dt_s,0) ELSE 0 END)         AS interruption_seconds,
-                MIN(time)                                                           AS t_from,
-                MAX(time)                                                           AS t_to,
-                MIN(voltage_a) FILTER (WHERE NOT is_interrupt)                       AS v_min,
-                MAX(voltage_a) FILTER (WHERE NOT is_interrupt)                       AS v_max,
-                percentile_cont(0.95) WITHIN GROUP (ORDER BY voltage_a)
-                    FILTER (WHERE NOT is_interrupt)                                  AS v_p95,
-                percentile_cont(0.05) WITHIN GROUP (ORDER BY voltage_a)
-                    FILTER (WHERE NOT is_interrupt)                                  AS v_p05,
-                100.0*SUM(CASE WHEN NOT is_interrupt AND voltage_a BETWEEN $3 AND $4 THEN 1 ELSE 0 END)
-                    / NULLIF(COUNT(voltage_a) FILTER (WHERE NOT is_interrupt),0)     AS v_in_band_pct,
-                SUM(CASE WHEN NOT is_interrupt AND voltage_a < $3 THEN 1 ELSE 0 END) AS dip_count,
-                SUM(CASE WHEN NOT is_interrupt AND voltage_a > $4 THEN 1 ELSE 0 END) AS swell_count,
-                percentile_cont(0.95) WITHIN GROUP (ORDER BY thd_voltage_a)
-                    FILTER (WHERE NOT is_interrupt)                                  AS thd_p95,
-                MAX(thd_voltage_a) FILTER (WHERE NOT is_interrupt)                   AS thd_max,
+                COALESCE(SUM(n), 0)                                                 AS n,
+                -- Readings the quality assessment actually stands on.
+                COALESCE(SUM(n) FILTER (WHERE NOT is_interrupt), 0)                 AS n_assessed,
+                COUNT(*) FILTER (WHERE NOT is_interrupt)                            AS n_intervals,
+                (SELECT events  FROM interrupts)                                    AS interruption_events,
+                (SELECT samples FROM interrupts)                                    AS interruption_readings,
+                (SELECT seconds FROM interrupts)                                    AS interruption_seconds,
+                MIN(t_first)                                                        AS t_from,
+                MAX(t_last)                                                         AS t_to,
+                MIN(v_rms) FILTER (WHERE NOT is_interrupt)                          AS v_min,
+                MAX(v_rms) FILTER (WHERE NOT is_interrupt)                          AS v_max,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY v_rms)
+                    FILTER (WHERE NOT is_interrupt)                                 AS v_p95,
+                percentile_cont(0.05) WITHIN GROUP (ORDER BY v_rms)
+                    FILTER (WHERE NOT is_interrupt)                                 AS v_p05,
+                100.0*COUNT(*) FILTER (WHERE NOT is_interrupt AND v_rms BETWEEN $3 AND $4)
+                    / NULLIF(COUNT(v_rms) FILTER (WHERE NOT is_interrupt), 0)       AS v_in_band_pct,
+                COUNT(*) FILTER (WHERE NOT is_interrupt AND v_rms < $3)             AS dip_count,
+                COUNT(*) FILTER (WHERE NOT is_interrupt AND v_rms > $4)             AS swell_count,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY thd_voltage_a_avg)
+                    FILTER (WHERE NOT is_interrupt)                                 AS thd_p95,
+                MAX(thd_voltage_a_avg) FILTER (WHERE NOT is_interrupt)              AS thd_max,
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY v_unb)
-                    FILTER (WHERE NOT is_interrupt)                                  AS v_unb_p95,
+                    FILTER (WHERE NOT is_interrupt)                                 AS v_unb_p95,
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY i_unb)
-                    FILTER (WHERE NOT is_interrupt)                                  AS i_unb_p95,
-                AVG(i_unb) FILTER (WHERE NOT is_interrupt)                           AS i_unb_avg,
-                AVG(power_factor_total) FILTER (WHERE NOT is_interrupt)              AS pf_avg,
-                MIN(power_factor_total) FILTER (WHERE NOT is_interrupt)              AS pf_min,
+                    FILTER (WHERE NOT is_interrupt)                                 AS i_unb_p95,
+                AVG(i_unb) FILTER (WHERE NOT is_interrupt)                          AS i_unb_avg,
+                SUM(power_factor_total_avg * n) FILTER (WHERE NOT is_interrupt)
+                    / NULLIF(SUM(n) FILTER (WHERE NOT is_interrupt AND power_factor_total_avg IS NOT NULL), 0) AS pf_avg,
+                MIN(power_factor_total_min) FILTER (WHERE NOT is_interrupt)         AS pf_min,
                 -- Frequency is only meaningful while the supply is present, and
                 -- a value outside 40-60 Hz is sensor dropout rather than grid.
-                MIN(frequency) FILTER (WHERE NOT is_interrupt
-                    AND frequency BETWEEN $10 AND $11)                               AS f_min,
-                MAX(frequency) FILTER (WHERE NOT is_interrupt
-                    AND frequency BETWEEN $10 AND $11)                               AS f_max,
-                100.0*SUM(CASE WHEN NOT is_interrupt AND frequency BETWEEN $10 AND $11
-                                    AND frequency BETWEEN $5 AND $6 THEN 1 ELSE 0 END)
-                    / NULLIF(COUNT(frequency) FILTER (WHERE NOT is_interrupt
-                        AND frequency BETWEEN $10 AND $11),0)                        AS f_in_band_pct,
-                MAX(power_active_total)                                             AS peak_kw,
-                AVG(power_active_total)                                             AS avg_kw,
-                AVG(current_a) AS ia, AVG(current_b) AS ib, AVG(current_c) AS ic,
+                MIN(frequency_min) FILTER (WHERE NOT is_interrupt
+                    AND frequency_min BETWEEN $8 AND $9)                            AS f_min,
+                MAX(frequency_max) FILTER (WHERE NOT is_interrupt
+                    AND frequency_max BETWEEN $8 AND $9)                            AS f_max,
+                100.0*COUNT(*) FILTER (WHERE NOT is_interrupt AND frequency_avg BETWEEN $8 AND $9
+                                         AND frequency_avg BETWEEN $5 AND $6)
+                    / NULLIF(COUNT(frequency_avg) FILTER (WHERE NOT is_interrupt
+                        AND frequency_avg BETWEEN $8 AND $9), 0)                    AS f_in_band_pct,
+                MAX(power_active_total_max)                                         AS peak_kw,
+                SUM(power_active_total_avg * n) / NULLIF(SUM(n) FILTER (WHERE power_active_total_avg IS NOT NULL), 0) AS avg_kw,
+                SUM(current_a_avg * n) / NULLIF(SUM(n) FILTER (WHERE current_a_avg IS NOT NULL), 0) AS ia,
+                SUM(current_b_avg * n) / NULLIF(SUM(n) FILTER (WHERE current_b_avg IS NOT NULL), 0) AS ib,
+                SUM(current_c_avg * n) / NULLIF(SUM(n) FILTER (WHERE current_c_avg IS NOT NULL), 0) AS ic,
                 -- Current distortion. THD-I is misleading at light load: a small
                 -- absolute harmonic content is a large fraction of a small
                 -- fundamental, so an idling site reads as badly distorted. It is
                 -- therefore only assessed above a load floor. TDD rescales it
                 -- against peak demand current, which is what IEEE 519 limits.
-                percentile_cont(0.95) WITHIN GROUP (ORDER BY thd_current_a)
-                    FILTER (WHERE i_avg >= $8 * i_peak)                              AS thd_i_p95,
-                COUNT(thd_current_a) FILTER (WHERE i_avg >= $8 * i_peak)             AS thd_i_n,
+                percentile_cont(0.95) WITHIN GROUP (ORDER BY thd_current_a_avg)
+                    FILTER (WHERE i_avg >= $10 * i_peak)                            AS thd_i_p95,
+                COUNT(thd_current_a_avg) FILTER (WHERE i_avg >= $10 * i_peak)       AS thd_i_n,
                 percentile_cont(0.95) WITHIN GROUP (
-                    ORDER BY thd_current_a * i_avg / NULLIF(i_peak, 0))               AS tdd_p95,
-                MAX(i_peak)                                                          AS i_peak
+                    ORDER BY thd_current_a_avg * i_avg / NULLIF(i_peak, 0))          AS tdd_p95,
+                MAX(i_peak)                                                         AS i_peak
             FROM calc
         `, [
             meterId, startDaysAgo, V_MIN, V_MAX, F_MIN, F_MAX, endDaysAgo,
-            I_LOAD_FLOOR, V_INTERRUPTION, F_PLAUSIBLE_MIN, F_PLAUSIBLE_MAX,
+            F_PLAUSIBLE_MIN, F_PLAUSIBLE_MAX, I_LOAD_FLOOR,
         ]);
 
         // Current window, and the equal-length window immediately preceding it.
@@ -295,6 +319,7 @@ export async function assessPowerQuality(
         const fMin   = num(r.f_min);
         const fMax   = num(r.f_max);
         const fBand  = num(r.f_in_band_pct);
+        const nIntervals = Number(r.n_intervals) || 0;
         const dips   = Number(r.dip_count) || 0;
         const swells = Number(r.swell_count) || 0;
         const peakKw = num(r.peak_kw);
@@ -356,10 +381,10 @@ export async function assessPowerQuality(
             limit: `${V_MIN}–${V_MAX} V (230 V ±10%)`,
             status: vBand === null ? 'NO_DATA' : vBand >= 95 ? 'PASS' : vBand >= 90 ? 'WARN' : 'FAIL',
             standard: 'NRS 048-2 — LV voltage magnitude compatibility level',
-            method: `${nAssessed.toLocaleString()} readings with supply present, over ${days} days; 5th–95th percentile ${vP05?.toFixed(1)}–${vP95?.toFixed(1)} V`,
+            method: `${nIntervals.toLocaleString()} 10-minute RMS values (phase A, ${nAssessed.toLocaleString()} readings) with supply present, over ${days} days; 5th–95th percentile ${vP05?.toFixed(1)}–${vP95?.toFixed(1)} V`,
             detail: vBand !== null && vBand >= 95
-                ? `${vBand.toFixed(1)}% of readings fell inside the statutory band. Supply voltage is compliant.`
-                : `Only ${vBand?.toFixed(1)}% of readings fell inside the statutory band — the supply is outside NRS 048-2 limits and is the utility's responsibility to correct.`,
+                ? `${vBand.toFixed(1)}% of 10-minute values fell inside the statutory band. Supply voltage is compliant.`
+                : `Only ${vBand?.toFixed(1)}% of 10-minute values fell inside the statutory band — the supply is outside NRS 048-2 limits and is the utility's responsibility to correct.`,
             previous: pvBand, trend: tVolt.trend, trend_note: tVolt.note,
         });
 
@@ -371,7 +396,7 @@ export async function assessPowerQuality(
             limit: `≤ ${THD_LIMIT}%`,
             status: thdP95 === null ? 'NO_DATA' : thdP95 <= 5 ? 'PASS' : thdP95 <= THD_LIMIT ? 'WARN' : 'FAIL',
             standard: 'NRS 048-2 — total harmonic distortion compatibility level',
-            method: '95th percentile of measured voltage THD',
+            method: '95th percentile of 10-minute voltage THD values (the NRS 048-2 assessment basis)',
             detail: thdP95 === null ? 'No THD data.'
                 : thdP95 <= 5 ? `Distortion is low. No harmonic mitigation is justified at this level.`
                 : thdP95 <= THD_LIMIT ? `Distortion is elevated but still within the ${THD_LIMIT}% limit. Worth monitoring, particularly if inverters or VSDs are added.`
@@ -394,12 +419,12 @@ export async function assessPowerQuality(
             limit: 'Assessed annually by customer category',
             status: interruptEvents === 0 ? 'PASS' : 'WARN',
             standard: 'NRS 048-2 / EN 50160 — supply interruptions (voltage below 10% of nominal)',
-            method: `Readings below ${V_INTERRUPTION.toFixed(0)} V, grouped into events; duration estimated from reading intervals`,
+            method: `Minutes containing readings below ${V_INTERRUPTION.toFixed(0)} V, grouped into events; duration from the share of each minute's readings below ${V_INTERRUPTION.toFixed(0)} V`,
             detail: interruptEvents === 0
                 ? 'The supply was present throughout the observation period.'
                 : `Supply was lost ${interruptEvents} time${interruptEvents === 1 ? '' : 's'}, totalling approximately `
                   + `${interruptHours < 1 ? `${Math.round(interruptSeconds / 60)} minutes` : `${interruptHours.toFixed(1)} hours`}. `
-                  + `These readings are excluded from the voltage and frequency statistics above, since an interruption is the `
+                  + `10-minute intervals containing an interruption are excluded from the voltage and frequency statistics above, since an interruption is the `
                   + `absence of a measurement rather than a low one. Scheduled load shedding cannot be distinguished from an `
                   + `unplanned fault without the published schedule for this area.`,
             previous: null, trend: 'NO_BASELINE', trend_note: '',
@@ -422,8 +447,8 @@ export async function assessPowerQuality(
                 : 'WARN',
             standard: 'IEEE 519 — current distortion at the point of common coupling',
             method: thdIN > 0
-                ? `95th percentile of ${thdIN.toLocaleString()} readings taken above ${(I_LOAD_FLOOR * 100).toFixed(0)}% of the ${iPeak?.toFixed(0) ?? '—'} A peak load current`
-                : 'Insufficient readings at meaningful load',
+                ? `95th percentile of ${thdIN.toLocaleString()} 10-minute values taken above ${(I_LOAD_FLOOR * 100).toFixed(0)}% of the ${iPeak?.toFixed(0) ?? '—'} A peak load current`
+                : 'Insufficient 10-minute values at meaningful load',
             detail: !tddKnowable
                 ? 'Not enough current-distortion data at meaningful load to assess. THD-I measured at light load is not comparable against any limit.'
                 : tddP95! <= TDD_STRICTEST
@@ -442,7 +467,7 @@ export async function assessPowerQuality(
             limit: `≤ ${UNBALANCE_LIMIT}%`,
             status: vUnb === null ? 'NO_DATA' : vUnb <= UNBALANCE_LIMIT ? 'PASS' : vUnb <= 3 ? 'WARN' : 'FAIL',
             standard: 'NRS 048-2 — voltage unbalance compatibility level',
-            method: '95th percentile; NEMA definition (max deviation from mean ÷ mean)',
+            method: "95th percentile of 10-minute values; the meter's own unbalance figure where it publishes one, otherwise the NEMA definition (max deviation from mean ÷ mean)",
             detail: vUnb === null ? 'Three-phase voltage data unavailable.'
                 : vUnb <= UNBALANCE_LIMIT ? 'Phase voltages are well balanced at the point of supply.'
                 : `Voltage unbalance exceeds ${UNBALANCE_LIMIT}%. Motors on this supply are being derated and will run hot (see equipment risk).`,
@@ -457,7 +482,7 @@ export async function assessPowerQuality(
             limit: `${F_MIN}–${F_MAX} Hz`,
             status: fBand === null ? 'NO_DATA' : fBand >= 99 ? 'PASS' : fBand >= 95 ? 'WARN' : 'FAIL',
             standard: 'NRS 048-2 — system frequency',
-            method: `Full range observed across ${days} days`,
+            method: `Full range observed across ${days} days; in-band share from 10-minute values`,
             detail: fBand !== null && fBand >= 99
                 ? 'Grid frequency held within the normal operating band throughout.'
                 : `Frequency left the ${F_MIN}–${F_MAX} Hz band during the period — an indicator of grid stress events.`,
@@ -532,9 +557,9 @@ export async function assessPowerQuality(
         if (dips > 0 || swells > 0) {
             risks.push({
                 key: 'voltage_excursions',
-                severity: dips + swells > n * 0.05 ? 'HIGH' : 'MEDIUM',
+                severity: dips + swells > nIntervals * 0.05 ? 'HIGH' : 'MEDIUM',
                 title: 'Voltage excursions are exposing sensitive equipment to trips',
-                finding: `${dips.toLocaleString()} readings below ${V_MIN} V and ${swells.toLocaleString()} above ${V_MAX} V during the observation window.`,
+                finding: `${dips.toLocaleString()} 10-minute intervals averaged below ${V_MIN} V and ${swells.toLocaleString()} above ${V_MAX} V during the observation window.`,
                 mechanism: 'Variable-speed drives, PLCs and contactor coils commonly drop out at 80–90% of nominal voltage. Each excursion risks an unplanned stop, and repeated events accelerate wear on contactors and DC-bus capacitors in drives.',
                 action: 'Correlate these timestamps with any unexplained production stops. Where critical loads are affected, evaluate ride-through (UPS on controls) or a voltage regulator on the incomer.',
                 standard: 'NRS 048-2 — voltage dips and swells; IEC 61000-4-34 equipment immunity',

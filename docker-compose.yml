@@ -26,6 +26,10 @@ x-ingestion-env: &ingestion-env
   UPLOAD_DIR: /data/uploads
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENAI_MODEL: ${OPENAI_MODEL:-}
+  # Retention windows: every ingestion role checks them against the DB
+  # policies at startup; migrate applies them.
+  MAX_BACKFILL_DAYS: ${MAX_BACKFILL_DAYS:-14}
+  COMPRESS_AFTER_DAYS: ${COMPRESS_AFTER_DAYS:-15}
 
 services:
   caddy:
@@ -152,6 +156,8 @@ services:
     environment:
       <<: *ingestion-env
       ROLES: jobs
+      METER_SILENT_MINUTES: ${METER_SILENT_MINUTES:-5}
+      EVENT_ALERT_MIN_SECONDS: ${EVENT_ALERT_MIN_SECONDS:-10}
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -167,6 +173,9 @@ services:
     command: ["node", "/app/packages/db/bin/migrate.js", "up"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      # Applied to the compression and aggregate-refresh policies after migrating.
+      MAX_BACKFILL_DAYS: ${MAX_BACKFILL_DAYS:-14}
+      COMPRESS_AFTER_DAYS: ${COMPRESS_AFTER_DAYS:-15}
     healthcheck:
       disable: true
     depends_on:

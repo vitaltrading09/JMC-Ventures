@@ -3,7 +3,7 @@ import path from 'path';
 import { Pool } from 'pg';
 import cron from 'node-cron';
 import { initMqtt, IngestRuntime } from './mqtt';
-import { assertSchemaCurrent, SchemaBehindError } from '@gridiq/db';
+import { assertSchemaCurrent, SchemaBehindError, assertRetentionConsistent, RetentionMismatchError, refreshAggregates } from '@gridiq/db';
 import {
     parseRoles, uploadDir, toStoredUploadPath, resolveStoredUploadPath,
     waitUntil, databaseReachable, startHealthServer,
@@ -14,6 +14,9 @@ import { getOrCreateExecutiveSummary, getCachedExecutiveSummary, answerReportQue
 import { forecastDegradation } from './pq-forecast';
 import { buildRiskProfile } from './risk-profile';
 import { maxDemand, DEFAULT_DEMAND_INTERVAL_MIN } from './demand';
+import { planRead, meterSeriesSql, tenantPowerSql } from './aggregates';
+import { checkTenMinute, checkDemand, checkEvents, checkDataHealth, checkThdITrend } from './alerting';
+import { periodEnergy, monthKey } from './energy';
 import { buildRenewalReview, runRenewalSweep } from './renewal';
 import { randomBytes, createHash } from 'crypto';
 import {
@@ -72,8 +75,11 @@ const startup = (async () => {
     await waitUntil('database', () => databaseReachable(pool));
     try {
         await assertSchemaCurrent(pool);
+        // Compression and aggregate-refresh windows must cover MAX_BACKFILL_DAYS
+        // as configured here; the migrate step applies them.
+        await assertRetentionConsistent(pool);
     } catch (e) {
-        if (e instanceof SchemaBehindError) {
+        if (e instanceof SchemaBehindError || e instanceof RetentionMismatchError) {
             console.error(`FATAL: ${e.message}`);
             process.exit(1);
         }
@@ -269,7 +275,29 @@ function registerJobs(pool: Pool) {
         }
     });
 
-    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m)');
+    // ── Alerting on aggregates and events (src/alerting.ts) ─────────────────
+    const envPos = (name: string, def: number) => {
+        const n = Number(process.env[name]);
+        return Number.isFinite(n) && n > 0 ? n : def;
+    };
+    const silentMinutes = envPos('METER_SILENT_MINUTES', 5);
+    const eventMinS = envPos('EVENT_ALERT_MIN_SECONDS', 10);
+    const guarded = (name: string, fn: () => Promise<number>) => async () => {
+        try {
+            const n = await fn();
+            if (n > 0) console.log(`[alerts] ${name}: ${n} new alert(s)`);
+        } catch (e: any) {
+            console.error(`[alerts] ${name} check failed:`, e?.message || e);
+        }
+    };
+    cron.schedule('* * * * *', guarded('events', () => checkEvents(pool, eventMinS)));
+    cron.schedule('*/5 * * * *', guarded('demand', () => checkDemand(pool)));
+    cron.schedule('*/5 * * * *', guarded('data health', () => checkDataHealth(pool, silentMinutes)));
+    // One minute past each 10-minute boundary, once that interval has closed.
+    cron.schedule('1-59/10 * * * *', guarded('10-minute quality', () => checkTenMinute(pool)));
+    cron.schedule('0 7 * * *', guarded('THD-I trend', () => checkThdITrend(pool)));
+
+    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00)');
 }
 
 // Health of the roles this process runs. Shared by the api /health route and
@@ -717,42 +745,37 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
         //    actual seconds to the next reading per meter, capped at 900s for gaps),
         //    so it matches the /monthly endpoint instead of assuming a fixed interval.
         const monthlyParams: any[] = [];
-        let monthlyWhere = `WHERE mr.time >= date_trunc('month', NOW()) AND mr.power_active_total IS NOT NULL`;
+        let tenantClause = '';
         if (effectiveTenantId) {
-            monthlyWhere += ` AND s.tenant_id = $1`;
+            tenantClause = ` AND s.tenant_id = $1`;
             monthlyParams.push(effectiveTenantId);
         }
-        // Billed maximum demand is the highest TIME-WEIGHTED AVERAGE over the
-        // utility's integration interval (30 min on Eskom Megaflex/Miniflex) —
-        // not the highest instantaneous reading. Both are supplied: the model
-        // needs the billed figure to answer correctly, and the instantaneous one
-        // to explain why the two differ when a client asks.
+        // From the continuous aggregates. Billed demand: the 30-minute interval
+        // averages in readings_30m (minute-weighted, ≥ 80 % of minutes covered),
+        // averaged across meters per interval as before. Energy: 1-minute
+        // averages × the time to the next minute with data, capped at 900 s.
         const monthlyQuery = `
-            WITH r AS (
-                SELECT mr.meter_id,
-                    time_bucket('30 minutes', mr.time) AS bucket,
-                    mr.power_active_total, mr.power_apparent_total,
-                    LEAST(EXTRACT(EPOCH FROM (
-                        LEAD(mr.time) OVER (PARTITION BY mr.meter_id ORDER BY mr.time) - mr.time
-                    )), 900) AS dt_s
-                FROM meter_readings mr
-                JOIN meters m ON mr.meter_id = m.id
+            WITH iv AS (
+                SELECT v.bucket, AVG(v.kw_demand) AS iv_kw, AVG(v.kva_demand) AS iv_kva
+                FROM readings_30m v
+                JOIN meters m ON v.meter_id = m.id
                 JOIN sites s ON m.site_id = s.id
-                ${monthlyWhere}
-            ), per_interval AS (
-                SELECT bucket,
-                    SUM(power_active_total   * COALESCE(dt_s,0)) / NULLIF(SUM(COALESCE(dt_s,0)),0) AS iv_kw,
-                    SUM(power_apparent_total * COALESCE(dt_s,0)) / NULLIF(SUM(COALESCE(dt_s,0)),0) AS iv_kva,
-                    SUM(COALESCE(dt_s,0)) AS covered_s
-                FROM r GROUP BY bucket
+                WHERE v.bucket >= date_trunc('month', NOW()) AND v.minutes >= 0.8 * 30 ${tenantClause}
+                GROUP BY v.bucket
+            ), mins AS (
+                SELECT v.power_active_total_avg AS p, v.power_active_total_max AS p_max,
+                       LEAST(EXTRACT(EPOCH FROM (LEAD(v.bucket) OVER (PARTITION BY v.meter_id ORDER BY v.bucket) - v.bucket)), 900) AS dt_s
+                FROM readings_1m v
+                JOIN meters m ON v.meter_id = m.id
+                JOIN sites s ON m.site_id = s.id
+                WHERE v.bucket >= date_trunc('month', NOW()) AND v.power_active_total_avg IS NOT NULL ${tenantClause}
             )
             SELECT
-                (SELECT ROUND(SUM(power_active_total * dt_s / 3600.0)::numeric, 1) FROM r) AS kwh_this_month,
-                (SELECT ROUND(MAX(power_active_total)::numeric, 1) FROM r)                 AS peak_instant_kw,
+                (SELECT ROUND((SUM(p * COALESCE(dt_s, 60)) / 3600.0)::numeric, 1) FROM mins) AS kwh_this_month,
+                (SELECT ROUND(MAX(p_max)::numeric, 1) FROM mins)                            AS peak_instant_kw,
                 ROUND(MAX(iv_kw)::numeric, 1)  AS demand_kw_30min,
                 ROUND(MAX(iv_kva)::numeric, 1) AS demand_kva_30min
-            FROM per_interval
-            WHERE covered_s >= 0.8 * 30 * 60
+            FROM iv
         `;
         const monthlyResult = await client.query(monthlyQuery, monthlyParams);
         const monthly = monthlyResult.rows[0];
@@ -827,39 +850,34 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
             // est_kwh_7d integrated time-weighted (see monthly aggregate above) so the
             // AI context's energy figures match the report/analytics numbers.
             const historyParams: any[] = [];
-            let historyWhere = `WHERE mr.time >= NOW() - INTERVAL '7 days'`;
+            let historyTenant = '';
             if (effectiveTenantId) {
-                historyWhere += ` AND s.tenant_id = $1`;
+                historyTenant = ` AND s.tenant_id = $1`;
                 historyParams.push(effectiveTenantId);
             }
+            // From readings_1h: min/max are of the raw samples, averages are
+            // sample-weighted; energy integrates the hourly average over the
+            // minutes that carried data.
             const historyQuery = `
                 SELECT
-                    meter_name,
-                    COUNT(time) as reading_count,
-                    ROUND(MIN(power_active_total)::numeric, 1) as min_kw,
-                    ROUND(MAX(power_active_total)::numeric, 1) as max_kw,
-                    ROUND(AVG(power_active_total)::numeric, 1) as avg_kw,
-                    ROUND(MIN(power_factor_total)::numeric, 3) as min_pf,
-                    ROUND(AVG(power_factor_total)::numeric, 3) as avg_pf,
-                    ROUND(MIN(voltage_a)::numeric, 1) as min_v,
-                    ROUND(MAX(voltage_a)::numeric, 1) as max_v,
-                    ROUND(AVG(voltage_a)::numeric, 1) as avg_v,
-                    ROUND(AVG(thd_voltage_a)::numeric, 2) as avg_thd,
-                    ROUND(MAX(thd_voltage_a)::numeric, 2) as max_thd_reading,
-                    ROUND(SUM(power_active_total * dt_s / 3600.0)::numeric, 1) as est_kwh_7d
-                FROM (
-                    SELECT m.name as meter_name, mr.meter_id, mr.time,
-                           mr.power_active_total, mr.power_factor_total,
-                           mr.voltage_a, mr.thd_voltage_a,
-                           LEAST(EXTRACT(EPOCH FROM (
-                               LEAD(mr.time) OVER (PARTITION BY mr.meter_id ORDER BY mr.time) - mr.time
-                           )), 900) AS dt_s
-                    FROM meter_readings mr
-                    JOIN meters m ON mr.meter_id = m.id
-                    JOIN sites s ON m.site_id = s.id
-                    ${historyWhere}
-                ) t
-                GROUP BY meter_id, meter_name
+                    m.name AS meter_name,
+                    SUM(v.n) AS reading_count,
+                    ROUND(MIN(v.power_active_total_min)::numeric, 1) AS min_kw,
+                    ROUND(MAX(v.power_active_total_max)::numeric, 1) AS max_kw,
+                    ROUND((SUM(v.power_active_total_avg * v.n) / NULLIF(SUM(v.n) FILTER (WHERE v.power_active_total_avg IS NOT NULL), 0))::numeric, 1) AS avg_kw,
+                    ROUND(MIN(v.power_factor_total_min)::numeric, 3) AS min_pf,
+                    ROUND((SUM(v.power_factor_total_avg * v.n) / NULLIF(SUM(v.n) FILTER (WHERE v.power_factor_total_avg IS NOT NULL), 0))::numeric, 3) AS avg_pf,
+                    ROUND(MIN(v.voltage_a_min)::numeric, 1) AS min_v,
+                    ROUND(MAX(v.voltage_a_max)::numeric, 1) AS max_v,
+                    ROUND((SUM(v.voltage_a_avg * v.n) / NULLIF(SUM(v.n) FILTER (WHERE v.voltage_a_avg IS NOT NULL), 0))::numeric, 1) AS avg_v,
+                    ROUND((SUM(v.thd_voltage_a_avg * v.n) / NULLIF(SUM(v.n) FILTER (WHERE v.thd_voltage_a_avg IS NOT NULL), 0))::numeric, 2) AS avg_thd,
+                    ROUND(MAX(v.thd_voltage_a_max)::numeric, 2) AS max_thd_reading,
+                    ROUND(SUM(v.power_active_total_avg * v.minutes / 60.0)::numeric, 1) AS est_kwh_7d
+                FROM readings_1h v
+                JOIN meters m ON v.meter_id = m.id
+                JOIN sites s ON m.site_id = s.id
+                WHERE v.bucket >= NOW() - INTERVAL '7 days' ${historyTenant}
+                GROUP BY v.meter_id, m.name
                 ORDER BY max_kw DESC NULLS LAST LIMIT 10
             `;
             historyResult = await client.query(historyQuery, historyParams);
@@ -1038,32 +1056,15 @@ app.get('/meters/:id/readings', authenticateToken, async (req: any, res) => {
             }
         }
 
-        // Bucketed path: only when both from & to provided (typical chart use)
-        // and the caller hasn't explicitly asked for raw rows.
+        // Bucketed path (typical chart use), unless the caller asked for raw rows.
+        // About 300–700 points from the coarsest continuous aggregate that fits
+        // the range (raw data only for ranges ≤ 2 h); same columns as before.
         if (from && !raw) {
             const fromDate = new Date(from);
             const toDate   = to ? new Date(to) : new Date();
-            const bucket   = pickBucketInterval(fromDate, toDate);
-            const params: any[] = [bucket, id, fromDate, toDate];
-            const result = await client.query(`
-                SELECT
-                    time_bucket($1::interval, time)        AS time,
-                    AVG(power_active_total)                AS power_active_total,
-                    AVG(power_reactive_total)              AS power_reactive_total,
-                    AVG(power_apparent_total)              AS power_apparent_total,
-                    AVG(power_factor_total)                AS power_factor_total,
-                    AVG(voltage_a) AS voltage_a, AVG(voltage_b) AS voltage_b, AVG(voltage_c) AS voltage_c,
-                    AVG(current_a) AS current_a, AVG(current_b) AS current_b, AVG(current_c) AS current_c,
-                    AVG(thd_voltage_a) AS thd_voltage_a, AVG(thd_current_a) AS thd_current_a,
-                    AVG(frequency) AS frequency,
-                    MAX(energy_import_total) AS energy_import_total
-                FROM meter_readings
-                WHERE meter_id = $2
-                  AND time >= $3
-                  AND time <= $4
-                GROUP BY 1
-                ORDER BY 1 ASC
-            `, params);
+            const plan     = planRead(fromDate, toDate);
+            const result = await client.query(meterSeriesSql(plan.source), [plan.bucket, id, fromDate, toDate]);
+            res.setHeader('X-Readings-Source', `${plan.source}; bucket=${plan.bucket}`);
             return res.json(result.rows);
         }
 
@@ -1084,18 +1085,6 @@ app.get('/meters/:id/readings', authenticateToken, async (req: any, res) => {
     }
 });
 
-// Pick a sensible time_bucket interval so chart payloads stay ~300-700 points.
-// Recharts gets sluggish above ~1500 points and a 30-day raw query can return
-// 40k+ rows — bucketing on the server keeps both DB and browser snappy.
-function pickBucketInterval(fromDate: Date, toDate: Date): string {
-    const hours = Math.max(0.1, (toDate.getTime() - fromDate.getTime()) / 3_600_000);
-    if (hours <= 6)        return '1 minute';   // ≤360 pts
-    if (hours <= 48)       return '5 minutes';  // ≤576 pts
-    if (hours <= 14 * 24)  return '30 minutes'; // ≤672 pts
-    if (hours <= 60 * 24)  return '2 hours';    // ≤720 pts
-    return '6 hours';                            // long-range / yearly views
-}
-
 // ── Aggregate readings across ALL active meters for the tenant (overview chart) ─
 // GET /readings/aggregate?from=ISO  → returns per-bucket SITE TOTAL power
 app.get('/readings/aggregate', authenticateToken, async (req: any, res) => {
@@ -1105,9 +1094,9 @@ app.get('/readings/aggregate', authenticateToken, async (req: any, res) => {
     try {
         const fromDate = from ? new Date(from) : new Date(Date.now() - 24 * 60 * 60 * 1000);
         const toDate   = new Date();
-        const bucket   = pickBucketInterval(fromDate, toDate);
+        const plan     = planRead(fromDate, toDate);
 
-        const params: any[] = [bucket, fromDate];
+        const params: any[] = [plan.bucket, fromDate];
         let tenantFilter = '';
         if (role !== 'super_admin') {
             params.push(tenantId);
@@ -1115,28 +1104,8 @@ app.get('/readings/aggregate', authenticateToken, async (req: any, res) => {
         }
         // Per-meter average within each bucket, then SUM across meters →
         // gives true site-total power even if meters report at different rates.
-        const result = await client.query(`
-            WITH per_meter AS (
-                SELECT
-                    time_bucket($1::interval, mr.time) AS bucket,
-                    mr.meter_id,
-                    AVG(mr.power_active_total)         AS avg_kw
-                FROM meter_readings mr
-                JOIN meters m ON mr.meter_id = m.id
-                JOIN sites  s ON m.site_id  = s.id
-                WHERE mr.time >= $2
-                  AND m.is_active = true
-                  AND mr.power_active_total IS NOT NULL
-                  ${tenantFilter}
-                GROUP BY bucket, mr.meter_id
-            )
-            SELECT
-                bucket                                AS time,
-                ROUND(SUM(avg_kw)::numeric, 2)        AS power_active_total
-            FROM per_meter
-            GROUP BY bucket
-            ORDER BY bucket ASC
-        `, params);
+        const result = await client.query(tenantPowerSql(plan.source, tenantFilter), params);
+        res.setHeader('X-Readings-Source', `${plan.source}; bucket=${plan.bucket}`);
         res.json(result.rows);
     } catch (err) {
         console.error('Aggregate readings error:', err);
@@ -2088,43 +2057,62 @@ app.get('/meters/:id/monthly', authenticateToken, async (req: any, res) => {
             }
         }
 
-        // Energy (kWh) is integrated interval-independently: for each reading,
-        // power (kW) × the actual time to the NEXT reading. This is immune to
-        // sampling-rate changes (readings arrive anywhere from ~3s to ~60s apart)
-        // and to reading-density variation between months. The per-reading gap is
-        // capped at 900s so an offline period isn't billed as continuous power.
-        // If the meter reports a sane cumulative kWh register, that wins (a direct
-        // measurement beats an estimate); resets/rollovers are rejected by the bound.
-        const result = await client.query(`
-            WITH r AS (
-                SELECT
-                    time,
-                    power_active_total,
-                    energy_import_total,
-                    LEAST(
-                        EXTRACT(EPOCH FROM (
-                            LEAD(time) OVER (PARTITION BY DATE_TRUNC('month', time) ORDER BY time) - time
-                        )),
-                        900
-                    ) AS dt_s
-                FROM meter_readings
-                WHERE meter_id = $1
-                  AND time >= DATE_TRUNC('month', NOW() - ($2 || ' months')::INTERVAL)
-                  AND power_active_total IS NOT NULL
-            )
-            SELECT
-                TO_CHAR(DATE_TRUNC('month', time), 'Mon') AS month,
-                DATE_TRUNC('month', time) AS month_start,
-                CASE
-                    WHEN MAX(energy_import_total) IS NOT NULL
-                         AND (MAX(energy_import_total) - MIN(energy_import_total)) BETWEEN 0 AND 10000000
-                    THEN ROUND((MAX(energy_import_total) - MIN(energy_import_total))::numeric, 0)
-                    ELSE ROUND(SUM(power_active_total * COALESCE(dt_s, 0) / 3600.0)::numeric, 0)
-                END AS kwh
-            FROM r
-            GROUP BY DATE_TRUNC('month', time)
-            ORDER BY DATE_TRUNC('month', time) ASC
-        `, [id, months - 1]);
+        // Energy per month from the import register (deltas per hour, summed;
+        // a negative delta is a register reset and is never summed through).
+        // Hours without a register fall back to power integration: each
+        // 1-minute average × the time to the next minute with data, capped at
+        // 900 s so an offline stretch is not billed as continuous power. See
+        // src/energy.ts. Each month says which method it used.
+        const since = await client.query(
+            `SELECT DATE_TRUNC('month', NOW() - ($1 || ' months')::INTERVAL) AS start`, [months - 1]);
+        const start: Date = since.rows[0].start;
+        const [reg, pow] = await Promise.all([
+            client.query(`
+                SELECT bucket AS hour,
+                       energy_import_total_first AS reg_first, energy_import_total_last AS reg_last,
+                       t_first, t_last, power_active_total_max AS p_max
+                FROM readings_1h
+                WHERE meter_id = $1 AND bucket >= $2
+            `, [id, start]),
+            client.query(`
+                WITH m AS (
+                    SELECT bucket, power_active_total_avg AS p,
+                           LEAST(EXTRACT(EPOCH FROM (LEAD(bucket) OVER (ORDER BY bucket) - bucket)), 900) AS dt_s
+                    FROM readings_1m
+                    WHERE meter_id = $1 AND bucket >= $2 AND power_active_total_avg IS NOT NULL
+                )
+                SELECT time_bucket('1 hour', bucket) AS hour, SUM(p * COALESCE(dt_s, 60)) / 3600.0 AS kwh
+                FROM m GROUP BY 1
+            `, [id, start]),
+        ]);
+        const num = (v: any): number | null => (v === null || v === undefined ? null : Number(v));
+        const hours = new Map<number, any>();
+        for (const r of reg.rows) {
+            hours.set(new Date(r.hour).getTime(), {
+                hour: new Date(r.hour), regFirst: num(r.reg_first), regLast: num(r.reg_last),
+                tFirst: r.t_first ? new Date(r.t_first) : null, tLast: r.t_last ? new Date(r.t_last) : null,
+                pMaxKw: num(r.p_max), powerKwh: null,
+            });
+        }
+        for (const r of pow.rows) {
+            const k = new Date(r.hour).getTime();
+            const h = hours.get(k) ?? { hour: new Date(r.hour), regFirst: null, regLast: null, tFirst: null, tLast: null, pMaxKw: null, powerKwh: null };
+            h.powerKwh = num(r.kwh);
+            hours.set(k, h);
+        }
+        const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const result = {
+            rows: periodEnergy([...hours.values()], monthKey).map((p) => {
+                const [y, m] = p.period.split('-').map(Number);
+                return {
+                    month: MONTHS[m - 1],
+                    month_start: new Date(Date.UTC(y, m - 1, 1)),
+                    kwh: Math.round(p.kwh),
+                    method: p.method,
+                    data_quality: p.data_quality,
+                };
+            }),
+        };
 
         res.json(result.rows);
     } catch (err) {
@@ -2287,6 +2275,18 @@ app.post('/upload', authenticateToken, upload.single('file') as any, async (req:
                     }
                     await client.query('COMMIT');
                     res.json({ success: true, count: inserted, skipped, total: results.length, message: `Successfully imported ${inserted} rows.` });
+                    // Imported history may be older than the aggregates' refresh
+                    // window; materialise the imported range so charts, demand and
+                    // energy see it. In the background: the import is already committed.
+                    if (times.length > 0) {
+                        // Day-aligned: a refresh window covers whole buckets only.
+                        const first = new Date(Math.floor(Math.min(...times.map(d => d.getTime())) / 86_400_000) * 86_400_000);
+                        // Widened by a day so the 1-day bucket holding the last row is complete.
+                        const last  = new Date(Math.max(...times.map(d => d.getTime())) + 86_400_000);
+                        refreshAggregates(pool, first, last)
+                            .then(() => console.log(`[import] aggregates refreshed for ${first.toISOString()}..${last.toISOString()}`))
+                            .catch((e) => console.error('[import] aggregate refresh failed:', e?.message || e));
+                    }
                 } catch (dbErr) {
                     await client.query('ROLLBACK');
                     console.error('DB Insert Error:', dbErr);

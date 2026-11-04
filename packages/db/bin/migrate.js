@@ -8,14 +8,19 @@
 //
 // Reads DATABASE_URL. Waits up to 2 minutes for the database to accept
 // connections. `up` first updates the timescaledb extension if the image ships
-// a newer version than the database has, then runs the node-pg-migrate CLI (ESM-only, so it runs as its
-// own process) against packages/db/migrations with a lock, so two concurrent
-// runs cannot interleave.
+// a newer version than the database has, then runs the node-pg-migrate CLI
+// (ESM-only, so it runs as its own process) against packages/db/migrations
+// with a lock, so two concurrent runs cannot interleave, and finally applies
+// the retention windows from the environment (MAX_BACKFILL_DAYS,
+// COMPRESS_AFTER_DAYS) to the compression and aggregate-refresh policies.
 
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { Client } = require('pg');
-const { MIGRATIONS_DIR, MIGRATIONS_TABLE, listMigrations, appliedMigrations, compareMigrations } = require('..');
+const {
+    MIGRATIONS_DIR, MIGRATIONS_TABLE, listMigrations, appliedMigrations, compareMigrations,
+    retentionConfig, reconcileRetention, materialiseNewAggregates,
+} = require('..');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -110,6 +115,30 @@ async function main() {
     if (r.status !== 0) {
         console.error(`[migrate] FAILED (exit ${r.status})`);
         process.exit(r.status || 1);
+    }
+
+    // Retention windows come from the environment (MAX_BACKFILL_DAYS,
+    // COMPRESS_AFTER_DAYS); bring the compression and aggregate-refresh
+    // policies in line. Services refuse to start until they match.
+    if (command === 'up') {
+        const cfg = retentionConfig(process.env);
+        const db = await connect(url);
+        try {
+            const changed = await reconcileRetention(db, cfg);
+            console.log(changed.length
+                ? `[migrate] Retention policies updated: ${changed.join('; ')}`
+                : `[migrate] Retention policies match (backfill ${cfg.maxBackfillDays} d, compression and aggregate refresh ${cfg.compressAfterDays} d)`);
+            // First run of the aggregates migration on a database with history:
+            // materialise everything once (the policies only look back
+            // COMPRESS_AFTER_DAYS). Can take a while on a large database.
+            const started = Date.now();
+            const views = await materialiseNewAggregates(db);
+            if (views.length) {
+                console.log(`[migrate] Materialised ${views.join(', ')} over all history in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+            }
+        } finally {
+            await db.end();
+        }
     }
     console.log('[migrate] Done.');
 }
