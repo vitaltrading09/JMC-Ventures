@@ -172,6 +172,26 @@ export async function findMeter(db: Queryable, scope: Scope, id: string): Promis
     return r.rows[0] ?? null;
 }
 
+export interface ScopedPoint {
+    id: string; name: string; role: string; project_id: string; project_name: string; tenant_id: string;
+    nominal_voltage_v: string | null; ct_primary_a: string | null; contracted_mdi_kva: string | null;
+    telemetry_visible: boolean;
+}
+
+/** A measurement point the scope may reach (through its project), or null. */
+export async function findPoint(db: Queryable, scope: Scope, id: string): Promise<ScopedPoint | null> {
+    if (!UUID.test(String(id))) return null;
+    const params: unknown[] = [id];
+    const t = tenantSql(scope, 'p.tenant_id', params);
+    const r = await db.query(`
+        SELECT mp.id, mp.name, mp.role, mp.project_id, p.name AS project_name, p.tenant_id,
+               mp.nominal_voltage_v, mp.ct_primary_a, mp.contracted_mdi_kva,
+               ${telemetrySql(scope, 'p')} AS telemetry_visible
+        FROM measurement_points mp JOIN projects p ON p.id = mp.project_id
+        WHERE mp.id = $1 AND ${t}`, params);
+    return r.rows[0] ?? null;
+}
+
 /** A row of a tenant-owned table (alerts, leads, recommendations, report_shares), or null. */
 export async function findOwned(db: Queryable, scope: Scope, table: 'alerts' | 'leads' | 'recommendations' | 'report_shares',
                                 id: string, extraWhere = 'TRUE'): Promise<any | null> {

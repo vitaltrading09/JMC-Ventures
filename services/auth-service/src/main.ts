@@ -178,6 +178,26 @@ const requireSuperAdmin = (req: any, res: any, next: any) => {
   }
 };
 
+// Super admin, or a client_admin for their own tenant (Phase 8: clients
+// manage their own team). Sets req.userAdmin = { userId, role, tenantId, isSuper }.
+const requireUserAdmin = (req: any, res: any, next: any) => {
+  const cookieMatch = (req.headers.cookie || '').match(/(?:^|;\s*)token=([^;]+)/);
+  const authHeader = req.headers.authorization;
+  const token = (cookieMatch ? cookieMatch[1] : null) || (authHeader ? authHeader.split(' ')[1] : null);
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const decoded: any = jwt.verify(token, JWT_SECRET as string);
+    const role = LEGACY_ROLES[decoded.role] ?? decoded.role;
+    if (role !== 'super_admin' && role !== 'client_admin') {
+      return res.status(403).json({ error: 'Forbidden: an admin role is required' });
+    }
+    req.userAdmin = { userId: decoded.userId ?? null, role, tenantId: decoded.tenantId ?? null, isSuper: role === 'super_admin' };
+    next();
+  } catch (err) {
+    res.status(403).json({ error: 'Invalid token' });
+  }
+};
+
 // --- Admin APIs ---
 
 // Get all Tenants (Clients)
@@ -233,10 +253,78 @@ app.post('/tenants', requireSuperAdmin, async (req: any, res) => {
   }
 });
 
-// Create a new User
-app.post('/users', requireSuperAdmin, async (req: any, res) => {
-  const { email, password, tenant_id } = req.body;
+// List users: a tenant's (client_admin: always their own).
+app.get('/users', requireUserAdmin, async (req: any, res) => {
+  const a = req.userAdmin;
+  const tenantId = a.isSuper ? (req.query.tenant_id || null) : a.tenantId;
+  try {
+    const r = await pool.query(
+      `SELECT u.id, u.email, u.role, u.tenant_id, u.created_at, t.name AS tenant_name
+       FROM users u LEFT JOIN tenants t ON t.id = u.tenant_id
+       WHERE ($1::uuid IS NULL OR u.tenant_id = $1) ORDER BY t.name, u.email`, [tenantId]);
+    res.json(r.rows);
+  } catch (err) {
+    console.error('Error listing users:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/** A user the caller may manage, or null. */
+async function managedUser(a: any, id: string) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+  const r = await pool.query(
+    `SELECT u.id, u.role, u.tenant_id, t.kind FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id = $1`, [id]);
+  const u = r.rows[0];
+  if (!u || (!a.isSuper && u.tenant_id !== a.tenantId)) return null;
+  return u;
+}
+
+// Change a user's role (within the rules of their tenant's kind).
+app.patch('/users/:id', requireUserAdmin, async (req: any, res) => {
+  const a = req.userAdmin;
+  const role = userRole(req.body?.role);
+  if (!role || req.body?.role === undefined) return res.status(400).json({ error: 'role is required' });
+  try {
+    const u = await managedUser(a, req.params.id);
+    if (!u) return res.status(404).json({ error: 'User not found' });
+    if (u.id === a.userId) return res.status(400).json({ error: 'You cannot change your own role' });
+    if (!a.isSuper && !CLIENT_ROLES.includes(role)) return res.status(403).json({ error: 'A client admin can assign client roles only' });
+    if (INTERNAL_ROLES.includes(role) !== (u.kind === 'internal')) {
+      return res.status(400).json({ error: `${role} does not fit this tenant` });
+    }
+    const r = await pool.query(`UPDATE users SET role = $2 WHERE id = $1 RETURNING id, email, role, tenant_id`, [u.id, role]);
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('Error updating user:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Remove a user's access.
+app.delete('/users/:id', requireUserAdmin, async (req: any, res) => {
+  const a = req.userAdmin;
+  try {
+    const u = await managedUser(a, req.params.id);
+    if (!u) return res.status(404).json({ error: 'User not found' });
+    if (u.id === a.userId) return res.status(400).json({ error: 'You cannot remove yourself' });
+    if (!a.isSuper && !CLIENT_ROLES.includes(u.role)) return res.status(403).json({ error: 'Forbidden' });
+    await pool.query(`DELETE FROM users WHERE id = $1`, [u.id]);
+    res.json({ removed: true });
+  } catch (err) {
+    console.error('Error removing user:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create a new User (super_admin: any tenant; client_admin: their own, client roles only)
+app.post('/users', requireUserAdmin, async (req: any, res) => {
+  const a = req.userAdmin;
+  const { email, password } = req.body;
+  const tenant_id = a.isSuper ? req.body.tenant_id : a.tenantId;
   const role = userRole(req.body.role);
+  if (!a.isSuper && role && !CLIENT_ROLES.includes(role)) {
+    return res.status(403).json({ error: 'A client admin can create client_admin or client_viewer users only' });
+  }
 
   if (!email || !password || !tenant_id) {
     return res.status(400).json({ error: 'Email, password, and tenant_id are required' });

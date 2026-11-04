@@ -62,6 +62,7 @@ function routes() {
     scan('fleet/routes.ts', 'r');
     scan('review.ts', 'r');
     scan('ops.ts', 'r');
+    scan('portal.ts', 'r');
     return out;
 }
 
@@ -324,5 +325,30 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         const made = await authCall(ops, 'POST', '/users', { email: `v.${run}@t.local`, password: 'pw-123456', tenant_id: B.tenant, role: 'viewer' });
         assert.strictEqual(made.status, 201);
         assert.strictEqual((await made.json()).role, 'client_viewer');
+    });
+
+    await t.test("a client_admin manages its own tenant's users only", async () => {
+        const authCall = (token, method, p, body) => fetch(`http://127.0.0.1:${authPort}${p}`, {
+            method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body),
+        });
+        // Listing: own tenant, whatever is asked for.
+        const list = await (await authCall(A.adminToken, 'GET', `/users?tenant_id=${B.tenant}`)).json();
+        assert.ok(list.length >= 2 && list.every((u) => u.tenant_id === A.tenant), JSON.stringify(list));
+        // Creating: always in its own tenant, client roles only.
+        const made = await authCall(A.adminToken, 'POST', '/users', { email: `team.${run}@t.local`, password: 'pw-123456', tenant_id: B.tenant, role: 'client_viewer' });
+        assert.strictEqual(made.status, 201);
+        const member = await made.json();
+        assert.strictEqual(member.tenant_id, A.tenant);
+        assert.strictEqual((await authCall(A.adminToken, 'POST', '/users', { email: `eng.${run}@t.local`, password: 'pw-123456', role: 'engineer' })).status, 403);
+        // Changing and removing: own tenant only; not itself.
+        assert.strictEqual((await authCall(A.adminToken, 'PATCH', `/users/${member.id}`, { role: 'client_admin' })).status, 200);
+        const bUser = (await q(`SELECT id FROM users WHERE tenant_id = $1 LIMIT 1`, [B.tenant]))[0].id;
+        assert.strictEqual((await authCall(A.adminToken, 'PATCH', `/users/${bUser}`, { role: 'client_viewer' })).status, 404);
+        assert.strictEqual((await authCall(A.adminToken, 'DELETE', `/users/${bUser}`)).status, 404);
+        const self = jwt.decode(A.adminToken).userId;
+        assert.strictEqual((await authCall(A.adminToken, 'DELETE', `/users/${self}`)).status, 400);
+        assert.strictEqual((await authCall(A.adminToken, 'DELETE', `/users/${member.id}`)).status, 200);
+        // A viewer manages nobody.
+        assert.strictEqual((await authCall(A.viewerToken, 'GET', '/users')).status, 403);
     });
 });

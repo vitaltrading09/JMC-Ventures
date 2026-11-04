@@ -27,6 +27,7 @@ import {
 } from './scope';
 import { reviewRouter } from './review';
 import { opsRouter } from './ops';
+import { portalRouter } from './portal';
 import { randomBytes, createHash } from 'crypto';
 import {
     generateAndStoreSiteRecommendations,
@@ -393,6 +394,8 @@ app.use(fleetRouter(pool, authenticateToken));
 app.use(reviewRouter(pool, authenticateToken));
 // Ops console extras: tenant list, data health (src/ops.ts).
 app.use(opsRouter(pool, authenticateToken));
+// Client portal reads: projects, points, demand, load profile (src/portal.ts).
+app.use(portalRouter(pool, authenticateToken));
 
 // Deep health for an external uptime monitor (src/health.ts). Token header,
 // no JWT: the monitor is not a user. Disabled unless HEALTH_TOKEN is set.
