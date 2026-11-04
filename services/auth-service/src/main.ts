@@ -25,6 +25,12 @@ app.use(express.json());
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
 });
+// A database restart terminates idle pooled connections and the pool emits
+// 'error'; unhandled, that kills the process. Logged instead: the next query
+// gets a fresh connection.
+pool.on('error', (err) => {
+  console.error('[db] idle connection lost:', err.message);
+});
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'auth-service' });

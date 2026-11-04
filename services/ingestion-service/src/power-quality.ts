@@ -183,7 +183,7 @@ export async function assessPowerQuality(
             WITH iv AS (
                 SELECT bucket, n, n_interrupt, t_first, t_last,
                        (n_interrupt > 0)                                AS is_interrupt,
-                       sqrt(voltage_a_ms)                               AS v_rms,
+                       sqrt(voltage_a_ms) AS v_rms_a, sqrt(voltage_b_ms) AS v_rms_b, sqrt(voltage_c_ms) AS v_rms_c,
                        voltage_a_avg, voltage_b_avg, voltage_c_avg,
                        current_a_avg, current_b_avg, current_c_avg,
                        power_factor_total_avg, power_factor_total_min,
@@ -214,6 +214,11 @@ export async function assessPowerQuality(
                     CASE WHEN i_avg IS NOT NULL AND current_b_avg IS NOT NULL AND current_c_avg IS NOT NULL
                          THEN GREATEST(ABS(current_a_avg-i_avg),ABS(current_b_avg-i_avg),ABS(current_c_avg-i_avg))/i_avg*100 END AS i_unb
                 FROM iv CROSS JOIN peak pk
+            ), phase_v AS (
+                -- NRS 048-2 applies to every phase: one row per (interval, phase).
+                -- Phases a meter does not measure are NULL and drop out.
+                SELECT is_interrupt, unnest(ARRAY[v_rms_a, v_rms_b, v_rms_c]) AS v
+                FROM iv
             ), minutes AS (
                 SELECT n, n_interrupt, (n_interrupt > 0) AS intr,
                        LAG(n_interrupt > 0) OVER (ORDER BY bucket) AS prev_intr
@@ -240,16 +245,18 @@ export async function assessPowerQuality(
                 (SELECT seconds FROM interrupts)                                    AS interruption_seconds,
                 MIN(t_first)                                                        AS t_from,
                 MAX(t_last)                                                         AS t_to,
-                MIN(v_rms) FILTER (WHERE NOT is_interrupt)                          AS v_min,
-                MAX(v_rms) FILTER (WHERE NOT is_interrupt)                          AS v_max,
-                percentile_cont(0.95) WITHIN GROUP (ORDER BY v_rms)
-                    FILTER (WHERE NOT is_interrupt)                                 AS v_p95,
-                percentile_cont(0.05) WITHIN GROUP (ORDER BY v_rms)
-                    FILTER (WHERE NOT is_interrupt)                                 AS v_p05,
-                100.0*COUNT(*) FILTER (WHERE NOT is_interrupt AND v_rms BETWEEN $3 AND $4)
-                    / NULLIF(COUNT(v_rms) FILTER (WHERE NOT is_interrupt), 0)       AS v_in_band_pct,
-                COUNT(*) FILTER (WHERE NOT is_interrupt AND v_rms < $3)             AS dip_count,
-                COUNT(*) FILTER (WHERE NOT is_interrupt AND v_rms > $4)             AS swell_count,
+                (SELECT MIN(v) FROM phase_v WHERE NOT is_interrupt)                 AS v_min,
+                (SELECT MAX(v) FROM phase_v WHERE NOT is_interrupt)                 AS v_max,
+                (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY v)
+                   FROM phase_v WHERE NOT is_interrupt)                             AS v_p95,
+                (SELECT percentile_cont(0.05) WITHIN GROUP (ORDER BY v)
+                   FROM phase_v WHERE NOT is_interrupt)                             AS v_p05,
+                (SELECT 100.0*COUNT(*) FILTER (WHERE v BETWEEN $3 AND $4) / NULLIF(COUNT(v), 0)
+                   FROM phase_v WHERE NOT is_interrupt)                             AS v_in_band_pct,
+                -- Intervals in which ANY phase averaged outside the band.
+                COUNT(*) FILTER (WHERE NOT is_interrupt AND LEAST(v_rms_a, v_rms_b, v_rms_c) < $3)    AS dip_count,
+                COUNT(*) FILTER (WHERE NOT is_interrupt AND GREATEST(v_rms_a, v_rms_b, v_rms_c) > $4) AS swell_count,
+                (SELECT COUNT(v) FROM phase_v WHERE NOT is_interrupt)               AS n_phase_values,
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY thd_voltage_a_avg)
                     FILTER (WHERE NOT is_interrupt)                                 AS thd_p95,
                 MAX(thd_voltage_a_avg) FILTER (WHERE NOT is_interrupt)              AS thd_max,
@@ -320,6 +327,7 @@ export async function assessPowerQuality(
         const fMax   = num(r.f_max);
         const fBand  = num(r.f_in_band_pct);
         const nIntervals = Number(r.n_intervals) || 0;
+        const nPhaseValues = Number(r.n_phase_values) || 0;
         const dips   = Number(r.dip_count) || 0;
         const swells = Number(r.swell_count) || 0;
         const peakKw = num(r.peak_kw);
@@ -381,7 +389,7 @@ export async function assessPowerQuality(
             limit: `${V_MIN}–${V_MAX} V (230 V ±10%)`,
             status: vBand === null ? 'NO_DATA' : vBand >= 95 ? 'PASS' : vBand >= 90 ? 'WARN' : 'FAIL',
             standard: 'NRS 048-2 — LV voltage magnitude compatibility level',
-            method: `${nIntervals.toLocaleString()} 10-minute RMS values (phase A, ${nAssessed.toLocaleString()} readings) with supply present, over ${days} days; 5th–95th percentile ${vP05?.toFixed(1)}–${vP95?.toFixed(1)} V`,
+            method: `${nPhaseValues.toLocaleString()} 10-minute RMS values across all measured phases (${nIntervals.toLocaleString()} intervals, ${nAssessed.toLocaleString()} readings) with supply present, over ${days} days; 5th–95th percentile ${vP05?.toFixed(1)}–${vP95?.toFixed(1)} V`,
             detail: vBand !== null && vBand >= 95
                 ? `${vBand.toFixed(1)}% of 10-minute values fell inside the statutory band. Supply voltage is compliant.`
                 : `Only ${vBand?.toFixed(1)}% of 10-minute values fell inside the statutory band — the supply is outside NRS 048-2 limits and is the utility's responsibility to correct.`,
@@ -559,7 +567,7 @@ export async function assessPowerQuality(
                 key: 'voltage_excursions',
                 severity: dips + swells > nIntervals * 0.05 ? 'HIGH' : 'MEDIUM',
                 title: 'Voltage excursions are exposing sensitive equipment to trips',
-                finding: `${dips.toLocaleString()} 10-minute intervals averaged below ${V_MIN} V and ${swells.toLocaleString()} above ${V_MAX} V during the observation window.`,
+                finding: `In ${dips.toLocaleString()} 10-minute intervals at least one phase averaged below ${V_MIN} V, and in ${swells.toLocaleString()} above ${V_MAX} V, during the observation window.`,
                 mechanism: 'Variable-speed drives, PLCs and contactor coils commonly drop out at 80–90% of nominal voltage. Each excursion risks an unplanned stop, and repeated events accelerate wear on contactors and DC-bus capacitors in drives.',
                 action: 'Correlate these timestamps with any unexplained production stops. Where critical loads are affected, evaluate ride-through (UPS on controls) or a voltage regulator on the incomer.',
                 standard: 'NRS 048-2 — voltage dips and swells; IEC 61000-4-34 equipment immunity',

@@ -86,8 +86,12 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     a negative delta is a reset (`data_quality.register_resets`, never summed through);
     power-integration fallback (900 s gap cap) only where registers are absent; each
     month reports `method`.
-  - Compliance (`power-quality.ts`) on 10-minute values (NRS 048-2 basis), interruptions
-    at 1-minute resolution; forecast on `readings_1h`; AI context on 30m/1m/1h.
+  - Compliance (`power-quality.ts`) on 10-minute values (NRS 048-2 basis) across all
+    measured phases, interruptions at 1-minute resolution; forecast on `readings_1h`;
+    AI context on 30m/1m/1h (billed demand per meter: meters are never summed or averaged,
+    a main incomer and its sub-meters would double-count).
+  - CSV import (`/upload`) tags rows `time_source = 'IMPORT'` and reports duplicates
+    (existing meter/time) separately from imported rows.
 - **Alerting (jobs role, `src/alerting.ts`)**: 10-minute voltage/THD (and THD-I vs a
   site-declared `alert_max_thd_i`, else a weekly trend notice), 30-minute demand vs
   contracted MDI / `alert_max_kw`, instantaneous MDI early warning, `pq_events` by
