@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import dotenv from 'dotenv';
+import { apiKeyAuth, verifyWithAuthService } from './api-keys';
 
 dotenv.config();
 
@@ -51,6 +52,29 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
+// 4. Public API keys (Phase 9): verified here, then passed on as a short-lived
+// scoped token; limited per key. Keys are accepted on /v1 only.
+const AUTH_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
+const INGESTION_URL = process.env.INGESTION_SERVICE_URL || 'http://localhost:3002';
+app.use(apiKeyAuth({
+    secret: JWT_SECRET,
+    verify: verifyWithAuthService(AUTH_URL),
+    isApiPath: (p) => p.startsWith('/v1/') || p === '/v1',
+}));
+const perKeyLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: Number(process.env.API_KEY_RATE_PER_MIN || 120),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req: any) => `key:${req.apiKeyId}`,
+    skip: (req: any) => !req.apiKeyId,
+    message: { error: 'Rate limit for this API key reached; see the RateLimit headers' },
+});
+app.use(perKeyLimiter);
+
+// The key check endpoint is for the gateway itself, never from outside.
+app.use('/auth/internal', (_req, res) => { res.status(404).json({ error: 'Not found' }); });
+
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', service: 'api-gateway', timestamp: new Date().toISOString() });
 });
@@ -81,6 +105,19 @@ app.use('/auth', createProxyMiddleware({
     pathRewrite: {
         '^/auth': '', // Remove /auth prefix when forwarding
     },
+    onProxyRes: stripUpstreamCors,
+}));
+
+// Public API (Phase 9) and its docs: /v1/* and /docs on the ingestion api.
+app.use(createProxyMiddleware('/v1', {
+    target: INGESTION_URL,
+    changeOrigin: true,
+    onProxyRes: stripUpstreamCors,
+}));
+app.use('/docs', createProxyMiddleware({
+    target: INGESTION_URL,
+    changeOrigin: true,
+    pathRewrite: { '^/docs': '/v1/docs' },
     onProxyRes: stripUpstreamCors,
 }));
 

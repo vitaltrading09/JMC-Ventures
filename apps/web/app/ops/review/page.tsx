@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiSend, fmtDate, fmtDateTime, TZ_LABEL } from "@/lib/api";
+import { apiGet, apiSend, apiUpload, apiUrl, fmtDate, fmtDateTime, TZ_LABEL } from "@/lib/api";
 import { zar } from "@/lib/format";
 import type { Project } from "@/lib/ops";
 import { EvidenceChart } from "@/components/ops/EvidenceChart";
@@ -20,6 +20,7 @@ interface Finding {
 interface Report {
     id: string; project_id: string; project_name: string; title: string | null; period_start: string; period_end: string;
     status: "draft" | "approved" | "published"; approved_at: string | null; published_at: string | null; created_at: string;
+    pdf_path: string | null;
 }
 
 const REVIEW_TONE = { draft: "blue", in_review: "amber", published: "green", dismissed: "grey" } as const;
@@ -157,12 +158,13 @@ function Reports() {
             </Panel>
             <Panel title="Reports">
                 {reports.isLoading ? <Loading /> : reports.error ? <ErrorBox error={reports.error} /> : (reports.data ?? []).length === 0 ? <Empty>No reports yet.</Empty> : (
-                    <Table head={["Project", "Title", "Period", "Status", "", ""]}>
+                    <Table head={["Project", "Title", "Period", "PDF", "Status", "", ""]}>
                         {reports.data!.map((r) => (
                             <tr key={r.id}>
                                 <td className="py-2 pr-4"><Link className="text-blue-300 hover:underline" href={`/ops/projects/${r.project_id}`}>{r.project_name}</Link></td>
                                 <td className="py-2 pr-4">{r.title ?? "–"}</td>
                                 <td className="py-2 pr-4 whitespace-nowrap">{fmtDate(r.period_start)} – {fmtDate(new Date(new Date(r.period_end).getTime() - 1))}</td>
+                                <td className="py-2 pr-4"><ReportPdf report={r} /></td>
                                 <td className="py-2 pr-4"><Badge tone={r.status === "published" ? "green" : r.status === "approved" ? "amber" : "blue"}>{r.status}</Badge></td>
                                 <td className="py-2 pr-4 text-xs text-slate-500">{r.published_at ? `published ${fmtDateTime(r.published_at)}` : r.approved_at ? `approved ${fmtDateTime(r.approved_at)}` : ""}</td>
                                 <td className="py-2 flex gap-2 justify-end">
@@ -176,6 +178,28 @@ function Reports() {
                 )}
                 <div className="mt-2"><ErrorBox error={act.error} /></div>
             </Panel>
+        </div>
+    );
+}
+
+/** The report's PDF: view it, and attach or replace it while the report is a draft. */
+function ReportPdf({ report }: { report: Report }) {
+    const qc = useQueryClient();
+    const upload = useMutation({
+        mutationFn: (file: File) => { const f = new FormData(); f.append("file", file); return apiUpload(`/ingestion/reports/${report.id}/pdf`, f); },
+        onSuccess: () => qc.invalidateQueries({ queryKey: ["reports"] }),
+    });
+    return (
+        <div className="flex items-center gap-2 whitespace-nowrap text-xs">
+            {report.pdf_path ? <a className="text-blue-300 hover:underline" href={apiUrl(`/ingestion/reports/${report.id}/pdf`)} target="_blank" rel="noreferrer">View</a> : <span className="text-slate-500">none</span>}
+            {report.status === "draft" && (
+                <label className="cursor-pointer text-blue-300 hover:underline">
+                    {upload.isPending ? "Uploading…" : report.pdf_path ? "Replace" : "Attach"}
+                    <input type="file" accept="application/pdf" className="hidden" disabled={upload.isPending}
+                        onChange={(e) => { const file = e.target.files?.[0]; e.target.value = ""; if (file) upload.mutate(file); }} />
+                </label>
+            )}
+            {upload.error && <span className="text-red-300">{(upload.error as Error).message}</span>}
         </div>
     );
 }

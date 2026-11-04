@@ -63,6 +63,10 @@ function routes() {
     scan('review.ts', 'r');
     scan('ops.ts', 'r');
     scan('portal.ts', 'r');
+    scan('v1/routes.ts', 'r');
+    // The public API declares its routes as objects: { method: 'get', path: '/v1/...' }.
+    const v1 = fs.readFileSync(path.join(ROOT, 'src', 'v1', 'routes.ts'), 'utf8');
+    for (const m of v1.matchAll(/method: '(get|post)', path: '([^']+)'/g)) out.push([m[1].toUpperCase(), m[2]]);
     return out;
 }
 
@@ -119,6 +123,10 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
             INSERT INTO report_shares (tenant_id, site_id, meter_id, token_hash, label, period_days, expires_at, report_id)
             VALUES ($1, $2, $3, $4, $5, 7, NOW() + INTERVAL '7 days', $6) RETURNING id`,
             [x.tenant, x.site, x.meter, crypto.createHash('sha256').update(x.token).digest('hex'), `${x.mark}-share`, x.report]))[0].id;
+        x.export = (await q(`
+            INSERT INTO exports (tenant_id, measurement_point_id, interval, period_from, period_to, status, rows, bytes, finished_at, expires_at)
+            VALUES ($1, $2, '1h', $3, $4, 'done', 1, 1, NOW(), NOW() + INTERVAL '7 days') RETURNING id`,
+            [x.tenant, x.point, iso(now - 86_400_000), iso(now)]))[0].id;
         x.lead = (await q(`INSERT INTO leads (site_id, tenant_id, recommendation_id, status) VALUES ($1, $2, $3, 'NEW') RETURNING id`,
             [x.site, x.tenant, x.rec]))[0].id;
         await q(`INSERT INTO site_diagrams (site_id, layout) VALUES ($1, $2)`, [x.site, JSON.stringify({ nodes: [{ id: `${x.mark}-diagram` }], edges: [] })]);
@@ -153,16 +161,16 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
     const ids = (x) => ({
         sites: x.site, meters: x.meter, alerts: x.alert, shares: x.share, recommendations: x.rec, leads: x.lead,
         projects: x.site, points: x.point, devices: x.meter, deployments: x.deployment, reports: x.report,
-        clients: x.tenant, 'broker-access': crypto.randomUUID(),
+        clients: x.tenant, 'broker-access': crypto.randomUUID(), exports: x.export,
     });
     const fill = (p, x) => {
         const map = ids(x);
-        return p.split('/').map((seg, i, all) => (seg.startsWith(':') ? (seg === ':token' ? 'x' : map[all[i - 1]] ?? crypto.randomUUID()) : seg)).join('/');
+        return p.split('/').map((seg, i, all) => (seg.startsWith(':') ? (seg === ':token' ? 'x' : seg === ':file' ? `${map[all[i - 1]]}.pdf` : map[all[i - 1]] ?? crypto.randomUUID()) : seg)).join('/');
     };
     const ROUTES = routes().filter(([, p]) => !['/health', '/health/deep', '/public/report/:token'].includes(p));
     assert.ok(ROUTES.length > 60, `only ${ROUTES.length} routes found`);
 
-    const bSecrets = [B.mark, B.tenant, B.site, B.meter, B.alert, B.share, B.rec, B.draft, B.lead, B.report, B.unpublished, B.deployment];
+    const bSecrets = [B.mark, B.tenant, B.site, B.meter, B.alert, B.share, B.rec, B.draft, B.lead, B.report, B.unpublished, B.deployment, B.export];
     const leaks = (text) => bSecrets.filter((s) => text.includes(s));
 
     await t.test('tenant A, aimed at tenant B, gets nothing of B from any route', async () => {
@@ -235,7 +243,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
     });
 
     await t.test('client_viewer is read-only', async () => {
-        const allowed = [/\/compliance\/ask$/, /\/alerts\/:id\/read$/, /\/recommendations\/:id\/notify$/];
+        const allowed = [/\/compliance\/ask$/, /\/alerts\/:id\/read$/, /\/recommendations\/:id\/notify$/, /^\/v1\/exports$/];
         const failures = [];
         for (const [method, p] of ROUTES.filter(([m]) => m !== 'GET')) {
             if (allowed.some((re) => re.test(p))) continue;

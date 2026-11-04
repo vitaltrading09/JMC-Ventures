@@ -24,6 +24,8 @@ x-ingestion-env: &ingestion-env
   DATABASE_URL: postgres://${POSTGRES_USER:?set POSTGRES_USER in .env}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@timescaledb:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
   JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
   UPLOAD_DIR: /data/uploads
+  # Public API exports (Phase 9): written by jobs, served by api, kept 7 days.
+  EXPORT_DIR: /data/exports
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENAI_MODEL: ${OPENAI_MODEL:-}
   # Retention windows: every ingestion role checks them against the DB
@@ -86,6 +88,7 @@ services:
       FRONTEND_URL: https://${APP_DOMAIN}
       AUTH_SERVICE_URL: http://auth:3001
       INGESTION_SERVICE_URL: http://api:3002
+      API_KEY_RATE_PER_MIN: ${API_KEY_RATE_PER_MIN:-120}
       # One proxy hop (Caddy) in front of the gateway.
       TRUST_PROXY: "1"
     depends_on:
@@ -123,6 +126,7 @@ services:
       METER_SILENT_MINUTES: ${METER_SILENT_MINUTES:-5}
     volumes:
       - ${DATA_DIR:-./.data}/uploads:/data/uploads
+      - ${DATA_DIR:-./.data}/exports:/data/exports
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -170,6 +174,8 @@ services:
       ROLES: jobs
       METER_SILENT_MINUTES: ${METER_SILENT_MINUTES:-5}
       EVENT_ALERT_MIN_SECONDS: ${EVENT_ALERT_MIN_SECONDS:-10}
+    volumes:
+      - ${DATA_DIR:-./.data}/exports:/data/exports
     depends_on:
       timescaledb:
         condition: service_healthy

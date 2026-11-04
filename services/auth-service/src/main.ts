@@ -40,6 +40,7 @@ app.get('/health', (req, res) => {
 // Real Login Implementation
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import { apiKeyRouter } from './api-keys';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET || JWT_SECRET === 'gridiq-super-secret-key-change-in-prod' || JWT_SECRET.length < 32) {
@@ -376,6 +377,9 @@ app.post('/users', requireUserAdmin, async (req: any, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// API keys (Phase 9): /keys for client admins, /internal/keys/verify for the gateway.
+app.use(apiKeyRouter(pool, requireUserAdmin));
 
 // Refuse to serve against a database that is behind the latest migration
 // (packages/db/migrations; the compose `migrate` service applies them).

@@ -11,15 +11,15 @@ import { PageHeader, Badge, Loading, ErrorBox, Panel } from "@/components/ops/ui
 import {
     OverviewTab, LayoutTab, BalanceTab, LoadProfileTab, DemandTab, PowerQualityTab, FindingsTab, ReportsTab,
 } from "@/components/portal/ProjectTabs";
+import { ExportsTab } from "@/components/portal/ExportsTab";
 
-// Exports join these tabs with the public API (Phase 9).
 const TABS = [
     ["overview", "Overview"], ["layout", "Metering layout"], ["balance", "Energy balance"], ["load", "Load profile"],
-    ["demand", "Demand"], ["pq", "Power quality"], ["findings", "Findings"], ["reports", "Reports"],
+    ["demand", "Demand"], ["pq", "Power quality"], ["findings", "Findings"], ["reports", "Reports"], ["exports", "Exports"],
 ] as const;
 type Tab = (typeof TABS)[number][0];
 // Tabs that read live data; hidden while the project shares data through reports only.
-const TELEMETRY_TABS: Tab[] = ["overview", "layout", "balance", "load", "demand", "pq"];
+const TELEMETRY_TABS: Tab[] = ["overview", "layout", "balance", "load", "demand", "pq", "exports"];
 
 export default function PortalProjectPage() {
     const { id } = useParams<{ id: string }>();
@@ -55,6 +55,7 @@ export default function PortalProjectPage() {
             {current === "pq" && <PowerQualityTab project={p} />}
             {current === "findings" && <FindingsTab project={p} />}
             {current === "reports" && <ReportsTab project={p} role={role} />}
+            {current === "exports" && <ExportsTab project={p} />}
         </div>
     );
 }

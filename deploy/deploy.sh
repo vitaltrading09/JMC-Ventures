@@ -38,6 +38,16 @@ echo "==> migrate"
 docker compose up -d timescaledb
 docker compose run --rm migrate
 
+# The api and jobs containers run as the image's node user (uid 1000) and
+# write exports here; Docker would create a missing directory as root.
+DATA_DIR_VAL="$(grep -E '^DATA_DIR=' .env | tail -n1 | cut -d= -f2- || true)"
+DATA_DIR_VAL="${DATA_DIR_VAL:-./.data}"
+mkdir -p "$DATA_DIR_VAL/exports"
+if [ "$(stat -c %u "$DATA_DIR_VAL/exports" 2>/dev/null || echo 1000)" != 1000 ]; then
+    chown 1000:1000 "$DATA_DIR_VAL/exports" 2>/dev/null || sudo -n chown 1000:1000 "$DATA_DIR_VAL/exports" 2>/dev/null \
+        || echo "deploy: warning: chown 1000:1000 $DATA_DIR_VAL/exports so the jobs container can write exports" >&2
+fi
+
 echo "==> docker compose up -d"
 docker compose up -d --remove-orphans
 

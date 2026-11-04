@@ -9,7 +9,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { BarChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, CartesianGrid } from "recharts";
 import { ChevronRight } from "lucide-react";
-import { apiGet, apiSend, fmtAgo, fmtDate, fmtDateTime, TZ_LABEL } from "@/lib/api";
+import { apiGet, apiSend, apiUrl, fmtAgo, fmtDate, fmtDateTime, TZ_LABEL } from "@/lib/api";
 import { num, zar } from "@/lib/format";
 import { ROLE_LABEL } from "@/lib/ops";
 import { PortalProjectDetail, PortalPoint, pointTree, defaultPoint, canEdit } from "@/lib/portal";
@@ -318,6 +318,7 @@ export function ReportsTab({ project, role }: { project: PortalProjectDetail; ro
                                     <p className="text-sm text-white">{r.title ?? "Report"}</p>
                                     <p className="text-xs text-slate-500">{fmtDate(r.period_start)} – {fmtDate(new Date(new Date(r.period_end).getTime() - 1))} · published {fmtDate(r.published_at)}</p>
                                 </div>
+                                {r.pdf_path && <a className="text-sm text-blue-300 hover:underline" href={apiUrl(`/ingestion/reports/${r.id}/pdf`)} target="_blank" rel="noreferrer">PDF</a>}
                                 {canEdit(role) && <Button variant="secondary" onClick={() => setSharing(sharing === r.id ? null : r.id)}>Share link</Button>}
                             </div>
                             {sharing === r.id && <ShareForm project={project} reportId={r.id} />}

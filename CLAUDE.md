@@ -132,7 +132,8 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   - New devices publish on `acuvim/{lower(code)}/telemetry` (= `mqtt_username`). Devices
     without a project still ingest; retired ones are dead-lettered.
   - DB tests: `TEST_DATABASE_URL=... node --test --test-concurrency=1 services/ingestion-service/test/db/*.test.js`
-    (CI runs them in the migrations job).
+    (CI runs them in the migrations job). They start the built auth-service and api-gateway
+    too, so build every service first.
 - **Roles and scoping (Phase 7, `src/scope.ts`, migration `1793805838000_roles-review-reports.sql`)**:
   - Roles: `super_admin` and `engineer` (internal tenant, `tenants.kind = 'internal'`);
     `client_admin` and `client_viewer` (client tenants); `broker`. The old `admin` maps to
@@ -166,6 +167,67 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     web `/broker` hidden; build arg `NEXT_PUBLIC_FEATURE_BROKER`).
   - Cross-tenant test: `test/db/scoping.test.js` calls every route with tenant A's token
     aimed at tenant B.
+- **Public API v1 (Phase 9, `src/v1/`, migration `1793817650769_api-keys-and-exports.sql`)**:
+  - Under `/api/v1`, read-only, versioned. `src/v1/routes.ts` declares each route once with
+    its OpenAPI description. `/api/v1/openapi.json` (OpenAPI 3.1) is generated from those
+    declarations; Swagger UI (from `swagger-ui-dist`, no CDN) is at `/api/docs/`.
+    - Routes: `GET /v1/projects`, `/v1/projects/{id}` (points and metered windows),
+      `/v1/points/{id}/readings?interval=raw|1m|15m|30m|1h|1d&from&to&format=json|csv`,
+      `/v1/projects/{id}/energy-balance?interval=total|day|month`, `/findings` (published),
+      `/reports`, `/v1/reports/{id}.pdf`, `POST /v1/exports`, `GET /v1/exports[/{id}]`,
+      `/v1/exports/{id}/download?expires&sig` (signed, no key).
+  - **API keys** (`api_keys`, auth-service `src/api-keys.ts`):
+    - A client admin creates them in portal Settings → API keys (`/auth/keys`); super_admin
+      may name a client tenant. The key is `gq_live_<prefix>_<secret>`, shown once; only its
+      sha256 is stored.
+    - Scopes: `projects:read readings:read readings:raw energy:read findings:read
+      reports:read exports:write`. The default is all but `readings:raw`. `project_ids`
+      (null = all) limits a key to some projects. Create and revoke go to `audit_log`.
+  - **Gateway** (`services/api-gateway/src/api-keys.ts`):
+    - Verifies a key through auth `POST /internal/keys/verify`, cached 60 s (failures 10 s),
+      so a revoke takes effect within a minute. The gateway answers 404 to `/auth/internal`
+      from outside.
+    - The key is swapped for a 5-minute JWT: role `client_viewer`, its tenant, plus
+      `apiKey: {id, scopes, projectIds}`.
+    - Rate limit `API_KEY_RATE_PER_MIN` (default 120) per key.
+    - A key outside `/v1` gets 401. The ingestion api also refuses an API-key token outside
+      `/v1/` (403).
+  - **Scope**:
+    - `req.scope.apiKey` with `hasApiScope` / `projectAllowed` (`src/scope.ts`). Tenant
+      scope as everywhere: `findSite`, `findPoint`, `tenantSql`.
+    - Sessions (the portal) may call `/v1` too; scopes then do not apply.
+    - `live_data_visible = false` → 403 on readings, balance and exports.
+    - A viewer may `POST /v1/exports` (it only reads).
+  - **Readings** (`src/v1/series.ts`):
+    - From `point_readings_*` (raw: `meter_readings` inside the deployment windows, corrected
+      the same way). 15m comes from 1m; 1d is SAST days from 1h.
+    - Rows are period-ending (`period_start`, `period_end`) and carry `n`, `coverage` (n ×
+      the box's median sample spacing / interval), and `flags` (`gap` < 0.8 coverage,
+      `register_reset`, `correction_applied`).
+    - Energy is the register step per deployment; a negative step is left empty and flagged.
+    - Range per request: raw 1 day, 1m 31 days, 15m/30m 1 year, 1h 2 years, 1d 10 years.
+      Longer ranges go through exports.
+    - CSV starts with `#` lines stating the conventions (`csvHeader`).
+  - **Exports** (`src/v1/exports-job.ts`, jobs role every minute):
+    - Claimed with `FOR UPDATE SKIP LOCKED`; a job stuck `running` > 1 h is requeued.
+    - Written in `MAX_RANGE_DAYS` chunks as gzip CSV to `EXPORT_DIR/<id>.csv.gz`
+      (`/data/exports`, mounted in api and jobs).
+    - `expires_at` = done + 7 days; then the file is deleted and the row marked `expired`.
+    - Download links are HMAC-signed (JWT_SECRET) and valid 1 hour. Max ranges: raw 31 days,
+      1m 1 year, coarser 10 years.
+  - **Report PDFs**:
+    - Ops attach the PDF to a draft report: `POST /reports/:id/pdf` (multipart `file`,
+      checked for `%PDF-`, 50 MB) stores `UPLOAD_DIR/report-pdfs/<id>.pdf` in
+      `reports.pdf_path` and writes `audit_log`.
+    - Served by `GET /reports/:id/pdf` (portal; clients: published only) and
+      `/v1/reports/{id}.pdf`.
+    - The upload refuses only after reading the body (an early answer resets the connection
+      behind the proxy).
+  - **Web**: portal Settings → API keys (client_admin), project tab Exports (with a curl
+    example), a PDF link in Reports, and Attach/Replace PDF in ops Review → Reports.
+  - **Tests**: `test/v1.test.js` (unit). `test/db/public-api.test.js` runs the real gateway,
+    auth and api end to end (keys, scopes, corrections, CSV, PDF, exports and expiry).
+    The scoping test also scans the v1 route declarations.
 - The ingest container reaches the broker as `mqtts://${MQTT_DOMAIN}:8883`.
   `MQTT_DOMAIN` is a network alias of the mosquitto container, so the TLS
   hostname matches the certificate without leaving the host.
@@ -198,7 +260,7 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
 |---|---|---|
 | `auth-service` | Register, login, tenant management, JWT | ✅ Done |
 | `ingestion-service` | MQTT ingest (durable, batched), continuous aggregates read path, pq_events, alerting on 10/30-minute aggregates + events + data health (jobs), energy from registers, energy scoring, AI recommendations | ✅ Done |
-| `api-gateway` | Proxy, CORS, rate limiting, helmet | ✅ Done |
+| `api-gateway` | Proxy, CORS, rate limiting, helmet, API-key auth for `/v1` (Phase 9) | ✅ Done |
 
 ### Key Backend Files
 
@@ -382,7 +444,7 @@ Compose stack behind Caddy with a real domain. The steps are in
 - Also inject energy score + top recommendations as context so chat is site-aware
 
 ### 3. Oracle migration (plan phases 2–5, then Part D)
-- Phases 2–8 done (6 fleet model, 7 roles/scoping/review, 8 ops console + client portal in three PRs). Next: Phase 9 (public API and exports). The legacy `sites`/`meters` views stay until the API itself moves to the new names. Part D is the owner's go-live runbook.
+- Phases 2–9 done (6 fleet model, 7 roles/scoping/review, 8 ops console + client portal in three PRs, 9 public API, API keys, exports, report PDFs). Parquet exports are a later addition (CSV now). Next: Phase 10 of the plan. The legacy `sites`/`meters` views stay until the API itself moves to the new names. Part D is the owner's go-live runbook.
 - Phase 8 conventions: new pages use TanStack Query and `apps/web/lib/api.ts` (`apiGet`, `apiSend`, SAST date helpers: every chart and date states its basis and time zone); ops UI blocks in `components/ops/ui.tsx`; fleet health rules in `lib/ops.ts` (`deviceHealth`, `projectFlags`); portal types/role hook in `lib/portal.ts`; the shared chart `components/charts/MeasurementChart.tsx` (meter page and portal point page) and `components/fleet/BalanceView.tsx`. Portal API (`src/portal.ts`): `/portal/projects`, `/portal/projects/:id`, `/points/:id/readings|load-profile|demand|power-quality`, all from `point_readings_*` (corrected, per deployment window). Client admins manage their own users through the auth service (`GET/POST/PATCH/DELETE /users`). Setup (projects, points, installs, CSV import) is ops-only; client_admin manages its own users.
 
 ### 4. Security hardening

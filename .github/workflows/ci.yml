@@ -120,10 +120,11 @@ jobs:
         run: |
           node packages/db/bin/migrate.js down
           node packages/db/bin/migrate.js up
-      - name: database tests (fleet model, cross-tenant scoping)
+      - name: database tests (fleet model, cross-tenant scoping, public API)
         run: |
           npm run build --prefix services/ingestion-service
           npm run build --prefix services/auth-service
+          npm run build --prefix services/api-gateway
           # One file at a time: they refresh the same continuous aggregates, and
           # TimescaleDB rejects overlapping concurrent refreshes.
           node --test --test-concurrency=1 services/ingestion-service/test/db/*.test.js
