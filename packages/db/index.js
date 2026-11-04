@@ -226,24 +226,30 @@ async function refreshAggregates(db, from = null, to = null) {
 }
 
 /**
- * Migrate step: an aggregate that has never been materialised (first migration
- * onto a database with history) is refreshed once over all of it. Returns the
- * views it refreshed.
+ * Migrate step: materialise history an aggregate does not cover yet. The first
+ * migration onto a database with history creates the views WITH NO DATA, and
+ * their refresh policies may run straight away, covering only the last
+ * COMPRESS_AFTER_DAYS. "Not empty" therefore proves nothing: compare the
+ * earliest materialised bucket with the earliest raw reading, and refresh
+ * everything before it. Returns the views it refreshed.
  */
 async function materialiseNewAggregates(db) {
     const r = await db.query(`
         SELECT view_name, format('%I.%I', materialization_hypertable_schema, materialization_hypertable_name) AS mat
         FROM timescaledb_information.continuous_aggregates WHERE view_name = ANY($1)`, [AGGREGATE_VIEWS]);
     const mats = new Map(r.rows.map((row) => [row.view_name, row.mat]));
-    const raw = await db.query(`SELECT EXISTS (SELECT 1 FROM meter_readings LIMIT 1) AS has_rows`);
-    if (!raw.rows[0].has_rows) return [];
+    const raw = await db.query(`SELECT min(time) AS first FROM meter_readings`);
+    const rawFirst = raw.rows[0].first;
+    if (!rawFirst) return [];
     const done = [];
     for (const view of AGGREGATE_VIEWS) {
         const mat = mats.get(view);
         if (!mat) continue;
-        const empty = await db.query(`SELECT NOT EXISTS (SELECT 1 FROM ${mat} LIMIT 1) AS empty`);
-        if (!empty.rows[0].empty) continue;
-        await db.query(`CALL refresh_continuous_aggregate($1::regclass, NULL, NULL)`, [view]);
+        const m = await db.query(`SELECT min(bucket) AS first FROM ${mat}`);
+        const matFirst = m.rows[0].first;
+        // Covered when the earliest bucket starts within a day of the earliest reading.
+        if (matFirst && new Date(matFirst).getTime() - new Date(rawFirst).getTime() <= 86_400_000) continue;
+        await db.query(`CALL refresh_continuous_aggregate($1::regclass, NULL, $2::timestamptz)`, [view, matFirst]);
         done.push(view);
     }
     return done;

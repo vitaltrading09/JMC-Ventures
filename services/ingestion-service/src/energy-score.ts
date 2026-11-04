@@ -174,43 +174,47 @@ export async function computeAndStoreSiteScore(
             ? `AND m.id = $2`
             : `AND m.is_active = true`;
         const metricParams: any[] = meterId ? [siteId, meterId] : [siteId];
+        // From readings_1h (about 168 rows per meter for the week, instead of
+        // ~600k raw 1-second rows every 5 minutes). Averages are re-weighted by
+        // sample count. The validity filters that used to apply per reading
+        // (PF 0-1.05, THD 0-100 %, voltage above 50 V) now apply per hour: an
+        // hour whose minimum voltage dropped to an interruption is left out
+        // whole, rather than just its zero-voltage samples.
         const metricsRes = await client.query(`
             SELECT
-                AVG(mr.power_factor_total)
-                    FILTER (WHERE mr.power_factor_total > 0 AND mr.power_factor_total <= 1.05)
+                SUM(v.power_factor_total_avg * v.n) FILTER (WHERE v.power_factor_total_avg > 0 AND v.power_factor_total_avg <= 1.05)
+                    / NULLIF(SUM(v.n) FILTER (WHERE v.power_factor_total_avg > 0 AND v.power_factor_total_avg <= 1.05), 0)
                     AS avg_pf,
-                AVG(mr.thd_voltage_a)
-                    FILTER (WHERE mr.thd_voltage_a >= 0 AND mr.thd_voltage_a < 100)
+                SUM(v.thd_voltage_a_avg * v.n) FILTER (WHERE v.thd_voltage_a_avg >= 0 AND v.thd_voltage_a_avg < 100)
+                    / NULLIF(SUM(v.n) FILTER (WHERE v.thd_voltage_a_avg >= 0 AND v.thd_voltage_a_avg < 100), 0)
                     AS avg_thd,
-                AVG(mr.power_active_total)
-                    FILTER (WHERE mr.power_active_total > 0)
+                SUM(v.power_active_total_avg * v.n) FILTER (WHERE v.power_active_total_avg > 0)
+                    / NULLIF(SUM(v.n) FILTER (WHERE v.power_active_total_avg > 0), 0)
                     AS avg_kw,
-                MAX(mr.power_active_total)
+                MAX(v.power_active_total_max)
                     AS peak_kw,
-                AVG(mr.voltage_a)
-                    FILTER (WHERE mr.voltage_a > 50)
+                SUM(v.voltage_a_avg * v.n) FILTER (WHERE v.voltage_a_min > 50)
+                    / NULLIF(SUM(v.n) FILTER (WHERE v.voltage_a_min > 50), 0)
                     AS avg_v,
-                MIN(mr.voltage_a)
-                    FILTER (WHERE mr.voltage_a > 50)
+                MIN(v.voltage_a_min) FILTER (WHERE v.voltage_a_min > 50)
                     AS min_v,
-                MAX(mr.voltage_a)
-                    FILTER (WHERE mr.voltage_a > 50)
+                MAX(v.voltage_a_max) FILTER (WHERE v.voltage_a_max > 50)
                     AS max_v,
-                AVG(mr.voltage_a)
-                    FILTER (WHERE mr.voltage_a > 50)
+                SUM(v.voltage_a_avg * v.n) FILTER (WHERE v.voltage_a_min > 50)
+                    / NULLIF(SUM(v.n) FILTER (WHERE v.voltage_a_min > 50), 0)
                     AS avg_va,
-                AVG(mr.voltage_b)
-                    FILTER (WHERE mr.voltage_b > 50)
+                SUM(v.voltage_b_avg * v.n) FILTER (WHERE v.voltage_b_min > 50)
+                    / NULLIF(SUM(v.n) FILTER (WHERE v.voltage_b_min > 50), 0)
                     AS avg_vb,
-                AVG(mr.voltage_c)
-                    FILTER (WHERE mr.voltage_c > 50)
+                SUM(v.voltage_c_avg * v.n) FILTER (WHERE v.voltage_c_min > 50)
+                    / NULLIF(SUM(v.n) FILTER (WHERE v.voltage_c_min > 50), 0)
                     AS avg_vc,
-                COUNT(*)
+                COALESCE(SUM(v.n), 0)
                     AS reading_count
-            FROM meter_readings mr
-            JOIN meters m ON mr.meter_id = m.id
+            FROM readings_1h v
+            JOIN meters m ON v.meter_id = m.id
             WHERE m.site_id = $1
-              AND mr.time >= NOW() - INTERVAL '7 days'
+              AND v.bucket >= NOW() - INTERVAL '7 days'
               ${metricFilter}
         `, metricParams);
 
