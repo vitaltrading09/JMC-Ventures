@@ -14,7 +14,7 @@ const min = (n) => new Date(T0.getTime() + n * 60_000);
 
 // A healthy 15 minutes on a 230 V incomer with a 400 A CT.
 const good = {
-    total: 900, deviceSourced: 900, minutesWithData: 15, driftS: 1.2,
+    total: 900, deviceSourced: 900, minutesWithData: 15, spacingS: 1, driftS: 1.2,
     vA: 231, vB: 229, vC: 233, pAvgKw: 55, pfAvg: 0.93, currentAvgA: 80, currentMaxA: 120,
 };
 const base = { installedAt: T0, role: 'incomer', nominalV: 230, ctPrimaryA: 400, powerSign: 1, scale: 1 };
@@ -30,7 +30,7 @@ test('commissioning', async (t) => {
     });
 
     await t.test('inside the window, missing data is pending; after it, a failure', () => {
-        const none = { total: 0, deviceSourced: 0, minutesWithData: 0, driftS: null, vA: null, vB: null, vC: null,
+        const none = { total: 0, deviceSourced: 0, minutesWithData: 0, spacingS: null, driftS: null, vA: null, vB: null, vC: null,
             pAvgKw: null, pfAvg: null, currentAvgA: null, currentMaxA: null };
         const early = evaluateCommissioning({ ...base, now: min(3), stats: none });
         assert.strictEqual(early.final, false);
@@ -79,9 +79,15 @@ test('commissioning', async (t) => {
     });
 
     await t.test('coverage below 95 % fails at the end', () => {
-        const r = evaluateCommissioning({ ...base, now: min(16), stats: { ...good, minutesWithData: 12 } });
+        const r = evaluateCommissioning({ ...base, now: min(16), stats: { ...good, total: 700 } });
         assert.strictEqual(check(r, 'coverage').status, 'fail');
-        assert.match(check(r, 'coverage').detail, /12 of 15/);
+        assert.match(check(r, 'coverage').detail, /700 of 900 expected readings \(every 1 s\)/);
+    });
+
+    await t.test("coverage is judged at the meter's own interval: every 5 minutes passes with 3 readings", () => {
+        const r = evaluateCommissioning({ ...base, now: min(16), stats: { ...good, total: 3, deviceSourced: 3, minutesWithData: 3, spacingS: 300 } });
+        assert.strictEqual(check(r, 'coverage').status, 'pass');
+        assert.match(check(r, 'coverage').detail, /3 of 3 expected readings \(every 300 s\)/);
     });
 
     await t.test('no CT primary: current check is not applicable', () => {

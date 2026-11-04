@@ -95,7 +95,12 @@ Then watch `bash deploy/logs.sh ingest` for the meter's first rows.
 **Remove or rotate a meter user:** `mosquitto_passwd -D /mosquitto/config/passwd <user>` (or `-b` with a new password), then the `kill -s HUP mosquitto` reload.
 
 ## Fleet: devices, points and deployments
-Until the ops console (Phase 8), the fleet is managed through the API as a `super_admin` (`https://app.<domain>/api/ingestion/...`, `Authorization: Bearer <token>`). Readings stay keyed by the device; which project and point they belong to is decided by the deployment windows, so moving a box never copies or rewrites data.
+The fleet is managed in the ops console at `https://app.<domain>/ops` (super_admin or engineer):
+- **Fleet:** every box, with a red/amber/green health light. Coverage and silence are judged at each box's own reporting interval.
+- **Install:** the wizard. After it, the deployment page shows the commissioning checklist, which runs for 15 minutes from the box's first reading.
+- **Projects**, **Review** and **Data health.**
+
+The calls below are what the console uses, for scripting (`https://app.<domain>/api/ingestion/...`, `Authorization: Bearer <token>`). Readings stay keyed by the device; which project and point they belong to is decided by the deployment windows, so moving a box never copies or rewrites data.
 
 | Step | Call |
 |---|---|

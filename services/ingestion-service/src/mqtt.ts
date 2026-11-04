@@ -66,7 +66,31 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
         c[field] += by;
         perMeter.set(meterId, c);
     };
+    // Unmapped parameter names per meter, stored once a minute for the ops
+    // Data health page (the log line stays, once per meter per hour).
+    let unknownNames = new Map<string, Set<string>>();
+    const noteUnknown = (meterId: string, names: string[]) => {
+        if (names.length === 0) return;
+        const set = unknownNames.get(meterId) ?? new Set<string>();
+        for (const n of names) set.add(n);
+        unknownNames.set(meterId, set);
+    };
     const flushCounters = async () => {
+        if (unknownNames.size > 0) {
+            const names = unknownNames;
+            unknownNames = new Map();
+            try {
+                for (const [meterId, set] of names) {
+                    await pool.query(`
+                        INSERT INTO ingest_unknown_params (meter_id, name)
+                        SELECT $1, unnest($2::text[])
+                        ON CONFLICT (meter_id, name) DO UPDATE SET last_seen = NOW()`,
+                        [meterId, [...set]]);
+                }
+            } catch (e: any) {
+                console.error('[ingest] unknown-parameter write failed:', e?.message || e);
+            }
+        }
         if (perMeter.size === 0) return;
         const batch = perMeter;
         perMeter = new Map();
@@ -273,6 +297,7 @@ export async function initMqtt(pool: Pool): Promise<IngestRuntime> {
             return;
         }
         stats.noteUnknownParams(meter.id, parsed.unknownParams);
+        noteUnknown(meter.id, parsed.unknownParams);
         count(meter.id, 'bytes', payloadBuf.length);
 
         const stamp = resolveReadingTime(parsed.rawTimestamp);

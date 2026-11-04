@@ -303,6 +303,14 @@ async function main() {
                     const n = await ensureRangeWritable(client, fresh[0].time, new Date(fresh[fresh.length - 1].time.getTime() + 1));
                     if (n > 0) console.log(`  ${p.key}: decompressed ${n} chunk(s) to write into.`);
                     inserted = await insertReadings(client, meterId, fresh);
+                    // The demo meter's deployment (opened when the seed created it) covers
+                    // the generated history too, as a CSV import does (fleet model, Phase 6).
+                    // No commissioning result over synthetic data.
+                    await client.query(`
+                        UPDATE deployments SET installed_at = LEAST(installed_at, $2),
+                               commissioning = COALESCE(commissioning, '{"final": true, "overall": "not_evaluated", "note": "Demo meter: synthetic readings", "checks": []}'::jsonb)
+                        WHERE id = (SELECT id FROM deployments WHERE device_id = $1 ORDER BY installed_at LIMIT 1)`,
+                        [meterId, fresh[0].time]).catch(() => { /* pre-Phase-6 schema */ });
                 }
             }
             // Alerts only for readings this run writes, as MQTT raises them on insert.

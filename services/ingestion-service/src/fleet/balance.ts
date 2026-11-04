@@ -195,8 +195,14 @@ export async function loadPointEnergy(db: Queryable, pointId: string, from: Date
         importKwh: imp.kwh,
         exportKwh: exp.kwh,
         coverage: Math.min(1, hoursWithData.size / periodHours),
-        method: imp.method,
-        dataQuality: imp.quality,
+        // Both directions: a reversed CT puts a point's energy on the export side.
+        method: combinedMethod([imp.method, exp.method]),
+        dataQuality: {
+            register_resets: imp.quality.register_resets + exp.quality.register_resets,
+            implausible_jumps: imp.quality.implausible_jumps + exp.quality.implausible_jumps,
+            register_hours: Math.max(imp.quality.register_hours, exp.quality.register_hours),
+            power_hours: Math.max(imp.quality.power_hours, exp.quality.power_hours),
+        },
     };
 }
 

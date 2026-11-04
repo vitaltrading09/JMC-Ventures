@@ -26,6 +26,7 @@ import {
     findSite, findMeter, findOwned, meterParam, siteParam, requireWrite,
 } from './scope';
 import { reviewRouter } from './review';
+import { opsRouter } from './ops';
 import { randomBytes, createHash } from 'crypto';
 import {
     generateAndStoreSiteRecommendations,
@@ -390,6 +391,8 @@ const BROKER_ENABLED = process.env.FEATURE_BROKER === 'true';
 app.use(fleetRouter(pool, authenticateToken));
 // Review workflow and reports (src/review.ts).
 app.use(reviewRouter(pool, authenticateToken));
+// Ops console extras: tenant list, data health (src/ops.ts).
+app.use(opsRouter(pool, authenticateToken));
 
 // Deep health for an external uptime monitor (src/health.ts). Token header,
 // no JWT: the monitor is not a user. Disabled unless HEALTH_TOKEN is set.

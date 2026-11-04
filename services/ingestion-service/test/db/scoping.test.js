@@ -61,6 +61,7 @@ function routes() {
     scan('main.ts', 'app');
     scan('fleet/routes.ts', 'r');
     scan('review.ts', 'r');
+    scan('ops.ts', 'r');
     return out;
 }
 
