@@ -202,6 +202,15 @@ services:
     volumes:
       - ${DATA_DIR:-./.data}/backups:/backups
 
+  # age, for encrypting backups before upload (deploy/scripts/backup.sh) and
+  # decrypting them for the restore drill. Profile "tools": never started by `up`.
+  age:
+    image: gridiq/age:1.2.1
+    build: deploy/tools/age
+    profiles: [tools]
+    volumes:
+      - ${DATA_DIR:-./.data}/backups:/backups
+
   mosquitto:
     <<: *restart
     image: eclipse-mosquitto:2.0.22

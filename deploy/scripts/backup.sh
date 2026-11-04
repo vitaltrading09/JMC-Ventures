@@ -6,7 +6,9 @@
 #
 # 1. pg_dump -Fc of the compose database to a temp file
 # 2. verify it with pg_restore --list
-# 3. upload to s3://$BACKUP_S3_BUCKET/$BACKUP_PREFIX/daily/  (aws cli, --endpoint-url)
+# 3. encrypt it with age to BACKUP_AGE_RECIPIENT (public key; the server cannot
+#    read the uploaded file without the private key, see docs/RUNBOOK.md)
+# 4. upload to s3://$BACKUP_S3_BUCKET/$BACKUP_PREFIX/daily/  (aws cli, --endpoint-url)
 #    and on Sundays to weekly/, on the 1st to monthly/ (SAST calendar)
 # 4. retention: newest 7 daily, 4 weekly, 6 monthly
 # 5. status: a line in ${DATA_DIR}/backups/backup.log, the timestamp file
@@ -32,6 +34,8 @@ PGUSER="$(setting POSTGRES_USER)"; PGDB="$(setting POSTGRES_DB)"
 ENDPOINT="$(setting BACKUP_S3_ENDPOINT)"
 BUCKET="$(setting BACKUP_S3_BUCKET)"
 PREFIX="$(setting BACKUP_PREFIX)"; PREFIX="${PREFIX:-gridiq}"
+RECIPIENT="$(setting BACKUP_AGE_RECIPIENT)"
+ALLOW_PLAIN="$(setting BACKUP_ALLOW_UNENCRYPTED)"
 KEEP_DAILY=7 KEEP_WEEKLY=4 KEEP_MONTHLY=6
 
 BACKUP_DIR="$DATA_DIR/backups"
@@ -45,6 +49,11 @@ s3() { docker compose run --rm --no-deps -T awscli --endpoint-url "$ENDPOINT" "$
 for v in ENDPOINT BUCKET PGUSER PGDB; do
     if [ -z "${!v}" ]; then echo "backup: $v is not set (.env: BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET, POSTGRES_USER, POSTGRES_DB)" >&2; exit 1; fi
 done
+if [ -z "$RECIPIENT" ] && [ "$ALLOW_PLAIN" != true ]; then
+    echo "backup: BACKUP_AGE_RECIPIENT is not set. Backups are encrypted before upload; generate a key (docs/RUNBOOK.md → Backups)" >&2
+    echo "        or set BACKUP_ALLOW_UNENCRYPTED=true (local tests only)." >&2
+    exit 1
+fi
 
 STAMP="$(date -u +%Y-%m-%dT%H%M%SZ)"
 NAME="gridiq-$STAMP.dump"
@@ -75,22 +84,35 @@ docker compose exec -T timescaledb rm -f /tmp/verify.dump
 [ "${ENTRIES:-0}" -gt 10 ] || fail "pg_restore --list found only ${ENTRIES:-0} entries"
 log "verified: $BYTES bytes, $ENTRIES archive entries"
 
-# ── 3. Upload (daily; weekly on Sunday, monthly on the 1st, SAST calendar) ──
-KEY="$PREFIX/daily/$NAME"
-s3 s3 cp "/backups/tmp/$NAME" "s3://$BUCKET/$KEY" --only-show-errors || fail "upload to s3://$BUCKET/$KEY failed"
+# ── 3. Encrypt ─────────────────────────────────────────────────────────────
+UPLOAD="$NAME"
+if [ -n "$RECIPIENT" ]; then
+    docker compose run --rm --no-deps -T age -r "$RECIPIENT" -o "/backups/tmp/$NAME.age" "/backups/tmp/$NAME" \
+        || fail "age encryption failed"
+    rm -f "$TMP"
+    UPLOAD="$NAME.age"
+    BYTES="$(wc -c < "$BACKUP_DIR/tmp/$UPLOAD" | tr -d ' ')"
+    log "encrypted with age → $UPLOAD ($BYTES bytes)"
+else
+    log "WARNING: uploading UNENCRYPTED (BACKUP_ALLOW_UNENCRYPTED=true)"
+fi
+
+# ── 4. Upload (daily; weekly on Sunday, monthly on the 1st, SAST calendar) ──
+KEY="$PREFIX/daily/$UPLOAD"
+s3 s3 cp "/backups/tmp/$UPLOAD" "s3://$BUCKET/$KEY" --only-show-errors || fail "upload to s3://$BUCKET/$KEY failed"
 if [ "$(TZ=Africa/Johannesburg date +%u)" = 7 ]; then
-    s3 s3 cp "s3://$BUCKET/$KEY" "s3://$BUCKET/$PREFIX/weekly/$NAME" --only-show-errors || fail "weekly copy failed"
+    s3 s3 cp "s3://$BUCKET/$KEY" "s3://$BUCKET/$PREFIX/weekly/$UPLOAD" --only-show-errors || fail "weekly copy failed"
 fi
 if [ "$(TZ=Africa/Johannesburg date +%d)" = 01 ]; then
-    s3 s3 cp "s3://$BUCKET/$KEY" "s3://$BUCKET/$PREFIX/monthly/$NAME" --only-show-errors || fail "monthly copy failed"
+    s3 s3 cp "s3://$BUCKET/$KEY" "s3://$BUCKET/$PREFIX/monthly/$UPLOAD" --only-show-errors || fail "monthly copy failed"
 fi
-rm -f "$TMP"
+rm -f "$TMP" "$BACKUP_DIR/tmp/$UPLOAD"
 
-# ── 4. Retention ───────────────────────────────────────────────────────────
+# ── 5. Retention ───────────────────────────────────────────────────────────
 prune() { # tier keep
     local tier="$1" keep="$2"
     # An empty tier (e.g. no weekly copy yet) lists nothing and exits 1: not an error.
-    { s3 s3 ls "s3://$BUCKET/$PREFIX/$tier/" || true; } | awk '{print $4}' | { grep -E '^gridiq-.*\.dump$' || true; } | sort -r \
+    { s3 s3 ls "s3://$BUCKET/$PREFIX/$tier/" || true; } | awk '{print $4}' | { grep -E '^gridiq-.*\.dump(\.age)?$' || true; } | sort -r \
         | tail -n +"$((keep + 1))" | while read -r old; do
             s3 s3 rm "s3://$BUCKET/$PREFIX/$tier/$old" --only-show-errors && log "retention: removed $tier/$old"
         done
@@ -99,7 +121,7 @@ prune daily "$KEEP_DAILY"
 prune weekly "$KEEP_WEEKLY"
 prune monthly "$KEEP_MONTHLY"
 
-# ── 5. Status ──────────────────────────────────────────────────────────────
+# ── 6. Status ──────────────────────────────────────────────────────────────
 trap - ERR
 psql_db -c "UPDATE backup_runs SET finished_at = NOW(), ok = true, object_key = '$KEY', bytes = $BYTES, message = 'ok' WHERE id = $RUN_ID" >/dev/null
 date -u +%Y-%m-%dT%H:%M:%SZ > "$BACKUP_DIR/last-success"
