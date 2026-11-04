@@ -20,9 +20,12 @@ ARG NEXT_PUBLIC_API_URL
 ARG NEXT_PUBLIC_MQTT_HOST
 # The broker portfolio pages (/broker) are hidden unless "true".
 ARG NEXT_PUBLIC_FEATURE_BROKER=false
+# PV sizer, simulation, savings and "What we caught" (/dashboard tools) are hidden unless "true".
+ARG NEXT_PUBLIC_FEATURE_TOOLS=false
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_PUBLIC_MQTT_HOST=${NEXT_PUBLIC_MQTT_HOST} \
     NEXT_PUBLIC_FEATURE_BROKER=${NEXT_PUBLIC_FEATURE_BROKER} \
+    NEXT_PUBLIC_FEATURE_TOOLS=${NEXT_PUBLIC_FEATURE_TOOLS} \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build -w apps/web
 

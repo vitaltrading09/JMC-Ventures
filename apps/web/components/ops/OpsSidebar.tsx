@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-    Zap, LayoutDashboard, Radio, Wrench, ClipboardCheck, FolderKanban, HeartPulse, Users, Briefcase, LogOut,
+    Zap, LayoutDashboard, Radio, Wrench, ClipboardCheck, FolderKanban, HeartPulse, Users, Briefcase, LogOut, FileSpreadsheet,
 } from "lucide-react";
 
 const LINKS = [
@@ -14,6 +14,7 @@ const LINKS = [
     { name: "Review",      href: "/ops/review",      icon: ClipboardCheck },
     { name: "Projects",    href: "/ops/projects",    icon: FolderKanban },
     { name: "Data health", href: "/ops/data-health", icon: HeartPulse },
+    { name: "CSV import",  href: "/ops/import",      icon: FileSpreadsheet },
     { name: "Clients",     href: "/ops/clients",     icon: Users },
     { name: "Leads",       href: "/ops/leads",       icon: Briefcase },
 ];

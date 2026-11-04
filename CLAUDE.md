@@ -187,21 +187,7 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
 |---|---|---|
 | `/` | Landing page | ✅ Done |
 | `/login` | Auth login | ✅ Done |
-| `/dashboard` | Main dashboard with energy score, KPIs, alerts, frequency chart | ✅ Done |
-| `/dashboard/sites` | Site + meter management. **Add Meter shows full MQTT config** after creation | ✅ Done |
-| `/dashboard/sites/[id]` | Per-meter chart page: 3-phase V/I, P/Q/S, PF, THD, freq, energy. NRS 048 reference lines. Solar/battery simulation tab | ✅ Done |
-| `/dashboard/alerts` | Alerts log page with severity filter | ✅ Done |
-| `/dashboard/analytics` | Tariff-aware analytics: MDI tracking, NRS 048 compliance, demand charges | ✅ Done |
-| `/dashboard/savings` | Savings breakdown with Recharts bar chart | ✅ Done |
-| `/dashboard/recommendations` | AI recommendation cards (Claude-powered) | ✅ Done |
-| `/dashboard/reports` | Monthly report card (light theme, PDF/print ready) | ✅ Done |
-| `/dashboard/settings/alerts` | Alert threshold config per site | ✅ Done |
-| `/dashboard/settings/tariffs` | Tariff config | ✅ Done |
-| `/dashboard/settings/data` | CSV data import | ✅ Done |
-| `/dashboard/tools/pv-sizer` | PV sizer tool | ✅ Done |
-| `/admin` | Admin overview | ✅ Done |
-| `/admin/clients` | Client portfolio deep-dive (scores, sites, meters, leads) | ✅ Done |
-| `/admin/leads` | Leads management | ✅ Done |
+| `/dashboard/tools/pv-sizer`, `/dashboard/savings`, `/dashboard/value`, `/dashboard/sites/[id]` (simulation tab) | Sizing and value tools, kept behind `NEXT_PUBLIC_FEATURE_TOOLS` (build arg from `FEATURE_TOOLS`, off by default). Every other old `/dashboard` and `/admin` URL redirects (`movedTo` in `middleware.ts`): clients to `/portal`, staff to `/ops` | Flagged |
 | `/ops` | **Ops console (Phase 8, internal roles):** Home, Fleet (+ device), Install wizard, Deployment (commissioning, corrections, remove), Review (findings, reports), Projects (+ project: points, energy balance, tariffs, live-data switch), Data health, Clients, Leads. Staff land here after login | ✅ Done |
 | `/portal` | **Client portal (Phase 8):** Overview (live tiles), Projects, Project (tabs: Overview, Metering layout, Energy balance, Load profile, Demand, Power quality, Findings, Reports), Point (the per-meter chart, by point), Alerts, Settings (branding, users). Reads `src/portal.ts` (point views, scoped); no internal fields | ✅ Done |
 | `/api/chat` | AI chat route (OpenAI — pending migration to Claude). Caddy routes `/api/chat*` to web, all other `/api/*` to the gateway | ✅ Done |
@@ -228,31 +214,18 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
 - `services/ingestion-service/src/main.ts` — REST endpoints (readings via aggregates, demand, monthly energy, compliance, AI context), role startup, cron registration.
 - `services/ingestion-service/src/alerting.ts` — all alert rules (jobs role); `src/energy.ts` — register-based period energy; `src/aggregates.ts` — chart read planning.
 
-### Report Page Architecture (`/dashboard/reports`)
+### Frontend structure (Phase 8)
 
-- Light theme (`bg-slate-100`) using negative margin escape (`-m-4 sm:-m-6 lg:-m-8`) to break out of dashboard layout padding
-- Print CSS injected via `useEffect` (creates/removes `<style id="pg-report-print">`)
-- Sidebar hidden on print via `print:hidden` (Sidebar.tsx + layout.tsx)
-- `getLookingAhead()` — evaluates 4 score components, returns advisory for the weakest
-- Consumption bar chart uses `MOCK_CONSUMPTION` placeholder — **needs wiring to live data** (see Pending Tasks)
-- Recharts `PieChart` donut: `innerRadius={58} outerRadius={84}`, centre label via absolute overlay
-
-### Site Detail Page (`/dashboard/sites/[id]`)
-
-- Measurement tabs: P, Q, S, PF, Voltage, Current, THD, Frequency, Energy
-- Voltage + Current support **3-phase toggle** (L1/L2/L3 individual lines)
-- NRS 048-2 reference lines on charts (PF min 0.85, THD max 8%, voltage 207–253V, freq 49–51Hz)
-- Date range picker + quick presets (24h / 7d / 30d / 90d)
-- Summary stats strip (latest / avg / max / min)
-- **Simulation tab** — solar + battery sizing with 24h chart and auto-size from data
-
-### Add Meter Flow (`/dashboard/sites`)
-
-After clicking **Add Meter** and saving, a confirmation modal appears showing the exact values to enter into the Acuvim II dashboard:
-- Broker host / port (1883)
-- MQTT username + password
-- **MQTT topic** (unique per meter: `acuvim/{meter_uuid}/telemetry`)
-- Each field has a copy-to-clipboard button
+- `/ops` (staff) and `/portal` (clients) replace `/admin` and `/dashboard`. Staff land on `/ops`
+  after login, clients on `/portal`; `middleware.ts` guards both and redirects old URLs.
+- Single-line diagram: `components/sld/SldEditor.tsx` (via `SldView`), bound to measurement points
+  (stored as `meterId` in `site_diagrams.layout`; it holds the point id). Editable on the ops
+  project page, read-only in the portal's Metering layout tab.
+- The per-meter/point chart: `components/charts/MeasurementChart.tsx` (3-phase V/I, P/Q/S, PF,
+  THD, frequency, energy; NRS 048-2 reference lines; states its aggregate and SAST).
+- The AI chat widget (`components/dashboard/ChatWidget.tsx`, `/api/chat`) sits in the portal layout.
+- Adding meters is ops-only: Fleet → New box (shows the broker username and topic), then Install.
+  The old Add Meter screen is gone; CSV import is `/ops/import`.
 
 ---
 
@@ -364,11 +337,12 @@ the local CA. Containers are unaffected; run TLS tests inside the compose networ
 
 ### Adding a real Acuvim II meter
 
-1. Go to **Sites → Add Site** → fill in name/address
-2. Modal auto-opens **Add Meter** — fill in the meter name, serial number, model
-3. After saving, a **MQTT Config modal** appears with all values pre-filled — copy each into the Acuvim II web interface under `Communication → MQTT`
-4. Set telemetry interval to 60s on the device
-5. Within 60s the meter will appear live (green "Live" badge) in the Sites page
+1. Ops console → **Fleet → New box** (code, e.g. `GQ-M01`): it shows the broker username (`gq-m01`)
+   and topic (`acuvim/gq-m01/telemetry`). Create the broker user (docs/RUNBOOK.md → MQTT credentials).
+2. On the AXM-WEB2: host `mqtt.<domain>`, port 8883, TLS, that username and password, the topic,
+   QoS 1, store-and-forward and NTP on, interval 1 s – 60 s.
+3. **Install**: box → client → project → point → CT/PT/sign. The deployment page shows the
+   commissioning checklist for 15 minutes from the first reading.
 
 ---
 
@@ -402,18 +376,13 @@ Compose stack behind Caddy with a real domain. The steps are in
 
 ## Pending Tasks (Priority Order)
 
-### 1. Wire live consumption data to report page
-- File: `apps/web/app/dashboard/reports/page.tsx`
-- Search for `MOCK_CONSUMPTION` — replace with real fetch from `/ingestion/meters/{id}/readings`
-- The endpoint already exists in ingestion-service
-
 ### 2. Migrate AI chat from OpenAI to Claude
 - File: `apps/web/app/api/chat/route.ts`
 - Currently uses OpenAI — migrate to Anthropic Claude Sonnet
 - Also inject energy score + top recommendations as context so chat is site-aware
 
 ### 3. Oracle migration (plan phases 2–5, then Part D)
-- Phases 2–7 done (6 fleet model, 7 roles/scoping/review). Phase 8 (approved page list, three PRs): PR 1 ops console and PR 2 client portal done; next PR 3: redirects from `/dashboard` and `/admin`, feature flags (PV sizer, simulation, savings, value), old pages removed, SLD editor bound to points in ops. Then Phase 9 (public API). Part D is the owner's go-live runbook.
+- Phases 2–8 done (6 fleet model, 7 roles/scoping/review, 8 ops console + client portal in three PRs). Next: Phase 9 (public API and exports). The legacy `sites`/`meters` views stay until the API itself moves to the new names. Part D is the owner's go-live runbook.
 - Phase 8 conventions: new pages use TanStack Query and `apps/web/lib/api.ts` (`apiGet`, `apiSend`, SAST date helpers: every chart and date states its basis and time zone); ops UI blocks in `components/ops/ui.tsx`; fleet health rules in `lib/ops.ts` (`deviceHealth`, `projectFlags`); portal types/role hook in `lib/portal.ts`; the shared chart `components/charts/MeasurementChart.tsx` (meter page and portal point page) and `components/fleet/BalanceView.tsx`. Portal API (`src/portal.ts`): `/portal/projects`, `/portal/projects/:id`, `/points/:id/readings|load-profile|demand|power-quality`, all from `point_readings_*` (corrected, per deployment window). Client admins manage their own users through the auth service (`GET/POST/PATCH/DELETE /users`). Setup (projects, points, installs, CSV import) is ops-only; client_admin manages its own users.
 
 ### 4. Security hardening

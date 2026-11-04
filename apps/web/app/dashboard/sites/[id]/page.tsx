@@ -74,8 +74,8 @@ export default function SiteDetailsPage({ params }: { params: { id: string } }) 
         <div className="space-y-6 animate-in fade-in duration-500">
             {/* Header */}
             <div>
-                <Link href="/dashboard/sites" className="inline-flex items-center text-sm text-slate-400 hover:text-white mb-4 transition-colors">
-                    <ArrowLeft className="mr-2 h-4 w-4" /> Back to Sites
+                <Link href="/portal/projects" className="inline-flex items-center text-sm text-slate-400 hover:text-white mb-4 transition-colors">
+                    <ArrowLeft className="mr-2 h-4 w-4" /> Back to projects
                 </Link>
                 <div className="flex items-center justify-between flex-wrap gap-3">
                     <div>

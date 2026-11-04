@@ -15,6 +15,7 @@ import { ROLE_LABEL } from "@/lib/ops";
 import { PortalProjectDetail, PortalPoint, pointTree, defaultPoint, canEdit } from "@/lib/portal";
 import { BalanceView, Balance } from "@/components/fleet/BalanceView";
 import HealthCheckReport from "@/components/report/HealthCheckReport";
+import { SldView } from "@/components/sld/SldView";
 import { Panel, Loading, ErrorBox, Empty, Badge, Button, Field, inputClass, Table, Stat } from "@/components/ops/ui";
 
 const DAY = 86_400_000;
@@ -105,21 +106,14 @@ function PointList({ project }: { project: PortalProjectDetail }) {
 
 // ── Metering layout ─────────────────────────────────────────────────────────
 export function LayoutTab({ project }: { project: PortalProjectDetail }) {
-    const diagram = useQuery({ queryKey: ["diagram", project.id], queryFn: () => apiGet<{ has_pdf: boolean }>(`/ingestion/sites/${project.id}/diagram`) });
-    const openPdf = async () => {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/sites/${project.id}/diagram/pdf`, { credentials: "include" });
-        if (res.ok) window.open(URL.createObjectURL(await res.blob()), "_blank");
-    };
     return (
         <div className="space-y-4">
-            <Panel title="Metering layout" subtitle="Where each meter sits: the incomer at the top, sub-loads and sources under it, with live 1-minute values">
+            <Panel title="Measurement points" subtitle="The incomer at the top, sub-loads and sources under it, with live 1-minute values">
                 <PointList project={project} />
             </Panel>
-            {diagram.data?.has_pdf && (
-                <Panel title="Single-line diagram">
-                    <Button variant="secondary" onClick={openPdf}>Open the site's single-line diagram (PDF)</Button>
-                </Panel>
-            )}
+            <Panel title="Single-line diagram">
+                <SldView projectId={project.id} />
+            </Panel>
         </div>
     );
 }
