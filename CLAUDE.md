@@ -131,7 +131,7 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     minute for the first 15 min after an install.
   - New devices publish on `acuvim/{lower(code)}/telemetry` (= `mqtt_username`). Devices
     without a project still ingest; retired ones are dead-lettered.
-  - DB tests: `TEST_DATABASE_URL=... node --test services/ingestion-service/test/db/*.test.js`
+  - DB tests: `TEST_DATABASE_URL=... node --test --test-concurrency=1 services/ingestion-service/test/db/*.test.js`
     (CI runs them in the migrations job).
 - **Roles and scoping (Phase 7, `src/scope.ts`, migration `1793805838000_roles-review-reports.sql`)**:
   - Roles: `super_admin` and `engineer` (internal tenant, `tenants.kind = 'internal'`);
