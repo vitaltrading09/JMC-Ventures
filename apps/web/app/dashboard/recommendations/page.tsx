@@ -27,6 +27,8 @@ interface Recommendation {
     confidence: "HIGH" | "MEDIUM" | "LOW";
     standard_reference?: string;
     status: string;
+    /** Editorial state (Phase 7). Client roles only ever receive "published". */
+    review_status?: "draft" | "in_review" | "published" | "dismissed";
     created_at: string;
 }
 
@@ -106,7 +108,7 @@ export default function RecommendationsPage() {
             });
             const data = await res.json();
             if (!res.ok) { showToast(`Error: ${data.error}`); return; }
-            showToast(`✓ Generated ${data.generated} recommendation${data.generated !== 1 ? "s" : ""}`);
+            showToast(`✓ Generated ${data.generated} draft recommendation${data.generated !== 1 ? "s" : ""}: Grid-IQ reviews them before they appear`);
             await fetchData();
         } catch { showToast("Failed to generate recommendations"); }
         finally { setGenerating(null); }
@@ -121,7 +123,7 @@ export default function RecommendationsPage() {
             });
             const data = await res.json();
             if (!res.ok) { showToast(`Error: ${data.error}`); return; }
-            showToast(`✓ Generated ${data.generated} per-meter recommendation${data.generated !== 1 ? "s" : ""}`);
+            showToast(`✓ Generated ${data.generated} draft per-meter recommendation${data.generated !== 1 ? "s" : ""}: Grid-IQ reviews them before they appear`);
             await fetchData();
         } catch { showToast("Failed to generate per-meter recommendations"); }
         finally { setGenerating(null); }
@@ -326,6 +328,11 @@ export default function RecommendationsPage() {
                                         <span className={`text-xs px-2 py-0.5 rounded-full ${CONFIDENCE_COLOUR[rec.confidence]}`}>
                                             {rec.confidence} confidence
                                         </span>
+                                        {rec.review_status && rec.review_status !== "published" && (
+                                            <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                                                {rec.review_status === "in_review" ? "In review" : "Draft"}: not visible to the client
+                                            </span>
+                                        )}
                                         {rec.meter_id && rec.meter_name ? (
                                             <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1">
                                                 <Activity className="h-3 w-3" /> {rec.meter_name}

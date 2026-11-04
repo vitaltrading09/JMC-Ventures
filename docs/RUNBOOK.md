@@ -113,6 +113,27 @@ Until the ops console (Phase 8), the fleet is managed through the API as a `supe
 - Enter `installed_at` and `removed_at` as the times the box was actually connected and disconnected. Readings outside every deployment window still exist but belong to no project.
 - Meters added through the old Add Meter screen get a point (role incomer) and an open deployment automatically. Set the right role on the point with `PATCH /points/<id> {"role":"pv"}` where needed.
 
+## Users, roles and review
+**Roles.**
+- Grid-IQ staff are `super_admin` or `engineer`, in the internal tenant.
+- Client users are `client_admin` (can change things) or `client_viewer` (read only).
+
+**Create a user** as super_admin (`POST /api/auth/users {"email","password","tenant_id","role"}`). The role must match the tenant: internal roles only in the internal tenant.
+
+**Findings.**
+- AI recommendations are created as drafts. Clients see a finding only after you publish it:
+  - list: `GET /api/ingestion/review/recommendations?review_status=draft`
+  - publish: `PATCH /api/ingestion/recommendations/<id>/review {"review_status":"published","internal_notes":"..."}`
+- Add `"supersede_previous": true` to replace the client's earlier published set.
+- `internal_notes` are never shown to clients.
+
+**Reports.**
+- Create one with `POST /api/ingestion/reports {"project_id","period_start","period_end","title"}`, then `POST .../reports/<id>/approve` and `POST .../reports/<id>/publish`.
+- Share links only work for a published report. `.../withdraw` takes it back, and its links stop working at once (410).
+- A project with `live_data_visible = false` shows the client no live data until its first report is published.
+
+**Audit.** Publishing, approving, withdrawing, deployments and corrections are recorded in `audit_log` (who, when, before, after, reason).
+
 ## Archived meters and sites
 In the app, "delete" **archives**: the meter or site leaves the lists and stops ingesting (its messages are dead-lettered as unknown meter), while its readings, reports and alerts are kept.
 

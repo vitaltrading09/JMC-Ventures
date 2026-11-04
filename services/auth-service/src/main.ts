@@ -141,6 +141,17 @@ app.get('/verify', (req, res) => {
   }
 });
 
+// Roles (Phase 7). Old names are accepted and mapped.
+const INTERNAL_ROLES = ['super_admin', 'engineer'];
+const CLIENT_ROLES = ['client_admin', 'client_viewer'];
+const LEGACY_ROLES: Record<string, string> = { admin: 'client_admin', user: 'client_viewer', viewer: 'client_viewer' };
+/** A valid role for a new user (default client_viewer), or null. */
+export function userRole(v: unknown): string | null {
+  if (v === undefined || v === null || v === '') return 'client_viewer';
+  const r = LEGACY_ROLES[String(v)] ?? String(v);
+  return [...INTERNAL_ROLES, ...CLIENT_ROLES].includes(r) ? r : null;
+}
+
 // Middleware for Admin Routes — accepts HTTPOnly cookie OR Authorization: Bearer
 const requireSuperAdmin = (req: any, res: any, next: any) => {
   const cookieHeader = req.headers.cookie || '';
@@ -155,8 +166,9 @@ const requireSuperAdmin = (req: any, res: any, next: any) => {
 
   try {
     const decoded: any = jwt.verify(token, JWT_SECRET as string);
-    if (decoded.role !== 'super_admin' && decoded.role !== 'admin') {
-      // NOTE: For demo, allowing 'admin' (the seeded user) to act as super_admin for now
+    // Only the platform operator. (A demo shortcut once let a client 'admin'
+    // through here, which let any client admin create users in any tenant.)
+    if (decoded.role !== 'super_admin') {
       return res.status(403).json({ error: 'Forbidden: Super Admin required' });
     }
     req.user = decoded;
@@ -173,13 +185,13 @@ app.get('/tenants', requireSuperAdmin, async (req, res) => {
   try {
     const client = await pool.connect();
     const query = `
-      SELECT t.id, t.name, t.created_at,
+      SELECT t.id, t.name, t.kind, t.slug, t.created_at,
              COUNT(DISTINCT s.id) as site_count,
              COUNT(DISTINCT u.id) as user_count
       FROM tenants t
       LEFT JOIN sites s ON t.id = s.tenant_id
       LEFT JOIN users u ON t.id = u.tenant_id
-      GROUP BY t.id, t.name, t.created_at
+      GROUP BY t.id, t.name, t.kind, t.slug, t.created_at
       ORDER BY t.created_at DESC
     `;
     const result = await client.query(query);
@@ -223,14 +235,32 @@ app.post('/tenants', requireSuperAdmin, async (req: any, res) => {
 
 // Create a new User
 app.post('/users', requireSuperAdmin, async (req: any, res) => {
-  const { email, password, full_name, role = 'viewer', tenant_id } = req.body;
+  const { email, password, tenant_id } = req.body;
+  const role = userRole(req.body.role);
 
   if (!email || !password || !tenant_id) {
     return res.status(400).json({ error: 'Email, password, and tenant_id are required' });
   }
+  if (!role) {
+    return res.status(400).json({ error: `role must be one of ${[...INTERNAL_ROLES, ...CLIENT_ROLES].join(', ')}` });
+  }
 
   try {
     const client = await pool.connect();
+
+    // Internal roles belong to the internal tenant, client roles to a client tenant.
+    const tenant = await client.query('SELECT kind FROM tenants WHERE id = $1', [tenant_id]);
+    if (tenant.rows.length === 0) {
+      client.release();
+      return res.status(400).json({ error: 'tenant_id does not exist' });
+    }
+    const internalTenant = tenant.rows[0].kind === 'internal';
+    if (INTERNAL_ROLES.includes(role) !== internalTenant) {
+      client.release();
+      return res.status(400).json({ error: internalTenant
+        ? `${role} is a client role; this is the internal tenant (super_admin or engineer)`
+        : `${role} is an internal role; this is a client tenant (client_admin or client_viewer)` });
+    }
 
     // Check if user exists
     const existing = await client.query('SELECT id FROM users WHERE email = $1', [email]);
@@ -244,11 +274,12 @@ app.post('/users', requireSuperAdmin, async (req: any, res) => {
     const password_hash = await bcrypt.hash(password, saltRounds);
 
     const query = `
-      INSERT INTO users (email, password_hash, full_name, role, tenant_id)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id, email, full_name, role, tenant_id, created_at
+      -- (users has no full_name column; inserting one made this endpoint always fail)
+      INSERT INTO users (email, password_hash, role, tenant_id)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, email, role, tenant_id, created_at
     `;
-    const result = await client.query(query, [email, password_hash, full_name, role, tenant_id]);
+    const result = await client.query(query, [email, password_hash, role, tenant_id]);
 
     client.release();
     res.status(201).json(result.rows[0]);

@@ -21,6 +21,11 @@ import { periodEnergy, monthKey, loadEnergyHours, touBand, localDateHour, combin
 import { buildRenewalReview, runRenewalSweep } from './renewal';
 import { fleetRouter, extendFirstDeployment } from './fleet/routes';
 import { runCommissioning } from './fleet/commissioning';
+import {
+    buildScope, normaliseRole, viewerMayCall, tenantSql, telemetrySql, exclusiveDeviceSql, forClient, canWrite,
+    findSite, findMeter, findOwned, meterParam, siteParam, requireWrite,
+} from './scope';
+import { reviewRouter } from './review';
 import { randomBytes, createHash } from 'crypto';
 import {
     generateAndStoreSiteRecommendations,
@@ -169,10 +174,12 @@ function registerJobs(pool: Pool) {
     // a clock, so anything more frequent is wasted work. The sweep is idempotent
     // and catches up on missed milestones, so a restart or an outage cannot cause a
     // client's renewal to be skipped silently.
-    cron.schedule('0 6 * * *', async () => {
-        const n = await runRenewalSweep(pool);
-        if (n > 0) console.log(`[renewal] sweep produced ${n} review(s)`);
-    });
+    if (process.env.FEATURE_BROKER === 'true') {
+        cron.schedule('0 6 * * *', async () => {
+            const n = await runRenewalSweep(pool);
+            if (n > 0) console.log(`[renewal] sweep produced ${n} review(s)`);
+        });
+    }
 
     cron.schedule('*/30 * * * *', async () => {
         const client = await pool.connect();
@@ -342,7 +349,8 @@ import express from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 
-const app = express();
+// Exported for the cross-tenant route tests (test/db/scoping.test.js).
+export const app = express();
 const port = process.env.PORT || 3002;
 
 app.use(cors());
@@ -364,13 +372,24 @@ const authenticateToken = (req: any, res: any, next: any) => {
 
     jwt.verify(token, JWT_SECRET as string, (err: any, user: any) => {
         if (err) return res.sendStatus(403);
-        req.user = user;
+        // Roles renamed in Phase 7; older tokens carry the old names.
+        req.user = { ...user, role: normaliseRole(user?.role) };
+        // Central tenant scope (src/scope.ts): every route filters through it.
+        req.scope = buildScope(req.user, req);
+        if (req.scope.role === 'client_viewer' && !viewerMayCall(req.method, req.path)) {
+            return res.status(403).json({ error: 'Read-only role' });
+        }
         next();
     });
 };
 
+// The broker portfolio is kept but off unless FEATURE_BROKER=true.
+const BROKER_ENABLED = process.env.FEATURE_BROKER === 'true';
+
 // Fleet model API: projects, points, devices, deployments, /fleet (src/fleet/routes.ts).
 app.use(fleetRouter(pool, authenticateToken));
+// Review workflow and reports (src/review.ts).
+app.use(reviewRouter(pool, authenticateToken));
 
 // Deep health for an external uptime monitor (src/health.ts). Token header,
 // no JWT: the monitor is not a user. Disabled unless HEALTH_TOKEN is set.
@@ -423,18 +442,13 @@ app.get('/health', (req, res) => {
 // Secure endpoint: Get Sites (filtered by Tenant)
 app.get('/sites', authenticateToken, async (req: any, res) => {
     const client = await pool.connect();
-    const { tenantId, role } = req.user;
 
     try {
         // Archived sites are hidden unless ?archived=1 (admin restore view).
         const showArchived = req.query.archived === '1' || req.query.archived === 'true';
-        let query = `SELECT * FROM sites WHERE ${showArchived ? 'archived_at IS NOT NULL' : 'archived_at IS NULL'}`;
-        let params: any[] = [];
-
-        if (role !== 'super_admin') {
-            query += ` AND tenant_id = $1`;
-            params.push(tenantId);
-        }
+        const params: any[] = [];
+        let query = `SELECT * FROM sites WHERE ${showArchived ? 'archived_at IS NOT NULL' : 'archived_at IS NULL'}
+                     AND ${tenantSql(req.scope, 'tenant_id', params)}`;
 
         query += ` ORDER BY created_at DESC`;
 
@@ -449,15 +463,14 @@ app.get('/sites', authenticateToken, async (req: any, res) => {
 });
 
 // Secure endpoint: Create Site
-app.post('/sites', authenticateToken, async (req: any, res) => {
-    const client = await pool.connect();
-    const { tenantId, role } = req.user;
+app.post('/sites', authenticateToken, requireWrite, async (req: any, res) => {
     const { name, address, timezone } = req.body;
 
     if (!name) return res.status(400).json({ error: 'Site name is required' });
 
-    // For clients, force their tenantId. For super_admin, they could potentially pass a tenantId, but defaulting to their own for simplicity unless specified.
-    const targetTenantId = (role === 'super_admin' && req.body.tenant_id) ? req.body.tenant_id : tenantId;
+    // Clients always create in their own tenant; internal users may name one.
+    const targetTenantId = req.scope.filterTenantId ?? req.scope.tenantId;
+    const client = await pool.connect();
 
     try {
         const query = `
@@ -476,25 +489,14 @@ app.post('/sites', authenticateToken, async (req: any, res) => {
 });
 
 // Secure endpoint: Delete Site (Cascade deletes meters and readings)
-app.delete('/sites/:id', authenticateToken, async (req: any, res) => {
+app.delete('/sites/:id', authenticateToken, siteParam(pool, { write: true }), async (req: any, res) => {
     const client = await pool.connect();
-    const { tenantId, role } = req.user;
     const siteId = req.params.id;
 
     try {
         await client.query('BEGIN'); // Start transaction
 
-        // 1. Verify ownership
-        if (role !== 'super_admin') {
-            const checkQuery = `SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`;
-            const checkRes = await client.query(checkQuery, [siteId, tenantId]);
-            if (checkRes.rows.length === 0) {
-                await client.query('ROLLBACK');
-                return res.status(403).json({ error: 'Forbidden: Cannot archive this site' });
-            }
-        }
-
-        // 2. Archive, never delete: readings, reports and alerts are evidence.
+        // Archive, never delete: readings, reports and alerts are evidence.
         // The site and its meters leave the lists and stop ingesting; an admin
         // can restore them (POST /sites/:id/restore).
         const result = await client.query(
@@ -520,20 +522,15 @@ app.delete('/sites/:id', authenticateToken, async (req: any, res) => {
 });
 
 // Secure endpoint: Create Meter
-app.post('/meters', authenticateToken, async (req: any, res) => {
+app.post('/meters', authenticateToken, requireWrite, async (req: any, res) => {
     const client = await pool.connect();
-    const { tenantId, role } = req.user;
     const { site_id, name, serial_number, model } = req.body;
 
-    if (!site_id || !name) return res.status(400).json({ error: 'site_id and name are required' });
+    if (!site_id || !name) { client.release(); return res.status(400).json({ error: 'site_id and name are required' }); }
 
     try {
-        // First verify the site belongs to the user's tenant (unless super_admin)
-        if (role !== 'super_admin') {
-            const siteCheck = await client.query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [site_id, tenantId]);
-            if (siteCheck.rows.length === 0) {
-                return res.status(403).json({ error: 'Forbidden: Site does not belong to your tenant or does not exist.' });
-            }
+        if (!await findSite(client, req.scope, site_id)) {
+            return res.status(403).json({ error: 'Forbidden: Site does not belong to your tenant or does not exist.' });
         }
 
         const query = `
@@ -557,24 +554,24 @@ app.post('/meters', authenticateToken, async (req: any, res) => {
 // Secure endpoint: Get Meters (filtered by Tenant)
 app.get('/meters', authenticateToken, async (req: any, res) => {
     const client = await pool.connect();
-    const { tenantId, role } = req.user;
 
     try {
+        // Telemetry (the latest reading) only where the project shares live data.
         let query = `
-            SELECT m.*, 
-            (
-                SELECT row_to_json(r) 
+            SELECT m.*,
+            CASE WHEN ${telemetrySql(req.scope, 's')} THEN (
+                SELECT row_to_json(r)
                 FROM (
-                    SELECT * FROM meter_readings 
-                    WHERE meter_id = m.id 
-                    ORDER BY time DESC 
+                    SELECT * FROM meter_readings
+                    WHERE meter_id = m.id
+                    ORDER BY time DESC
                     LIMIT 1
                 ) r
-            ) as latest_reading
+            ) END as latest_reading
             FROM meters m
             JOIN sites s ON m.site_id = s.id
         `;
-        let params: any[] = [];
+        const params: any[] = [];
 
         // Tenant Isolation
         // Archived meters (or meters of an archived site) are hidden unless ?archived=1.
@@ -582,10 +579,7 @@ app.get('/meters', authenticateToken, async (req: any, res) => {
         query += showArchived
             ? ` WHERE (m.archived_at IS NOT NULL OR s.archived_at IS NOT NULL)`
             : ` WHERE m.archived_at IS NULL AND s.archived_at IS NULL`;
-        if (role !== 'super_admin') {
-            query += ` AND s.tenant_id = $1`;
-            params.push(tenantId);
-        }
+        query += ` AND ${tenantSql(req.scope, 's.tenant_id', params)} AND ${exclusiveDeviceSql(req.scope, 'm', params)}`;
 
         query += ` ORDER BY m.created_at ASC`;
 
@@ -600,16 +594,11 @@ app.get('/meters', authenticateToken, async (req: any, res) => {
 });
 
 // Secure endpoint: Get Site Settings
-app.get('/sites/:id/settings', authenticateToken, async (req: any, res) => {
+app.get('/sites/:id/settings', authenticateToken, siteParam(pool), async (req: any, res) => {
     const client = await pool.connect();
     const { id } = req.params;
-    const { tenantId, role } = req.user;
 
     try {
-        // Validate site ownership
-        const siteCheck = await client.query(`SELECT id FROM sites WHERE id = $1 ${role !== 'super_admin' ? 'AND tenant_id = $2' : ''}`, role !== 'super_admin' ? [id, tenantId] : [id]);
-        if (siteCheck.rows.length === 0) return res.status(403).json({ error: 'Site not found or access denied' });
-
         const result = await client.query(`SELECT * FROM site_settings WHERE site_id = $1`, [id]);
         res.json(result.rows[0] || {});
     } catch (err) {
@@ -620,10 +609,9 @@ app.get('/sites/:id/settings', authenticateToken, async (req: any, res) => {
 });
 
 // Secure endpoint: Update Site Settings (Upsert)
-app.post('/sites/:id/settings', authenticateToken, async (req: any, res) => {
+app.post('/sites/:id/settings', authenticateToken, siteParam(pool, { write: true }), async (req: any, res) => {
     const client = await pool.connect();
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const {
         tariff_peak, tariff_standard, tariff_offpeak,
         peak_times, standard_times, offpeak_times,
@@ -633,10 +621,6 @@ app.post('/sites/:id/settings', authenticateToken, async (req: any, res) => {
     } = req.body;
 
     try {
-        // Validate site ownership
-        const siteCheck = await client.query(`SELECT id FROM sites WHERE id = $1 ${role !== 'super_admin' ? 'AND tenant_id = $2' : ''}`, role !== 'super_admin' ? [id, tenantId] : [id]);
-        if (siteCheck.rows.length === 0) return res.status(403).json({ error: 'Site not found or access denied' });
-
         const query = `
             INSERT INTO site_settings (
                 site_id,
@@ -687,20 +671,18 @@ app.post('/sites/:id/settings', authenticateToken, async (req: any, res) => {
 // Secure endpoint: Get Active Alerts
 app.get('/alerts', authenticateToken, async (req: any, res) => {
     const client = await pool.connect();
-    const { tenantId, role } = req.user;
 
     try {
+        // Alerts are derived from telemetry: hidden with the project's live data.
+        const params: any[] = [];
         let query = `
-            SELECT a.*, m.name as meter_name 
+            SELECT a.*, m.name as meter_name
             FROM alerts a
             JOIN meters m ON a.meter_id = m.id
+            LEFT JOIN sites s ON m.site_id = s.id
+            WHERE ${tenantSql(req.scope, 'a.tenant_id', params)}
+              AND ${req.scope.isInternal ? 'TRUE' : telemetrySql(req.scope, 's')}
         `;
-        let params: any[] = [];
-
-        if (role !== 'super_admin') {
-            query += ` WHERE a.tenant_id = $1`;
-            params.push(tenantId);
-        }
 
         query += ` ORDER BY a.created_at DESC LIMIT 50`;
 
@@ -716,19 +698,11 @@ app.get('/alerts', authenticateToken, async (req: any, res) => {
 // Secure endpoint: Mark Alert as Read
 app.post('/alerts/:id/read', authenticateToken, async (req: any, res) => {
     const client = await pool.connect();
-    const { tenantId, role } = req.user;
     const { id } = req.params;
 
     try {
-        let query = `UPDATE alerts SET is_read = true WHERE id = $1`;
-        let params: any[] = [id];
-
-        if (role !== 'super_admin') {
-            query += ` AND tenant_id = $2`;
-            params.push(tenantId);
-        }
-
-        await client.query(query, params);
+        if (!await findOwned(client, req.scope, 'alerts', id)) return res.status(403).json({ error: 'Forbidden' });
+        await client.query(`UPDATE alerts SET is_read = true WHERE id = $1`, [id]);
         res.status(200).json({ success: true });
     } catch (err) {
         res.status(500).json({ error: 'Database error updating alert' });
@@ -740,8 +714,7 @@ app.post('/alerts/:id/read', authenticateToken, async (req: any, res) => {
 // Secure endpoint: Generate AI Context String (Tenant specific)
 app.get('/ai-context', authenticateToken, async (req: any, res) => {
     const client = await pool.connect();
-    const { tenantId, role } = req.user;
-    const effectiveTenantId = role !== 'super_admin' ? tenantId : null;
+    const sc = req.scope;
 
     try {
         // 1. Metering data with PF, THD, energy
@@ -762,10 +735,8 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
             JOIN sites s ON m.site_id = s.id
         `;
         const meterParams: any[] = [];
-        if (effectiveTenantId) {
-            meterQuery += ` WHERE s.tenant_id = $1`;
-            meterParams.push(effectiveTenantId);
-        }
+        meterQuery += ` WHERE ${tenantSql(sc, 's.tenant_id', meterParams)} AND ${telemetrySql(sc, 's')}
+                          AND ${exclusiveDeviceSql(sc, 'm', meterParams)}`;
         const meterResult = await client.query(meterQuery, meterParams);
 
         // 2. Active alerts (last 48h, unread)
@@ -776,9 +747,9 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
             AND created_at > NOW() - INTERVAL '48 hours'
         `;
         const alertParams: any[] = [];
-        if (effectiveTenantId) {
-            alertQuery += ` AND tenant_id = $1`;
-            alertParams.push(effectiveTenantId);
+        alertQuery += ` AND ${tenantSql(sc, 'tenant_id', alertParams)}`;
+        if (!sc.isInternal) {
+            alertQuery += ` AND meter_id IN (SELECT m.id FROM meters m JOIN sites s ON s.id = m.site_id WHERE ${telemetrySql(sc, 's')})`;
         }
         alertQuery += ` ORDER BY created_at DESC LIMIT 5`;
         const alertResult = await client.query(alertQuery, alertParams);
@@ -790,10 +761,7 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
             JOIN site_settings ss ON s.id = ss.site_id
         `;
         const settingsParams: any[] = [];
-        if (effectiveTenantId) {
-            settingsQuery += ` WHERE s.tenant_id = $1`;
-            settingsParams.push(effectiveTenantId);
-        }
+        settingsQuery += ` WHERE ${tenantSql(sc, 's.tenant_id', settingsParams)}`;
         const settingsResult = await client.query(settingsQuery, settingsParams);
         const settingsList = settingsResult.rows;
 
@@ -802,11 +770,8 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
         //    actual seconds to the next reading per meter, capped at 900s for gaps),
         //    so it matches the /monthly endpoint instead of assuming a fixed interval.
         const monthlyParams: any[] = [];
-        let tenantClause = '';
-        if (effectiveTenantId) {
-            tenantClause = ` AND s.tenant_id = $1`;
-            monthlyParams.push(effectiveTenantId);
-        }
+        const tenantClause = ` AND ${tenantSql(sc, 's.tenant_id', monthlyParams)} AND ${telemetrySql(sc, 's')}
+                               AND ${exclusiveDeviceSql(sc, 'm', monthlyParams)}`;
         // From the continuous aggregates. Billed demand: the 30-minute interval
         // averages in readings_30m (minute-weighted, ≥ 80 % of minutes covered),
         // averaged across meters per interval as before. Energy: 1-minute
@@ -912,11 +877,8 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
             // est_kwh_7d integrated time-weighted (see monthly aggregate above) so the
             // AI context's energy figures match the report/analytics numbers.
             const historyParams: any[] = [];
-            let historyTenant = '';
-            if (effectiveTenantId) {
-                historyTenant = ` AND s.tenant_id = $1`;
-                historyParams.push(effectiveTenantId);
-            }
+            const historyTenant = ` AND ${tenantSql(sc, 's.tenant_id', historyParams)} AND ${telemetrySql(sc, 's')}
+                                    AND ${exclusiveDeviceSql(sc, 'm', historyParams)}`;
             // From readings_1h: min/max are of the raw samples, averages are
             // sample-weighted; energy integrates the hourly average over the
             // minutes that carried data.
@@ -981,20 +943,10 @@ app.get('/ai-context', authenticateToken, async (req: any, res) => {
 });
 
 // Delete a meter (with tenant auth)
-app.delete('/meters/:id', authenticateToken, async (req: any, res) => {
+app.delete('/meters/:id', authenticateToken, meterParam(pool, { write: true }), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
-        if (role !== 'super_admin') {
-            const check = await client.query(
-                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id WHERE m.id = $1 AND s.tenant_id = $2`,
-                [id, tenantId]
-            );
-            if (check.rows.length === 0) {
-                return res.status(403).json({ error: 'Forbidden' });
-            }
-        }
         // Archive, never delete: the meter stops ingesting and leaves the lists;
         // its readings, reports and alerts are kept. An admin can restore it.
         const r = await client.query(
@@ -1009,19 +961,17 @@ app.delete('/meters/:id', authenticateToken, async (req: any, res) => {
     }
 });
 
-// Restore an archived meter or site (admins of the tenant, or super_admin).
-const canRestore = (role: string) => role === 'admin' || role === 'super_admin';
-
+// Restore an archived meter or site (client_admin of the tenant, or internal users).
 app.post('/meters/:id/restore', authenticateToken, async (req: any, res) => {
-    const { tenantId, role } = req.user;
-    if (!canRestore(role)) return res.status(403).json({ error: 'Only an admin can restore a meter' });
+    if (!canWrite(req.scope)) return res.status(403).json({ error: 'Only an admin can restore a meter' });
     try {
+        const params: any[] = [req.params.id];
         const r = await pool.query(`
             UPDATE meters m SET archived_at = NULL, is_active = true
             FROM sites s
             WHERE m.id = $1 AND m.site_id = s.id AND m.archived_at IS NOT NULL
-              AND s.archived_at IS NULL ${role === 'super_admin' ? '' : 'AND s.tenant_id = $2'}
-            RETURNING m.id`, role === 'super_admin' ? [req.params.id] : [req.params.id, tenantId]);
+              AND s.archived_at IS NULL AND ${tenantSql(req.scope, 's.tenant_id', params)}
+            RETURNING m.id`, params);
         if (r.rows.length === 0) return res.status(404).json({ error: 'No archived meter with that id (restore its site first if the site is archived)' });
         res.json({ success: true, message: 'Meter restored; it receives readings again.' });
     } catch (err) {
@@ -1031,14 +981,14 @@ app.post('/meters/:id/restore', authenticateToken, async (req: any, res) => {
 });
 
 app.post('/sites/:id/restore', authenticateToken, async (req: any, res) => {
-    const { tenantId, role } = req.user;
-    if (!canRestore(role)) return res.status(403).json({ error: 'Only an admin can restore a site' });
+    if (!canWrite(req.scope)) return res.status(403).json({ error: 'Only an admin can restore a site' });
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        const params: any[] = [req.params.id];
         const before = await client.query(
-            `SELECT archived_at FROM sites WHERE id = $1 AND archived_at IS NOT NULL ${role === 'super_admin' ? '' : 'AND tenant_id = $2'} FOR UPDATE`,
-            role === 'super_admin' ? [req.params.id] : [req.params.id, tenantId]);
+            `SELECT archived_at FROM sites WHERE id = $1 AND archived_at IS NOT NULL
+               AND ${tenantSql(req.scope, 'tenant_id', params)} FOR UPDATE`, params);
         if (before.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'No archived site with that id' });
@@ -1062,20 +1012,11 @@ app.post('/sites/:id/restore', authenticateToken, async (req: any, res) => {
 
 // Update meter load profile (what the meter actually measures —
 // powers the AI recommendations so it stops guessing what loads exist)
-app.patch('/meters/:id/profile', authenticateToken, async (req: any, res) => {
+app.patch('/meters/:id/profile', authenticateToken, meterParam(pool, { write: true }), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const { load_types, load_description, site_type, name } = req.body;
     const client = await pool.connect();
     try {
-        if (role !== 'super_admin') {
-            const check = await client.query(
-                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
-                 WHERE m.id = $1 AND s.tenant_id = $2`,
-                [id, tenantId]
-            );
-            if (check.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
-        }
         // Validate load_types: must be an array of strings if provided
         if (load_types !== undefined && load_types !== null) {
             if (!Array.isArray(load_types) || load_types.some(t => typeof t !== 'string')) {
@@ -1108,18 +1049,10 @@ app.patch('/meters/:id/profile', authenticateToken, async (req: any, res) => {
 });
 
 // Toggle meter active/paused state
-app.patch('/meters/:id/active', authenticateToken, async (req: any, res) => {
+app.patch('/meters/:id/active', authenticateToken, meterParam(pool, { write: true }), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
-        if (role !== 'super_admin') {
-            const check = await client.query(
-                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id WHERE m.id = $1 AND s.tenant_id = $2`,
-                [id, tenantId]
-            );
-            if (check.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
-        }
         const result = await client.query(
             `UPDATE meters SET is_active = NOT is_active WHERE id = $1 RETURNING id, name, is_active`,
             [id]
@@ -1147,27 +1080,15 @@ const upload = multer({ dest: UPLOAD_DIR });
 // Secure endpoint: Get Readings for a specific Meter (verified access).
 // When a date range is provided, server-side time_bucket aggregation keeps
 // chart payloads to ~300-700 points regardless of how long the window is.
-app.get('/meters/:id/readings', authenticateToken, async (req: any, res) => {
+app.get('/meters/:id/readings', authenticateToken, meterParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
     const limit = parseInt(String(req.query.limit || '500'));
     const from = req.query.from as string | undefined;
     const to = req.query.to as string | undefined;
     const raw = req.query.raw === '1' || req.query.raw === 'true';
-    const { tenantId, role } = req.user;
 
     const client = await pool.connect();
     try {
-        if (role !== 'super_admin') {
-            const authCheck = await client.query(`
-                SELECT m.id FROM meters m
-                JOIN sites s ON m.site_id = s.id
-                WHERE m.id = $1 AND s.tenant_id = $2
-            `, [id, tenantId]);
-            if (authCheck.rows.length === 0) {
-                client.release();
-                return res.status(403).json({ error: 'Forbidden' });
-            }
-        }
 
         // Bucketed path (typical chart use), unless the caller asked for raw rows.
         // About 300–700 points from the coarsest continuous aggregate that fits
@@ -1201,7 +1122,6 @@ app.get('/meters/:id/readings', authenticateToken, async (req: any, res) => {
 // ── Aggregate readings across ALL active meters for the tenant (overview chart) ─
 // GET /readings/aggregate?from=ISO  → returns per-bucket SITE TOTAL power
 app.get('/readings/aggregate', authenticateToken, async (req: any, res) => {
-    const { tenantId, role } = req.user;
     const from = req.query.from as string | undefined;
     const client = await pool.connect();
     try {
@@ -1210,11 +1130,8 @@ app.get('/readings/aggregate', authenticateToken, async (req: any, res) => {
         const plan     = planRead(fromDate, toDate);
 
         const params: any[] = [plan.bucket, fromDate];
-        let tenantFilter = '';
-        if (role !== 'super_admin') {
-            params.push(tenantId);
-            tenantFilter = `AND s.tenant_id = $${params.length}`;
-        }
+        const tenantFilter = `AND ${tenantSql(req.scope, 's.tenant_id', params)} AND ${telemetrySql(req.scope, 's')}
+                              AND ${exclusiveDeviceSql(req.scope, 'm', params)}`;
         // Per-meter average within each bucket, then SUM across meters →
         // gives true site-total power even if meters report at different rates.
         const result = await client.query(tenantPowerSql(plan.source, tenantFilter), params);
@@ -1232,26 +1149,9 @@ app.get('/readings/aggregate', authenticateToken, async (req: any, res) => {
 // Power Quality Health Check — NRS 048-2 compliance + equipment risk assessment.
 // Deterministic: every figure is measured or derived from a published standard.
 // ─────────────────────────────────────────────────────────────────────────────
-app.get('/meters/:id/compliance', authenticateToken, async (req: any, res) => {
+app.get('/meters/:id/compliance', authenticateToken, meterParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
     const days = Math.min(Math.max(parseInt(String(req.query.days || '7')), 1), 90);
-    const { tenantId, role } = req.user;
-
-    const client = await pool.connect();
-    try {
-        if (role !== 'super_admin') {
-            const authCheck = await client.query(`
-                SELECT m.id FROM meters m
-                JOIN sites s ON m.site_id = s.id
-                WHERE m.id = $1 AND s.tenant_id = $2
-            `, [id, tenantId]);
-            if (authCheck.rows.length === 0) {
-                return res.status(403).json({ error: 'Forbidden' });
-            }
-        }
-    } finally {
-        client.release();
-    }
 
     try {
         const report = await assessPowerQuality(pool, id, days);
@@ -1309,22 +1209,9 @@ app.get('/meters/:id/compliance', authenticateToken, async (req: any, res) => {
 
 // AI executive summary for an assessment — plain-language interpretation of the
 // measured findings. Cached against the latest snapshot.
-app.get('/meters/:id/compliance/summary', authenticateToken, async (req: any, res) => {
+app.get('/meters/:id/compliance/summary', authenticateToken, meterParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
     const days = Math.min(Math.max(parseInt(String(req.query.days || '7')), 1), 90);
-    const { tenantId, role } = req.user;
-
-    const client = await pool.connect();
-    try {
-        if (role !== 'super_admin') {
-            const authCheck = await client.query(
-                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
-                 WHERE m.id = $1 AND s.tenant_id = $2`, [id, tenantId]);
-            if (authCheck.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
-        }
-    } finally {
-        client.release();
-    }
 
     try {
         const report = await assessPowerQuality(pool, id, days);
@@ -1341,26 +1228,13 @@ app.get('/meters/:id/compliance/summary', authenticateToken, async (req: any, re
 });
 
 // Ask a question about one specific assessment — scoped to its measured findings.
-app.post('/meters/:id/compliance/ask', authenticateToken, async (req: any, res) => {
+app.post('/meters/:id/compliance/ask', authenticateToken, meterParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
     const days = Math.min(Math.max(parseInt(String(req.body?.days || '7')), 1), 90);
     const question = String(req.body?.question || '').slice(0, 1000).trim();
     const history = Array.isArray(req.body?.history) ? req.body.history.slice(-6) : [];
-    const { tenantId, role } = req.user;
 
     if (!question) return res.status(400).json({ error: 'Question required' });
-
-    const client = await pool.connect();
-    try {
-        if (role !== 'super_admin') {
-            const authCheck = await client.query(
-                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
-                 WHERE m.id = $1 AND s.tenant_id = $2`, [id, tenantId]);
-            if (authCheck.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
-        }
-    } finally {
-        client.release();
-    }
 
     try {
         const report = await assessPowerQuality(pool, id, days);
@@ -1374,22 +1248,9 @@ app.post('/meters/:id/compliance/ask', authenticateToken, async (req: any, res) 
 });
 
 // Degradation forecast — weekly trend regression and projected threshold crossing.
-app.get('/meters/:id/forecast', authenticateToken, async (req: any, res) => {
+app.get('/meters/:id/forecast', authenticateToken, meterParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
     const weeks = Math.min(Math.max(parseInt(String(req.query.weeks || '12')), 4), 52);
-    const { tenantId, role } = req.user;
-
-    const client = await pool.connect();
-    try {
-        if (role !== 'super_admin') {
-            const authCheck = await client.query(
-                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
-                 WHERE m.id = $1 AND s.tenant_id = $2`, [id, tenantId]);
-            if (authCheck.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
-        }
-    } finally {
-        client.release();
-    }
 
     try {
         const forecast = await forecastDegradation(pool, id, weeks);
@@ -1402,19 +1263,12 @@ app.get('/meters/:id/forecast', authenticateToken, async (req: any, res) => {
 });
 
 // Assessment history for a meter — powers long-term trend lines.
-app.get('/meters/:id/compliance/history', authenticateToken, async (req: any, res) => {
+app.get('/meters/:id/compliance/history', authenticateToken, meterParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
     const limit = Math.min(parseInt(String(req.query.limit || '52')), 200);
-    const { tenantId, role } = req.user;
 
     const client = await pool.connect();
     try {
-        if (role !== 'super_admin') {
-            const authCheck = await client.query(
-                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
-                 WHERE m.id = $1 AND s.tenant_id = $2`, [id, tenantId]);
-            if (authCheck.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
-        }
         const result = await client.query(`
             SELECT assessed_at, verdict, supply_score, install_score, readings,
                    jsonb_array_length(COALESCE(risks,'[]'::jsonb)) AS risk_count
@@ -1438,9 +1292,8 @@ app.get('/meters/:id/compliance/history', authenticateToken, async (req: any, re
 // ─────────────────────────────────────────────────────────────────────────────
 // ── Maximum demand, on the basis the utility actually bills ──────────────────
 // GET /meters/:id/demand?days=30[&interval=30]
-app.get('/meters/:id/demand', authenticateToken, async (req: any, res) => {
+app.get('/meters/:id/demand', authenticateToken, meterParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const days = Math.min(Math.max(parseInt(String(req.query.days || '30')), 1), 365);
 
     const client = await pool.connect();
@@ -1451,8 +1304,8 @@ app.get('/meters/:id/demand', authenticateToken, async (req: any, res) => {
             FROM meters m
             JOIN sites s ON m.site_id = s.id
             LEFT JOIN site_settings ss ON s.id = ss.site_id
-            WHERE m.id = $1 ${role === 'super_admin' ? '' : 'AND s.tenant_id = $2'}
-        `, role === 'super_admin' ? [id] : [id, tenantId]);
+            WHERE m.id = $1
+        `, [id]);
 
         if (own.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
 
@@ -1508,8 +1361,12 @@ async function grantedTenantIds(client: any, user: any): Promise<string[]> {
     return q.rows.map((r: any) => r.tenant_id);
 }
 
-/** Brokers only. super_admin is the platform operator, not a broker. */
+/** Brokers only. super_admin is the platform operator, not a broker. Off unless FEATURE_BROKER. */
 function requireBroker(req: any, res: any): boolean {
+    if (!BROKER_ENABLED) {
+        res.status(404).json({ error: 'Not found' });
+        return false;
+    }
     if (req.user?.role !== 'broker') {
         res.status(403).json({ error: 'Forbidden' });
         return false;
@@ -1717,6 +1574,7 @@ app.get('/broker/clients/:tenantId/renewal-review', authenticateToken, async (re
 
 // ── Grant administration (platform operator only) ────────────────────────────
 app.get('/admin/broker-access', authenticateToken, async (req: any, res) => {
+    if (!BROKER_ENABLED) return res.status(404).json({ error: 'Not found' });
     if (req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Forbidden' });
     const client = await pool.connect();
     try {
@@ -1739,6 +1597,7 @@ app.get('/admin/broker-access', authenticateToken, async (req: any, res) => {
 });
 
 app.post('/admin/broker-access', authenticateToken, async (req: any, res) => {
+    if (!BROKER_ENABLED) return res.status(404).json({ error: 'Not found' });
     if (req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Forbidden' });
     const { broker_user_id, tenant_id, label } = req.body || {};
     if (!broker_user_id || !tenant_id) {
@@ -1775,6 +1634,7 @@ app.post('/admin/broker-access', authenticateToken, async (req: any, res) => {
 });
 
 app.delete('/admin/broker-access/:id', authenticateToken, async (req: any, res) => {
+    if (!BROKER_ENABLED) return res.status(404).json({ error: 'Not found' });
     if (req.user?.role !== 'super_admin') return res.status(403).json({ error: 'Forbidden' });
     const client = await pool.connect();
     try {
@@ -1811,38 +1671,28 @@ app.delete('/admin/broker-access/:id', authenticateToken, async (req: any, res) 
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
-/** Confirm the caller's tenant owns this meter. Returns site_id, or null. */
-async function meterOwnedBy(
-    meterId: string, tenantId: string, role: string
-): Promise<{ site_id: string; tenant_id: string } | null> {
-    const client = await pool.connect();
-    try {
-        const q = role === 'super_admin'
-            ? await client.query(
-                `SELECT m.site_id, s.tenant_id FROM meters m
-                 JOIN sites s ON m.site_id = s.id WHERE m.id = $1`, [meterId])
-            : await client.query(
-                `SELECT m.site_id, s.tenant_id FROM meters m
-                 JOIN sites s ON m.site_id = s.id
-                 WHERE m.id = $1 AND s.tenant_id = $2`, [meterId, tenantId]);
-        return q.rows[0] ?? null;
-    } finally {
-        client.release();
-    }
-}
-
-// Issue a share link. The raw token is returned once and never stored.
-app.post('/meters/:id/shares', authenticateToken, async (req: any, res) => {
+// Issue a share link for a PUBLISHED report of this meter's project (Phase 7:
+// unreviewed content never leaves through a link). The raw token is returned
+// once and never stored.
+app.post('/meters/:id/shares', authenticateToken, meterParam(pool, { write: true }), async (req: any, res) => {
     const { id } = req.params;
     // JWT signs this as `userId`, not `id` — reading `id` left created_by null.
-    const { tenantId, role, userId } = req.user;
+    const { userId } = req.user;
 
     const daysValid  = Math.min(Math.max(parseInt(String(req.body?.days_valid  ?? 30)), 1), 365);
-    const periodDays = Math.min(Math.max(parseInt(String(req.body?.period_days ?? 7)),  1), 90);
     const label      = String(req.body?.label ?? '').slice(0, 200).trim() || null;
+    const owned = req.meter;
 
-    const owned = await meterOwnedBy(id, tenantId, role);
-    if (!owned) return res.status(403).json({ error: 'Forbidden' });
+    const reportId = String(req.body?.report_id ?? '');
+    const published = /^[0-9a-f-]{36}$/i.test(reportId)
+        ? (await pool.query(
+            `SELECT id, period_start, period_end FROM reports WHERE id = $1 AND project_id = $2 AND status = 'published'`,
+            [reportId, owned.site_id])).rows[0]
+        : null;
+    if (!published) {
+        return res.status(400).json({ error: 'report_id must be a published report of this meter\'s project. Share links only carry reviewed reports.' });
+    }
+    const periodDays = Math.max(1, Math.ceil((new Date(published.period_end).getTime() - new Date(published.period_start).getTime()) / 86_400_000));
 
     const token = randomBytes(32).toString('base64url');
 
@@ -1850,10 +1700,10 @@ app.post('/meters/:id/shares', authenticateToken, async (req: any, res) => {
     try {
         const result = await client.query(`
             INSERT INTO report_shares
-                (tenant_id, site_id, meter_id, token_hash, label, period_days, expires_at, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, NOW() + ($7 || ' days')::INTERVAL, $8)
+                (tenant_id, site_id, meter_id, token_hash, label, period_days, expires_at, created_by, report_id)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW() + ($7 || ' days')::INTERVAL, $8, $9)
             RETURNING id, expires_at, created_at
-        `, [owned.tenant_id, owned.site_id, id, sha256(token), label, periodDays, daysValid, userId ?? null]);
+        `, [owned.tenant_id, owned.site_id, id, sha256(token), label, periodDays, daysValid, userId ?? null, published.id]);
 
         const row = result.rows[0];
         res.status(201).json({
@@ -1864,6 +1714,7 @@ app.post('/meters/:id/shares', authenticateToken, async (req: any, res) => {
             created_at: row.created_at,
             label,
             period_days: periodDays,
+            report_id: published.id,
         });
     } catch (err) {
         console.error('Share creation error:', err);
@@ -1874,17 +1725,13 @@ app.post('/meters/:id/shares', authenticateToken, async (req: any, res) => {
 });
 
 // List share links for a meter. Never returns tokens — they are unrecoverable.
-app.get('/meters/:id/shares', authenticateToken, async (req: any, res) => {
+app.get('/meters/:id/shares', authenticateToken, meterParam(pool), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
-
-    const owned = await meterOwnedBy(id, tenantId, role);
-    if (!owned) return res.status(403).json({ error: 'Forbidden' });
 
     const client = await pool.connect();
     try {
         const result = await client.query(`
-            SELECT id, label, period_days, expires_at, revoked_at,
+            SELECT id, label, period_days, expires_at, revoked_at, report_id,
                    view_count, last_viewed_at, created_at,
                    (revoked_at IS NULL AND expires_at > NOW()) AS is_live
             FROM report_shares
@@ -1902,20 +1749,14 @@ app.get('/meters/:id/shares', authenticateToken, async (req: any, res) => {
 });
 
 // Revoke a share link immediately.
-app.delete('/shares/:shareId', authenticateToken, async (req: any, res) => {
+app.delete('/shares/:shareId', authenticateToken, requireWrite, async (req: any, res) => {
     const { shareId } = req.params;
-    const { tenantId, role } = req.user;
 
     const client = await pool.connect();
     try {
-        const result = role === 'super_admin'
-            ? await client.query(
-                `UPDATE report_shares SET revoked_at = NOW()
-                 WHERE id = $1 AND revoked_at IS NULL RETURNING id`, [shareId])
-            : await client.query(
-                `UPDATE report_shares SET revoked_at = NOW()
-                 WHERE id = $1 AND tenant_id = $2 AND revoked_at IS NULL RETURNING id`,
-                [shareId, tenantId]);
+        if (!await findOwned(client, req.scope, 'report_shares', shareId)) return res.status(404).json({ error: 'Not found' });
+        const result = await client.query(
+            `UPDATE report_shares SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL RETURNING id`, [shareId]);
 
         if (result.rows.length === 0) return res.status(404).json({ error: 'Not found' });
         res.json({ revoked: true });
@@ -1968,8 +1809,10 @@ app.get('/public/report/:token', async (req: any, res) => {
     try {
         const q = await client.query(`
             SELECT s.id, s.meter_id, s.period_days, s.expires_at, s.revoked_at,
+                   r.status AS report_status, r.period_start, r.period_end,
                    t.brand_name, t.brand_logo_url, t.brand_footer
             FROM report_shares s
+            LEFT JOIN reports r ON r.id = s.report_id
             LEFT JOIN tenants t ON s.tenant_id = t.id
             WHERE s.token_hash = $1
         `, [sha256(token)]);
@@ -1986,9 +1829,12 @@ app.get('/public/report/:token', async (req: any, res) => {
     if (new Date(share.expires_at) < new Date()) {
         return res.status(410).json({ error: 'expired', expires_at: share.expires_at });
     }
+    // Phase 7: a link serves only a report an internal user has published.
+    if (share.report_status !== 'published') return res.status(410).json({ error: 'not_published' });
 
     try {
-        const report = await assessPowerQuality(pool, share.meter_id, share.period_days);
+        // The published report's own period, not "the last N days".
+        const report = await assessPowerQuality(pool, share.meter_id, share.period_days, new Date(share.period_end));
         if (!report) return res.status(404).json({ error: 'not_found' });
 
         let risk_profile = null;
@@ -2039,14 +1885,11 @@ app.get('/public/report/:token', async (req: any, res) => {
 });
 
 app.get('/value-ledger', authenticateToken, async (req: any, res) => {
-    const { tenantId, role } = req.user;
-    const effectiveTenantId = role === 'super_admin' ? (req.query.tenant_id || null) : tenantId;
-
+    const sc = req.scope;
     const client = await pool.connect();
     try {
         const params: any[] = [];
-        let where = '';
-        if (effectiveTenantId) { where = 'WHERE s.tenant_id = $1'; params.push(effectiveTenantId); }
+        const where = `WHERE ${tenantSql(sc, 's.tenant_id', params)} AND ${telemetrySql(sc, 's')}`;
 
         // Monitoring effort: how much data has actually been examined.
         // From readings_1d (n = raw readings per day): a COUNT(*) over every raw
@@ -2090,7 +1933,7 @@ app.get('/value-ledger', authenticateToken, async (req: any, res) => {
             SELECT COUNT(*)::int AS total,
                    COUNT(*) FILTER (WHERE severity IN ('CRITICAL','HIGH'))::int AS serious
             FROM alerts a
-            ${effectiveTenantId ? 'WHERE a.tenant_id = $1' : ''}
+            WHERE ${tenantSql(sc, 'a.tenant_id', params)}
         `, params);
 
         const assessments = await client.query(`
@@ -2132,7 +1975,7 @@ app.get('/branding', authenticateToken, async (req: any, res) => {
     }
 });
 
-app.put('/branding', authenticateToken, async (req: any, res) => {
+app.put('/branding', authenticateToken, requireWrite, async (req: any, res) => {
     const { tenantId } = req.user;
     const { brand_name, brand_logo_url, brand_footer } = req.body ?? {};
     const clean = (v: any) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 512) : null);
@@ -2153,24 +1996,12 @@ app.put('/branding', authenticateToken, async (req: any, res) => {
 });
 
 // Monthly consumption aggregation endpoint
-app.get('/meters/:id/monthly', authenticateToken, async (req: any, res) => {
+app.get('/meters/:id/monthly', authenticateToken, meterParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
     const months = Math.min(parseInt(String(req.query.months || '6')), 24);
-    const { tenantId, role } = req.user;
 
     const client = await pool.connect();
     try {
-        if (role !== 'super_admin') {
-            const authCheck = await client.query(`
-                SELECT m.id FROM meters m
-                JOIN sites s ON m.site_id = s.id
-                WHERE m.id = $1 AND s.tenant_id = $2
-            `, [id, tenantId]);
-            if (authCheck.rows.length === 0) {
-                client.release();
-                return res.status(403).json({ error: 'Forbidden' });
-            }
-        }
 
         // Energy per month from the import register (deltas per hour, summed;
         // a negative delta is a register reset and is never summed through).
@@ -2209,16 +2040,13 @@ app.get('/meters/:id/monthly', authenticateToken, async (req: any, res) => {
 // GET /meters/:id/energy/tou?days=7
 // From the import register (power-integration fallback where the meter has no
 // register), the same source as /monthly, so every kWh figure agrees.
-app.get('/meters/:id/energy/tou', authenticateToken, async (req: any, res) => {
+app.get('/meters/:id/energy/tou', authenticateToken, meterParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
     const days = Math.min(Math.max(parseInt(String(req.query.days || '7')), 1), 31);
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
         const own = await client.query(`
-            SELECT s.timezone FROM meters m JOIN sites s ON m.site_id = s.id
-            WHERE m.id = $1 ${role === 'super_admin' ? '' : 'AND s.tenant_id = $2'}`,
-            role === 'super_admin' ? [id] : [id, tenantId]);
+            SELECT s.timezone FROM meters m JOIN sites s ON m.site_id = s.id WHERE m.id = $1`, [id]);
         if (own.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
         // sites.timezone defaults to 'UTC' in the schema; the tariff bands are
         // South African local time unless a site says otherwise.
@@ -2342,19 +2170,12 @@ app.post('/upload', authenticateToken, upload.single('file') as any, async (req:
     const meterId = req.body.meter_id;
     if (!meterId) { fs.unlinkSync(req.file.path); return res.status(400).json({ error: 'meter_id is required' }); }
 
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
 
     try {
-        if (role !== 'super_admin') {
-            const authCheck = await client.query(`
-                SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
-                WHERE m.id = $1 AND s.tenant_id = $2
-            `, [meterId, tenantId]);
-            if (authCheck.rows.length === 0) {
-                fs.unlinkSync(req.file.path); client.release();
-                return res.status(403).json({ error: 'Forbidden' });
-            }
+        if (!canWrite(req.scope) || !await findMeter(client, req.scope, meterId)) {
+            fs.unlinkSync(req.file.path); client.release();
+            return res.status(403).json({ error: 'Forbidden' });
         }
 
         const results: any[] = [];
@@ -2453,15 +2274,10 @@ app.post('/upload', authenticateToken, upload.single('file') as any, async (req:
 // ── Energy Score endpoints ────────────────────────────────────────────────────
 
 // GET /sites/:id/score — latest stored energy score for a site
-app.get('/sites/:id/score', authenticateToken, async (req: any, res) => {
+app.get('/sites/:id/score', authenticateToken, siteParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
-        if (role !== 'super_admin') {
-            const check = await client.query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
-            if (check.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
-        }
         const score = await getLatestSiteScore(pool, id);
         if (!score) return res.json({ score: null, message: 'Insufficient data — need at least 10 readings' });
         res.json(score);
@@ -2473,15 +2289,10 @@ app.get('/sites/:id/score', authenticateToken, async (req: any, res) => {
 });
 
 // POST /sites/:id/score/calculate — force recalculate score now
-app.post('/sites/:id/score/calculate', authenticateToken, async (req: any, res) => {
+app.post('/sites/:id/score/calculate', authenticateToken, siteParam(pool, { telemetry: true }), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
-        if (role !== 'super_admin') {
-            const check = await client.query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
-            if (check.rows.length === 0) { client.release(); return res.status(403).json({ error: 'Forbidden' }); }
-        }
         client.release();
         const result = await computeAndStoreSiteScore(pool, id);
         if (!result) return res.json({ score: null, message: 'Insufficient data' });
@@ -2494,7 +2305,6 @@ app.post('/sites/:id/score/calculate', authenticateToken, async (req: any, res) 
 
 // GET /sites/scores — latest score for every site in the tenant
 app.get('/sites/scores', authenticateToken, async (req: any, res) => {
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
         let query = `
@@ -2509,7 +2319,8 @@ app.get('/sites/scores', authenticateToken, async (req: any, res) => {
             ) es ON true
         `;
         const params: any[] = [];
-        if (role !== 'super_admin') { query += ` WHERE s.tenant_id = $1`; params.push(tenantId); }
+        // A score is derived from telemetry: not for projects that hide live data.
+        query += ` WHERE ${tenantSql(req.scope, 's.tenant_id', params)} AND ${telemetrySql(req.scope, 's')}`;
         query += ` ORDER BY s.created_at ASC`;
         const result = await client.query(query, params);
         res.json(result.rows);
@@ -2523,48 +2334,30 @@ app.get('/sites/scores', authenticateToken, async (req: any, res) => {
 // ── Recommendation endpoints ──────────────────────────────────────────────────
 
 // GET /sites/:id/recommendations — active recommendations for a site
-app.get('/sites/:id/recommendations', authenticateToken, async (req: any, res) => {
-    const { id } = req.params;
-    const { tenantId, role } = req.user;
-    const client = await pool.connect();
+app.get('/sites/:id/recommendations', authenticateToken, siteParam(pool), async (req: any, res) => {
     try {
-        if (role !== 'super_admin') {
-            const check = await client.query(`SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
-            if (check.rows.length === 0) { client.release(); return res.status(403).json({ error: 'Forbidden' }); }
-        }
-        client.release();
-        const recs = await getSiteRecommendations(pool, id);
-        res.json(recs);
+        const recs = await getSiteRecommendations(pool, req.params.id, req.scope.isInternal);
+        res.json(recs.map((r) => forClient(req.scope, r)));
     } catch (err) {
-        client.release();
         res.status(500).json({ error: 'Error fetching recommendations' });
     }
 });
 
 // GET /recommendations — all recommendations for the tenant
 app.get('/recommendations', authenticateToken, async (req: any, res) => {
-    const { tenantId, role } = req.user;
     try {
-        const recs = await getTenantRecommendations(pool, role === 'super_admin' ? null : tenantId);
-        res.json(recs);
+        const recs = await getTenantRecommendations(pool, req.scope.filterTenantId, req.scope.isInternal);
+        res.json(recs.map((r) => forClient(req.scope, r)));
     } catch (err) {
         res.status(500).json({ error: 'Error fetching recommendations' });
     }
 });
 
 // POST /sites/:id/recommendations/generate — site-wide AI analysis
-app.post('/sites/:id/recommendations/generate', authenticateToken, async (req: any, res) => {
+app.post('/sites/:id/recommendations/generate', authenticateToken, siteParam(pool, { write: true }), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
-    const client = await pool.connect();
     try {
-        const siteCheck = await client.query(
-            `SELECT id, name, address, tenant_id FROM sites WHERE id = $1 ${role !== 'super_admin' ? 'AND tenant_id = $2' : ''}`,
-            role !== 'super_admin' ? [id, tenantId] : [id]
-        );
-        if (siteCheck.rows.length === 0) { client.release(); return res.status(403).json({ error: 'Forbidden' }); }
-        const site = siteCheck.rows[0];
-        client.release();
+        const site = req.site;
 
         // Compute fresh score first
         const score = await computeAndStoreSiteScore(pool, id);
@@ -2573,7 +2366,9 @@ app.post('/sites/:id/recommendations/generate', authenticateToken, async (req: a
         const recs = await generateAndStoreSiteRecommendations(
             pool, id, site.tenant_id, score, site.name, site.address || ''
         );
-        res.json({ generated: recs.length, recommendations: recs });
+        // Drafts: clients see them once an internal user has published them.
+        res.json({ generated: recs.length, review_status: 'draft',
+                   recommendations: req.scope.isInternal ? recs : [] });
     } catch (err: any) {
         console.error('[API] Recommendation generation error:', err);
         res.status(500).json({ error: err.message || 'Failed to generate recommendations' });
@@ -2581,43 +2376,19 @@ app.post('/sites/:id/recommendations/generate', authenticateToken, async (req: a
 });
 
 // GET /meters/:id/recommendations — active recommendations for a single meter
-app.get('/meters/:id/recommendations', authenticateToken, async (req: any, res) => {
-    const { id } = req.params;
-    const { tenantId, role } = req.user;
-    const client = await pool.connect();
+app.get('/meters/:id/recommendations', authenticateToken, meterParam(pool), async (req: any, res) => {
     try {
-        if (role !== 'super_admin') {
-            const check = await client.query(
-                `SELECT m.id FROM meters m JOIN sites s ON m.site_id = s.id
-                 WHERE m.id = $1 AND s.tenant_id = $2`,
-                [id, tenantId]
-            );
-            if (check.rows.length === 0) { client.release(); return res.status(403).json({ error: 'Forbidden' }); }
-        }
-        client.release();
-        const recs = await getMeterRecommendations(pool, id);
-        res.json(recs);
+        const recs = await getMeterRecommendations(pool, req.params.id, req.scope.isInternal);
+        res.json(recs.map((r) => forClient(req.scope, r)));
     } catch (err) {
-        client.release();
         res.status(500).json({ error: 'Error fetching meter recommendations' });
     }
 });
 
 // POST /meters/:id/recommendations/generate — AI analysis scoped to one meter
-app.post('/meters/:id/recommendations/generate', authenticateToken, async (req: any, res) => {
-    const { id } = req.params;
-    const { tenantId, role } = req.user;
-    const client = await pool.connect();
+app.post('/meters/:id/recommendations/generate', authenticateToken, meterParam(pool, { write: true }), async (req: any, res) => {
     try {
-        const meterCheck = await client.query(
-            `SELECT m.id, m.name, m.site_id, s.tenant_id, s.name as site_name, s.address as site_address
-             FROM meters m JOIN sites s ON m.site_id = s.id
-             WHERE m.id = $1 ${role !== 'super_admin' ? 'AND s.tenant_id = $2' : ''}`,
-            role !== 'super_admin' ? [id, tenantId] : [id]
-        );
-        if (meterCheck.rows.length === 0) { client.release(); return res.status(403).json({ error: 'Forbidden' }); }
-        const meter = meterCheck.rows[0];
-        client.release();
+        const meter = req.meter;
 
         // Compute fresh score for this meter only (not persisted to energy_scores).
         const score = await computeAndStoreSiteScore(pool, meter.site_id, meter.id);
@@ -2628,7 +2399,8 @@ app.post('/meters/:id/recommendations/generate', authenticateToken, async (req: 
             meter.site_name, meter.site_address || '',
             meter.id, meter.name
         );
-        res.json({ generated: recs.length, recommendations: recs, meter: { id: meter.id, name: meter.name } });
+        res.json({ generated: recs.length, review_status: 'draft',
+                   recommendations: req.scope.isInternal ? recs : [], meter: { id: meter.id, name: meter.name } });
     } catch (err: any) {
         console.error('[API] Per-meter recommendation generation error:', err);
         res.status(500).json({ error: err.message || 'Failed to generate per-meter recommendations' });
@@ -2638,17 +2410,12 @@ app.post('/meters/:id/recommendations/generate', authenticateToken, async (req: 
 // POST /recommendations/:id/notify — client clicks "Notify Team" → creates a lead
 app.post('/recommendations/:id/notify', authenticateToken, async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
-        // Verify the recommendation belongs to this tenant
-        const recCheck = await client.query(
-            `SELECT r.id, r.site_id, r.tenant_id FROM recommendations r
-             WHERE r.id = $1 ${role !== 'super_admin' ? 'AND r.tenant_id = $2' : ''}`,
-            role !== 'super_admin' ? [id, tenantId] : [id]
-        );
-        if (recCheck.rows.length === 0) return res.status(403).json({ error: 'Forbidden' });
-        const rec = recCheck.rows[0];
+        // The recommendation belongs to this tenant and, for a client, is published.
+        const rec = await findOwned(client, req.scope, 'recommendations', id,
+            req.scope.isInternal ? 'TRUE' : "x.review_status = 'published'");
+        if (!rec) return res.status(403).json({ error: 'Forbidden' });
 
         // Prevent duplicate active leads for the same recommendation
         const existing = await client.query(
@@ -2678,7 +2445,6 @@ app.post('/recommendations/:id/notify', authenticateToken, async (req: any, res)
 
 // GET /leads — all leads (super_admin = all tenants, admin = own tenant)
 app.get('/leads', authenticateToken, async (req: any, res) => {
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
         let query = `
@@ -2691,7 +2457,7 @@ app.get('/leads', authenticateToken, async (req: any, res) => {
             LEFT JOIN recommendations r ON l.recommendation_id = r.id
         `;
         const params: any[] = [];
-        if (role !== 'super_admin') { query += ` WHERE l.tenant_id = $1`; params.push(tenantId); }
+        query += ` WHERE ${tenantSql(req.scope, 'l.tenant_id', params)}`;
         query += ` ORDER BY l.created_at DESC LIMIT 100`;
         const result = await client.query(query, params);
         res.json(result.rows);
@@ -2703,18 +2469,17 @@ app.get('/leads', authenticateToken, async (req: any, res) => {
 });
 
 // PATCH /leads/:id — update lead status (NEW → IN_REVIEW → QUOTED → WON/LOST)
-app.patch('/leads/:id', authenticateToken, async (req: any, res) => {
+app.patch('/leads/:id', authenticateToken, requireWrite, async (req: any, res) => {
     const { id } = req.params;
     const { status, notes } = req.body;
-    const { tenantId, role } = req.user;
     const validStatuses = ['NEW', 'IN_REVIEW', 'QUOTED', 'WON', 'LOST'];
     if (!validStatuses.includes(status)) return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
 
     const client = await pool.connect();
     try {
-        let query = `UPDATE leads SET status = $1, notes = COALESCE($2, notes), updated_at = NOW() WHERE id = $3`;
         const params: any[] = [status, notes ?? null, id];
-        if (role !== 'super_admin') { query += ` AND tenant_id = $4`; params.push(tenantId); }
+        let query = `UPDATE leads SET status = $1, notes = COALESCE($2, notes), updated_at = NOW()
+                     WHERE id = $3 AND ${tenantSql(req.scope, 'tenant_id', params)}`;
         query += ` RETURNING *`;
         const result = await client.query(query, params);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Lead not found or access denied' });
@@ -2748,24 +2513,12 @@ const sldUpload = multer({
     limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB ceiling — SLDs are usually <5 MB
 });
 
-async function assertSiteAccess(client: any, siteId: string, tenantId: string, role: string) {
-    if (role === 'super_admin') return true;
-    const check = await client.query(
-        `SELECT id FROM sites WHERE id = $1 AND tenant_id = $2`,
-        [siteId, tenantId]
-    );
-    return check.rows.length > 0;
-}
 
 // GET diagram (layout + has-PDF flag)
-app.get('/sites/:id/diagram', authenticateToken, async (req: any, res) => {
+app.get('/sites/:id/diagram', authenticateToken, siteParam(pool), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
-        if (!await assertSiteAccess(client, id, tenantId, role)) {
-            return res.status(403).json({ error: 'Forbidden' });
-        }
         const result = await client.query(
             `SELECT layout, background_pdf_path, background_width, background_height, updated_at
              FROM site_diagrams WHERE site_id = $1`,
@@ -2796,18 +2549,14 @@ app.get('/sites/:id/diagram', authenticateToken, async (req: any, res) => {
 });
 
 // PUT diagram layout
-app.put('/sites/:id/diagram', authenticateToken, async (req: any, res) => {
+app.put('/sites/:id/diagram', authenticateToken, siteParam(pool, { write: true }), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const { layout, background_width, background_height } = req.body;
     if (!layout || typeof layout !== 'object' || !Array.isArray(layout.nodes)) {
         return res.status(400).json({ error: 'layout must be { nodes: [], edges: [] }' });
     }
     const client = await pool.connect();
     try {
-        if (!await assertSiteAccess(client, id, tenantId, role)) {
-            return res.status(403).json({ error: 'Forbidden' });
-        }
         await client.query(`
             INSERT INTO site_diagrams (site_id, layout, background_width, background_height, updated_at)
             VALUES ($1, $2, $3, $4, NOW())
@@ -2827,16 +2576,14 @@ app.put('/sites/:id/diagram', authenticateToken, async (req: any, res) => {
 });
 
 // POST upload PDF backdrop
-app.post('/sites/:id/diagram/pdf', authenticateToken, sldUpload.single('pdf') as any, async (req: any, res) => {
+// The site check runs BEFORE multer: the file is written as <site id>.pdf, so
+// checking afterwards let any user overwrite (and then delete) another
+// tenant's diagram.
+app.post('/sites/:id/diagram/pdf', authenticateToken, siteParam(pool, { write: true }), sldUpload.single('pdf') as any, async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     if (!req.file) return res.status(400).json({ error: 'No PDF file uploaded' });
     const client = await pool.connect();
     try {
-        if (!await assertSiteAccess(client, id, tenantId, role)) {
-            try { fs.unlinkSync(req.file.path); } catch {}
-            return res.status(403).json({ error: 'Forbidden' });
-        }
         const relPath = toStoredUploadPath(req.file.path, UPLOAD_DIR);
         await client.query(`
             INSERT INTO site_diagrams (site_id, background_pdf_path, updated_at)
@@ -2855,14 +2602,10 @@ app.post('/sites/:id/diagram/pdf', authenticateToken, sldUpload.single('pdf') as
 });
 
 // GET PDF stream (auth-checked; PDFs contain client electrical info — never public)
-app.get('/sites/:id/diagram/pdf', authenticateToken, async (req: any, res) => {
+app.get('/sites/:id/diagram/pdf', authenticateToken, siteParam(pool), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
-        if (!await assertSiteAccess(client, id, tenantId, role)) {
-            return res.status(403).json({ error: 'Forbidden' });
-        }
         const result = await client.query(
             `SELECT background_pdf_path FROM site_diagrams WHERE site_id = $1`,
             [id]
@@ -2882,14 +2625,10 @@ app.get('/sites/:id/diagram/pdf', authenticateToken, async (req: any, res) => {
 });
 
 // DELETE PDF backdrop
-app.delete('/sites/:id/diagram/pdf', authenticateToken, async (req: any, res) => {
+app.delete('/sites/:id/diagram/pdf', authenticateToken, siteParam(pool, { write: true }), async (req: any, res) => {
     const { id } = req.params;
-    const { tenantId, role } = req.user;
     const client = await pool.connect();
     try {
-        if (!await assertSiteAccess(client, id, tenantId, role)) {
-            return res.status(403).json({ error: 'Forbidden' });
-        }
         const result = await client.query(
             `SELECT background_pdf_path FROM site_diagrams WHERE site_id = $1`,
             [id]

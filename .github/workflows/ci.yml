@@ -120,9 +120,10 @@ jobs:
         run: |
           node packages/db/bin/migrate.js down
           node packages/db/bin/migrate.js up
-      - name: database tests (fleet model acceptance)
+      - name: database tests (fleet model, cross-tenant scoping)
         run: |
           npm run build --prefix services/ingestion-service
+          npm run build --prefix services/auth-service
           node --test services/ingestion-service/test/db/*.test.js
         env:
           TEST_DATABASE_URL: postgres://ci:ci@localhost:5432/ci

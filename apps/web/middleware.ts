@@ -18,6 +18,11 @@ function decodeJwt(token: string) {
     }
 }
 
+// Internal (Grid-IQ) roles since Phase 7; client roles are client_admin / client_viewer.
+const isInternal = (role: string) => role === 'super_admin' || role === 'engineer';
+// The broker portfolio is kept but hidden unless built with NEXT_PUBLIC_FEATURE_BROKER=true.
+const BROKER_ENABLED = process.env.NEXT_PUBLIC_FEATURE_BROKER === 'true';
+
 export function middleware(request: NextRequest) {
     const token = request.cookies.get('token')?.value;
 
@@ -31,12 +36,12 @@ export function middleware(request: NextRequest) {
     if (isLoginRoute && token) {
         const payload = decodeJwt(token);
         if (payload) {
-            if (payload.role === 'super_admin') {
+            if (isInternal(payload.role)) {
                 return NextResponse.redirect(new URL('/admin', request.url));
             }
             // A broker has no tenant data of their own — /dashboard would be
             // empty for them. Their home is the portfolio.
-            if (payload.role === 'broker') {
+            if (payload.role === 'broker' && BROKER_ENABLED) {
                 return NextResponse.redirect(new URL('/broker', request.url));
             }
             return NextResponse.redirect(new URL('/dashboard', request.url));
@@ -62,25 +67,25 @@ export function middleware(request: NextRequest) {
         const role = payload.role;
 
         // Route: Client trying to access Admin area
-        if (isAdminRoute && role !== 'super_admin') {
-            return NextResponse.redirect(new URL(role === 'broker' ? '/broker' : '/dashboard', request.url));
+        if (isAdminRoute && !isInternal(role)) {
+            return NextResponse.redirect(new URL(role === 'broker' && BROKER_ENABLED ? '/broker' : '/dashboard', request.url));
         }
 
-        // The portfolio is broker-only. super_admin is the platform operator,
-        // not a broker, and holds no client grants.
-        if (isBrokerRoute && role !== 'broker') {
-            return NextResponse.redirect(new URL(role === 'super_admin' ? '/admin' : '/dashboard', request.url));
+        // The portfolio is broker-only, and off unless the feature flag is set.
+        // super_admin is the platform operator, not a broker, and holds no client grants.
+        if (isBrokerRoute && (role !== 'broker' || !BROKER_ENABLED)) {
+            return NextResponse.redirect(new URL(isInternal(role) ? '/admin' : '/dashboard', request.url));
         }
 
         // A broker landing on the tenant dashboard sees nothing useful.
-        if (isDashboardRoute && role === 'broker') {
+        if (isDashboardRoute && role === 'broker' && BROKER_ENABLED) {
             return NextResponse.redirect(new URL('/broker', request.url));
         }
 
         // Route: Admin hitting the root dashboard (redirect to their proper home)
         // Note: We might allow admins to access /dashboard/sites/[id] later for impersonation, 
         // so we specifically only redirect the root /dashboard
-        if (isDashboardRoute && request.nextUrl.pathname === '/dashboard' && role === 'super_admin') {
+        if (isDashboardRoute && request.nextUrl.pathname === '/dashboard' && isInternal(role)) {
             return NextResponse.redirect(new URL('/admin', request.url));
         }
     }

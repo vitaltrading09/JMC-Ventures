@@ -11,6 +11,7 @@
 import { Router } from 'express';
 import type { Pool, PoolClient } from 'pg';
 import { projectEnergyBalance } from './balance';
+import { findSite, withScope } from '../scope';
 
 /** Roles that work across tenants. Phase 7 adds 'engineer'. */
 export const INTERNAL_ROLES = new Set(['super_admin', 'engineer']);
@@ -148,8 +149,9 @@ async function audit(db: Pool | PoolClient, user: any, action: string, entityTyp
 
 // ── Router ──────────────────────────────────────────────────────────────────
 
-export function fleetRouter(pool: Pool, authenticate: (req: any, res: any, next: any) => void): Router {
+export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, next: any) => void): Router {
     const r = Router();
+    const authenticate = withScope(authenticateJwt);
     const internal = (req: any, res: any, next: any) => (isInternal(req.user) ? next() : res.status(403).json({ error: 'Internal users only' }));
     const guard = [authenticate, internal];
 
@@ -236,12 +238,11 @@ export function fleetRouter(pool: Pool, authenticate: (req: any, res: any, next:
         res.json({ archived: true, ...q.rows[0] });
     }));
 
-    // Energy balance: internal users for any project, client users for their own.
+    // Energy balance: internal users for any project, client users for their
+    // own, through the central scope (and only where live data is shared).
     r.get('/projects/:id/energy-balance', authenticate, handle(async (req, res) => {
-        const p = await pool.query(`SELECT tenant_id FROM projects WHERE id = $1`, [req.params.id]);
-        if (!p.rows.length || (!isInternal(req.user) && p.rows[0].tenant_id !== req.user.tenantId)) {
-            return res.status(404).json({ error: 'Not found' });
-        }
+        const p = await findSite(pool, req.scope, req.params.id);
+        if (!p || !p.telemetry_visible) return res.status(404).json({ error: 'Not found' });
         const to = optDate(req.query.to, 'to') ?? new Date();
         const from = optDate(req.query.from, 'from') ?? new Date(to.getTime() - 30 * 86_400_000);
         if (from >= to) throw new InputError('from must be before to');

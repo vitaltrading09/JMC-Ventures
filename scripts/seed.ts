@@ -35,7 +35,7 @@ async function seed() {
         // 2. Create User
         await client.query(`
             INSERT INTO users (tenant_id, email, password_hash, role)
-            VALUES ($1, 'demo@grid-iq.co.za', 'hashed_secret', 'admin')
+            VALUES ($1, 'demo@grid-iq.co.za', 'hashed_secret', 'client_admin')
         `, [tenantId]);
         console.log(`✅ Created User: demo@grid-iq.co.za`);
 

@@ -18,8 +18,11 @@ COPY apps/web apps/web
 ARG NEXT_PUBLIC_API_URL
 # Shown on the Add Meter screen as the broker host meters connect to.
 ARG NEXT_PUBLIC_MQTT_HOST
+# The broker portfolio pages (/broker) are hidden unless "true".
+ARG NEXT_PUBLIC_FEATURE_BROKER=false
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
     NEXT_PUBLIC_MQTT_HOST=${NEXT_PUBLIC_MQTT_HOST} \
+    NEXT_PUBLIC_FEATURE_BROKER=${NEXT_PUBLIC_FEATURE_BROKER} \
     NEXT_TELEMETRY_DISABLED=1
 RUN npm run build -w apps/web
 
