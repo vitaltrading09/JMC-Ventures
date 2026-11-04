@@ -6,6 +6,10 @@
 #
 # Steps: git pull → docker compose build → migrate (one-shot) → up -d →
 # MQTT certificate sync → health summary.
+#
+# Images are tagged with the commit (IMAGE_TAG in .env is set to it), and the
+# tag that was running before is kept in .deploy/previous-tag, so
+# deploy/rollback.sh can go back without rebuilding.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -18,7 +22,16 @@ if [ -z "${SKIP_PULL:-}" ]; then
     git pull --ff-only
 fi
 
-echo "==> docker compose build"
+# Tag this build with the commit; remember what was running.
+set_env() { # key value: replace or append in .env
+    if grep -qE "^$1=" .env; then sed -i "s#^$1=.*#$1=$2#" .env; else echo "$1=$2" >> .env; fi
+}
+mkdir -p .deploy
+PREV_TAG="$(grep -E '^IMAGE_TAG=' .env | tail -n1 | cut -d= -f2- || true)"
+NEW_TAG="$(git rev-parse --short=12 HEAD)$(git diff --quiet HEAD -- . ':!.env' || echo -dirty)"
+if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$NEW_TAG" ]; then echo "$PREV_TAG" > .deploy/previous-tag; fi
+set_env IMAGE_TAG "$NEW_TAG"
+echo "==> docker compose build (IMAGE_TAG=$NEW_TAG, previous ${PREV_TAG:-none})"
 docker compose build
 
 echo "==> migrate"

@@ -65,6 +65,14 @@ function stripUpstreamCors(proxyRes: any) {
     delete proxyRes.headers['access-control-expose-headers'];
 }
 
+// Deep health for the external uptime monitor: served by the ingestion api
+// (token-protected there), path kept as /health/deep.
+app.use(createProxyMiddleware('/health/deep', {
+    target: process.env.INGESTION_SERVICE_URL || 'http://localhost:3002',
+    changeOrigin: true,
+    onProxyRes: stripUpstreamCors,
+}));
+
 // Proxy to Auth Service
 app.use('/auth', createProxyMiddleware({
     target: process.env.AUTH_SERVICE_URL || 'http://localhost:3001',

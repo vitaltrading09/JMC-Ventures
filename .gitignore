@@ -53,3 +53,6 @@ mosquitto/config/conf.d/*.conf
 
 # Local database dumps (plan Phase 2/6: ./local/prod.dump)
 local/
+
+# Deploy state (image tags; written by deploy/deploy.sh)
+.deploy/
