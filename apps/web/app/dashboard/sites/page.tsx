@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
     Plus, Search, MapPin, X, Loader2, Server,
-    ChevronDown, ChevronRight, Trash2, BarChart2,
+    ChevronDown, ChevronRight, Archive, BarChart2,
     Activity, Clock, ArrowRight, AlertTriangle,
     Copy, Check, Wifi, PauseCircle, PlayCircle, Settings, Save, Tag
 } from "lucide-react";
@@ -281,7 +281,7 @@ export default function SitesPage() {
     };
 
     const handleDeleteMeter = async (meterId: string, meterName: string) => {
-        if (!confirm(`Delete meter "${meterName}" and ALL its readings ? This cannot be undone.`)) return;
+        if (!confirm(`Archive meter "${meterName}"? It stops receiving readings and leaves this list. Its readings and reports are kept, and an admin can restore it.`)) return;
         setDeletingId(meterId);
         try {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/meters/${meterId}`, {
@@ -309,7 +309,7 @@ export default function SitesPage() {
     };
 
     const handleDeleteSite = async (siteId: string, siteName: string) => {
-        if (!confirm(`WARNING: Are you sure you want to delete the site "${siteName}"? This will permanently delete ALL its meters and data.`)) return;
+        if (!confirm(`Archive the site "${siteName}"? It and its meters leave the lists and stop receiving readings. All data is kept, and an admin can restore it.`)) return;
         setDeletingId(siteId);
         try {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/sites/${siteId}`, {
@@ -418,8 +418,9 @@ export default function SitesPage() {
                                         <button
                                             onClick={(e) => { e.stopPropagation(); handleDeleteSite(site.id, site.name); }}
                                             disabled={deletingId === site.id}
-                                            className="p-1.5 text-slate-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors border border-transparent">
-                                            {deletingId === site.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                                            title="Archive site (keeps all data)"
+                                            className="p-1.5 text-slate-600 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors border border-transparent">
+                                            {deletingId === site.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Archive className="w-4 h-4" />}
                                         </button>
                                     </div>
                                 </div>
@@ -534,10 +535,11 @@ export default function SitesPage() {
                                                             <button
                                                                 onClick={(e) => { e.stopPropagation(); handleDeleteMeter(meter.id, meter.name); }}
                                                                 disabled={deletingId === meter.id}
-                                                                className="p-1.5 text-slate-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors">
+                                                                title="Archive meter (keeps its readings)"
+                                                                className="p-1.5 text-slate-600 hover:text-amber-400 hover:bg-amber-500/10 rounded-lg transition-colors">
                                                                 {deletingId === meter.id
                                                                     ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                                    : <Trash2 className="w-3.5 h-3.5" />}
+                                                                    : <Archive className="w-3.5 h-3.5" />}
                                                             </button>
                                                         </div>
                                                     </div>

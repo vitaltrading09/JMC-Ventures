@@ -346,6 +346,10 @@ Compose stack behind Caddy with a real domain. The steps are in
 - **API calls:** All frontend calls go through `NEXT_PUBLIC_API_URL` (the API gateway). Never call auth/ingestion services directly.
 - **Auth:** JWT stored in localStorage (to be migrated to HTTPOnly cookies). Sent as `Authorization: Bearer <token>`.
 - **Tenant isolation:** Every API query is scoped by `tenant_id` decoded from JWT.
+- **Delete = archive:** `DELETE /meters/:id` and `/sites/:id` set `archived_at` (+ `is_active = false`);
+  lists hide archived rows (`?archived=1` shows them), ingest dead-letters archived meters, admins
+  restore with `POST .../restore`. Raw readings are removed only by `deploy/scripts/purge-archived-meter.sh`
+  (backup first, documented in docs/RUNBOOK.md). New queries listing meters/sites must filter `archived_at IS NULL`.
 - **Energy score colour thresholds:** `≥80` green, `≥60` amber/yellow, `<60` red.
 - **NRS 048-2 limits:** PF min 0.85, THD max 8%, voltage 207–253V (±10% of 230V), frequency 49–51Hz.
 - **Recharts:** Used for all charts. PieChart for donuts, BarChart for consumption, LineChart for time-series. Always use `<Cell>` per bar for colour control.

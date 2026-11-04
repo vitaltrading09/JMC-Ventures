@@ -41,6 +41,7 @@ export class MeterCache {
     private lastRefreshAt = 0;
     private timer: NodeJS.Timeout | null = null;
     private hasUsernameColumn = false;
+    private hasArchiveColumns = false;
 
     constructor(
         private readonly db: CacheDb,
@@ -80,13 +81,20 @@ export class MeterCache {
                            WHERE table_schema = 'public' AND table_name = 'meters'
                              AND column_name = 'mqtt_username') AS present`);
         this.hasUsernameColumn = !!col.rows[0]?.present;
+        const arch = await this.db.query(`
+            SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_schema = 'public' AND table_name = 'meters'
+                             AND column_name = 'archived_at') AS present`);
+        this.hasArchiveColumns = !!arch.rows[0]?.present;
         const r = await this.db.query(`
             SELECT m.id, m.serial_number, ${this.hasUsernameColumn ? 'm.mqtt_username' : 'NULL::text AS mqtt_username'},
                    s.tenant_id,
                    ss.alert_min_v, ss.alert_max_v, ss.alert_min_freq, ss.alert_max_freq
             FROM meters m
             JOIN sites s ON m.site_id = s.id
-            LEFT JOIN site_settings ss ON ss.site_id = s.id`);
+            LEFT JOIN site_settings ss ON ss.site_id = s.id
+            -- An archived meter stops ingesting: its messages are dead-lettered as unknown.
+            WHERE ${this.hasArchiveColumns ? 'm.archived_at IS NULL AND s.archived_at IS NULL' : 'TRUE'}`);
         const byId = new Map<string, MeterInfo>();
         const bySerial = new Map<string, MeterInfo>();
         const byUsername = new Map<string, MeterInfo>();

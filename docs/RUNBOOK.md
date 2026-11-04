@@ -78,6 +78,16 @@ Then watch `bash deploy/logs.sh ingest` for the meter's first rows.
 
 **Remove or rotate a meter user:** `mosquitto_passwd -D /mosquitto/config/passwd <user>` (or `-b` with a new password), then the `kill -s HUP mosquitto` reload.
 
+## Archived meters and sites
+In the app, "delete" **archives**: the meter or site leaves the lists and stops ingesting (its messages are dead-lettered as unknown meter), while its readings, reports and alerts are kept.
+
+- **Restore** (an admin of the tenant, or super_admin): `POST /api/ingestion/meters/<id>/restore` or `POST /api/ingestion/sites/<id>/restore`. A site restore brings back the meters archived with it. List archived ones with `GET /api/ingestion/meters?archived=1` / `sites?archived=1`.
+- **Purge permanently** (rare: e.g. a client's written request, or test data):
+  ```bash
+  bash deploy/scripts/purge-archived-meter.sh <meter-id> --confirm "<exact meter name>"
+  ```
+  It only works on an archived meter, takes a fresh backup first (and stops if the backup fails), deletes the readings and the meter (with its alerts, events, assessments and share links) in one transaction, then refreshes the rollups. Every purge is logged in `${DATA_DIR}/backups/purge.log`. This is the only path that deletes raw readings.
+
 ## Reading logs
 ```bash
 bash deploy/logs.sh ingest 200     # follow one service (caddy web gateway auth api ingest jobs migrate mosquitto timescaledb)

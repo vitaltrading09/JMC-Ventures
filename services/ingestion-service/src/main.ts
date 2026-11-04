@@ -130,7 +130,7 @@ function registerJobs(pool: Pool) {
     cron.schedule('*/5 * * * *', async () => {
         const client = await pool.connect();
         try {
-            const sites = await client.query(`SELECT id FROM sites`);
+            const sites = await client.query(`SELECT id FROM sites WHERE archived_at IS NULL`);
             for (const site of sites.rows) {
                 try {
                     const result = await computeAndStoreSiteScore(pool, site.id);
@@ -412,11 +412,13 @@ app.get('/sites', authenticateToken, async (req: any, res) => {
     const { tenantId, role } = req.user;
 
     try {
-        let query = `SELECT * FROM sites`;
+        // Archived sites are hidden unless ?archived=1 (admin restore view).
+        const showArchived = req.query.archived === '1' || req.query.archived === 'true';
+        let query = `SELECT * FROM sites WHERE ${showArchived ? 'archived_at IS NOT NULL' : 'archived_at IS NULL'}`;
         let params: any[] = [];
 
         if (role !== 'super_admin') {
-            query += ` WHERE tenant_id = $1`;
+            query += ` AND tenant_id = $1`;
             params.push(tenantId);
         }
 
@@ -474,39 +476,30 @@ app.delete('/sites/:id', authenticateToken, async (req: any, res) => {
             const checkRes = await client.query(checkQuery, [siteId, tenantId]);
             if (checkRes.rows.length === 0) {
                 await client.query('ROLLBACK');
-                return res.status(403).json({ error: 'Forbidden: Cannot delete this site' });
+                return res.status(403).json({ error: 'Forbidden: Cannot archive this site' });
             }
         }
 
-        // 2. Delete the site (PostgreSQL CASCADE on the foreign keys will automatically delete meters, readings, and alerts if configured, otherwise we do it manually to be safe)
-
-        // Delete alerts linked to this site's meters
-        await client.query(`DELETE FROM alerts WHERE meter_id IN (SELECT id FROM meters WHERE site_id = $1)`, [siteId]);
-
-        // Delete readings linked to this site's meters
-        await client.query(`DELETE FROM meter_readings WHERE meter_id IN (SELECT id FROM meters WHERE site_id = $1)`, [siteId]);
-
-        // Delete meters linked to this site
-        await client.query(`DELETE FROM meters WHERE site_id = $1`, [siteId]);
-
-        // Delete site settings
-        await client.query(`DELETE FROM site_settings WHERE site_id = $1`, [siteId]);
-
-        // Finally, delete the site itself
-        const deleteQuery = `DELETE FROM sites WHERE id = $1 RETURNING id`;
-        const result = await client.query(deleteQuery, [siteId]);
-
+        // 2. Archive, never delete: readings, reports and alerts are evidence.
+        // The site and its meters leave the lists and stop ingesting; an admin
+        // can restore them (POST /sites/:id/restore).
+        const result = await client.query(
+            `UPDATE sites SET archived_at = NOW() WHERE id = $1 AND archived_at IS NULL RETURNING archived_at`, [siteId]);
         if (result.rows.length === 0) {
             await client.query('ROLLBACK');
-            return res.status(404).json({ error: 'Site not found' });
+            return res.status(404).json({ error: 'Site not found or already archived' });
         }
+        // Same timestamp on its meters, so a restore brings back exactly these.
+        await client.query(
+            `UPDATE meters SET archived_at = $2, is_active = false WHERE site_id = $1 AND archived_at IS NULL`,
+            [siteId, result.rows[0].archived_at]);
 
         await client.query('COMMIT');
-        res.status(200).json({ message: 'Site and all associated data deleted successfully' });
+        res.status(200).json({ message: 'Site archived. Its meters stopped receiving readings; all data is kept and an admin can restore it.' });
     } catch (err) {
         await client.query('ROLLBACK');
         console.error(err);
-        res.status(500).json({ error: 'Database error deleting site' });
+        res.status(500).json({ error: 'Database error archiving site' });
     } finally {
         client.release();
     }
@@ -570,8 +563,13 @@ app.get('/meters', authenticateToken, async (req: any, res) => {
         let params: any[] = [];
 
         // Tenant Isolation
+        // Archived meters (or meters of an archived site) are hidden unless ?archived=1.
+        const showArchived = req.query.archived === '1' || req.query.archived === 'true';
+        query += showArchived
+            ? ` WHERE (m.archived_at IS NOT NULL OR s.archived_at IS NOT NULL)`
+            : ` WHERE m.archived_at IS NULL AND s.archived_at IS NULL`;
         if (role !== 'super_admin') {
-            query += ` WHERE s.tenant_id = $1`;
+            query += ` AND s.tenant_id = $1`;
             params.push(tenantId);
         }
 
@@ -980,18 +978,69 @@ app.delete('/meters/:id', authenticateToken, async (req: any, res) => {
                 [id, tenantId]
             );
             if (check.rows.length === 0) {
-                client.release();
                 return res.status(403).json({ error: 'Forbidden' });
             }
         }
-        // Delete readings first (cascade would also work if FK set)
-        await client.query('DELETE FROM meter_readings WHERE meter_id = $1', [id]);
-        await client.query('DELETE FROM alerts WHERE meter_id = $1', [id]);
-        await client.query('DELETE FROM meters WHERE id = $1', [id]);
-        res.json({ success: true, message: 'Meter and all its readings deleted.' });
+        // Archive, never delete: the meter stops ingesting and leaves the lists;
+        // its readings, reports and alerts are kept. An admin can restore it.
+        const r = await client.query(
+            `UPDATE meters SET archived_at = NOW(), is_active = false WHERE id = $1 AND archived_at IS NULL RETURNING id`, [id]);
+        if (r.rows.length === 0) return res.status(404).json({ error: 'Meter not found or already archived' });
+        res.json({ success: true, message: 'Meter archived. It no longer receives readings; its data is kept and an admin can restore it.' });
     } catch (err) {
-        console.error('Delete meter error:', err);
-        res.status(500).json({ error: 'Failed to delete meter' });
+        console.error('Archive meter error:', err);
+        res.status(500).json({ error: 'Failed to archive meter' });
+    } finally {
+        client.release();
+    }
+});
+
+// Restore an archived meter or site (admins of the tenant, or super_admin).
+const canRestore = (role: string) => role === 'admin' || role === 'super_admin';
+
+app.post('/meters/:id/restore', authenticateToken, async (req: any, res) => {
+    const { tenantId, role } = req.user;
+    if (!canRestore(role)) return res.status(403).json({ error: 'Only an admin can restore a meter' });
+    try {
+        const r = await pool.query(`
+            UPDATE meters m SET archived_at = NULL, is_active = true
+            FROM sites s
+            WHERE m.id = $1 AND m.site_id = s.id AND m.archived_at IS NOT NULL
+              AND s.archived_at IS NULL ${role === 'super_admin' ? '' : 'AND s.tenant_id = $2'}
+            RETURNING m.id`, role === 'super_admin' ? [req.params.id] : [req.params.id, tenantId]);
+        if (r.rows.length === 0) return res.status(404).json({ error: 'No archived meter with that id (restore its site first if the site is archived)' });
+        res.json({ success: true, message: 'Meter restored; it receives readings again.' });
+    } catch (err) {
+        console.error('Restore meter error:', err);
+        res.status(500).json({ error: 'Failed to restore meter' });
+    }
+});
+
+app.post('/sites/:id/restore', authenticateToken, async (req: any, res) => {
+    const { tenantId, role } = req.user;
+    if (!canRestore(role)) return res.status(403).json({ error: 'Only an admin can restore a site' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const before = await client.query(
+            `SELECT archived_at FROM sites WHERE id = $1 AND archived_at IS NOT NULL ${role === 'super_admin' ? '' : 'AND tenant_id = $2'} FOR UPDATE`,
+            role === 'super_admin' ? [req.params.id] : [req.params.id, tenantId]);
+        if (before.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'No archived site with that id' });
+        }
+        await client.query(`UPDATE sites SET archived_at = NULL WHERE id = $1`, [req.params.id]);
+        // Bring back the meters archived together with the site, not ones
+        // archived individually before it.
+        const m = await client.query(
+            `UPDATE meters SET archived_at = NULL, is_active = true WHERE site_id = $1 AND archived_at = $2 RETURNING id`,
+            [req.params.id, before.rows[0].archived_at]);
+        await client.query('COMMIT');
+        res.json({ success: true, message: `Site restored with ${m.rows.length} meter(s).` });
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error('Restore site error:', err);
+        res.status(500).json({ error: 'Failed to restore site' });
     } finally {
         client.release();
     }
