@@ -52,6 +52,8 @@ echo "==> deleting"
 q <<SQL
 BEGIN;
 DELETE FROM meter_readings WHERE meter_id = '$METER_ID';
+-- Its deployment history goes with it; the measurement points (places) stay.
+DELETE FROM deployments WHERE device_id = '$METER_ID';
 DELETE FROM meters WHERE id = '$METER_ID';
 COMMIT;
 SQL

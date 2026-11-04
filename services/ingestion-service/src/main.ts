@@ -19,6 +19,8 @@ import { planRead, meterSeriesSql, tenantPowerSql } from './aggregates';
 import { checkTenMinute, checkDemand, checkEvents, checkDataHealth, checkThdITrend } from './alerting';
 import { periodEnergy, monthKey, loadEnergyHours, touBand, localDateHour, combinedMethod } from './energy';
 import { buildRenewalReview, runRenewalSweep } from './renewal';
+import { fleetRouter, extendFirstDeployment } from './fleet/routes';
+import { runCommissioning } from './fleet/commissioning';
 import { randomBytes, createHash } from 'crypto';
 import {
     generateAndStoreSiteRecommendations,
@@ -298,6 +300,15 @@ function registerJobs(pool: Pool) {
     cron.schedule('1-59/10 * * * *', guarded('10-minute quality', () => checkTenMinute(pool)));
     cron.schedule('0 7 * * *', guarded('THD-I trend', () => checkThdITrend(pool)));
 
+    // Commissioning checklist for new deployments (src/fleet/commissioning.ts).
+    cron.schedule('* * * * *', async () => {
+        try {
+            await runCommissioning(pool);
+        } catch (e: any) {
+            console.error('[fleet] commissioning check failed:', e?.message || e);
+        }
+    });
+
     console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00)');
 }
 
@@ -357,6 +368,9 @@ const authenticateToken = (req: any, res: any, next: any) => {
         next();
     });
 };
+
+// Fleet model API: projects, points, devices, deployments, /fleet (src/fleet/routes.ts).
+app.use(fleetRouter(pool, authenticateToken));
 
 // Deep health for an external uptime monitor (src/health.ts). Token header,
 // no JWT: the monitor is not a user. Disabled unless HEALTH_TOKEN is set.
@@ -2398,6 +2412,8 @@ app.post('/upload', authenticateToken, upload.single('file') as any, async (req:
                         // ON CONFLICT and must not be reported as imported.
                         if (ins.rowCount === 1) inserted++; else duplicates++;
                     }
+                    // Attribute imported history older than the device's first deployment to it.
+                    if (times.length > 0) await extendFirstDeployment(client, meterId, new Date(Math.min(...times.map(d => d.getTime()))));
                     await client.query('COMMIT');
                     res.json({
                         success: true, count: inserted, skipped, duplicates, total: results.length,

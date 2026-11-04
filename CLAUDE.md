@@ -99,6 +99,40 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   (silent > `METER_SILENT_MINUTES`, coverage < 95 %/h, clock drift, rising conflicts from
   `ingest_stats`). Every message states its basis; dedupe via `alerts.dedupe_key`
   (unique per meter/type/key) plus memory.
+- **Fleet model (Phase 6, `src/fleet/`, migration `1793798165302_fleet-model.sql`)**:
+  - `sites` was renamed `projects` and `meters` was renamed `devices`. The old names
+    are updatable views (`SELECT * FROM projects` / `devices`), so existing code works
+    unchanged. New code uses the new names; the views go once Phase 8 has moved the UI.
+  - `measurement_points` (role incomer/sub_load/pv/bess/generator/other, parent, CT
+    primary, nominal V phase-to-neutral, contracted MDI) and `deployments` (device at a
+    point from `installed_at` to `removed_at`, `power_sign`, `scale_correction`, configured
+    CT/PT ratio, `commissioning` jsonb). `btree_gist` exclusion constraints: one place
+    per device, one device per point, at any time.
+  - Raw readings stay keyed by device. Attribution is by deployment window through
+    `point_readings_1m/10m/30m/1h/1d`, one view per aggregate. A bucket belongs to the
+    deployment holding its first sample (`t_first`). Corrections are applied there:
+    sign −1 negates P/Q/PF/kW demand and swaps import/export registers; scale multiplies
+    currents, P/Q/S, demand and registers.
+  - Every correction is written to `audit_log` with a required reason.
+  - `devices.site_id` stays as a compatibility field: the project of the current or
+    last deployment, so the legacy site pages follow a moved box.
+  - A meter created the legacy way (trigger `devices_legacy_deploy`) gets a point and an
+    open deployment. A CSV import extends a device's first deployment back over older
+    history.
+  - `site_settings` is now per project. Its `contracted_mdi_kva` is mirrored onto the
+    project's top-level incomer point by a trigger, until Phase 8.
+  - `tenants.kind` (internal/client) and `slug`.
+  - Fleet API (`src/fleet/routes.ts`), internal roles only (`super_admin`, `engineer`):
+    - CRUD `/projects`, `/projects/:id/points`, `/points/:id`, `/devices`;
+    - `POST /deployments`, `/deployments/:id/remove`, `PATCH /deployments/:id/corrections`;
+    - `GET /fleet`;
+    - `GET /projects/:id/energy-balance` (`src/fleet/balance.ts`; clients may read their own).
+  - Commissioning checklist (`src/fleet/commissioning.ts`): the jobs role runs it every
+    minute for the first 15 min after an install.
+  - New devices publish on `acuvim/{lower(code)}/telemetry` (= `mqtt_username`). Devices
+    without a project still ingest; retired ones are dead-lettered.
+  - DB tests: `TEST_DATABASE_URL=... node --test services/ingestion-service/test/db/*.test.js`
+    (CI runs them in the migrations job).
 - The ingest container reaches the broker as `mqtts://${MQTT_DOMAIN}:8883`.
   `MQTT_DOMAIN` is a network alias of the mosquitto container, so the TLS
   hostname matches the certificate without leaving the host.
@@ -151,7 +185,7 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   - **Durable:** QoS 1 subscription, persistent session (`MQTT_CLIENT_ID`, `clean: false`). Each message's PUBACK is held until the batch that wrote it commits (`src/ingest/ack-gate.ts`: mqtt.js 5 reads packets one at a time, so only the outgoing PUBACK is deferred). On a DB failure nothing is acked and the writer retries; if ingest dies, the broker redelivers. SIGTERM flushes and acks before disconnecting (`stop_grace_period: 30s`).
   - **Batched** (`src/ingest/batch-writer.ts`): one multi-row `INSERT ... ON CONFLICT (meter_id, time) DO NOTHING RETURNING` per flush (`INGEST_FLUSH_MS` 1000 / `INGEST_FLUSH_ROWS` 500); the bounded queue (`INGEST_MAX_QUEUE` 50,000) applies backpressure, never drops.
   - **Mapping is data** (`src/ingest/channels.ts`): column → candidate param names, ~42 columns including L-L voltages, neutral current, per-phase P/Q/S/PF, THD per phase, unbalance, kvarh, demand. Add new firmware names there; tests use `test/fixtures/` payloads. Unmapped names are logged once per meter per hour, and payload bytes/msg per meter hourly (`src/ingest/stats.ts`).
-  - **Meter cache** (`src/ingest/meter-cache.ts`): refreshed every 60 s and on a miss; topic segment matches id, serial, then `mqtt_username` (Phase 6). Unknown meters are dead-lettered (`unknown meter`).
+  - **Meter cache** (`src/ingest/meter-cache.ts`): refreshed every 60 s and on a miss; topic segment matches id, serial, then `mqtt_username` (fleet devices: lowercase code). Unknown, archived and retired devices are dead-lettered (`unknown meter`).
   - **No alert queries in ingest.** Alerting runs in the jobs role on aggregates (see Alerting above). Ingest feeds an in-memory event detector (`src/ingest/event-detector.ts`) that writes voltage/frequency excursions to `pq_events` (ongoing after `EVENT_MIN_SECONDS`, updated when they end). 1-second data cannot resolve sub-second dips.
   - Mosquitto `max_inflight_messages 1000`: with deferred PUBACKs the default 20 would cap ingest at ~20 msg/flush.
 - `services/ingestion-service/src/energy-score.ts` — Calculates energy score (0–100) from PF, THD, load factor, voltage quality. Stores in `site_scores` table.
@@ -344,7 +378,7 @@ Compose stack behind Caddy with a real domain. The steps are in
 - Also inject energy score + top recommendations as context so chat is site-aware
 
 ### 3. Oracle migration (plan phases 2–5, then Part D)
-- Phase 2 migrations, Phase 3 1-second ingest hardening, Phase 4 aggregates, Phase 5 backups/monitoring
+- Phases 2–5 done; Phase 6 (fleet model) done. Next: Phase 7 (roles, scoping, review workflow), Phase 8 (ops console and portal: page list needs approval first), Phase 9 (public API). Part D is the owner's go-live runbook.
 
 ### 4. Security hardening
 - Replace localStorage JWT storage with HTTPOnly cookies
@@ -376,6 +410,7 @@ Compose stack behind Caddy with a real domain. The steps are in
 - **API calls:** All frontend calls go through `NEXT_PUBLIC_API_URL` (the API gateway). Never call auth/ingestion services directly.
 - **Auth:** JWT stored in localStorage (to be migrated to HTTPOnly cookies). Sent as `Authorization: Bearer <token>`.
 - **Tenant isolation:** Every API query is scoped by `tenant_id` decoded from JWT.
+- **New tables and queries** use `projects`, `devices`, `measurement_points`, `deployments`; attribute readings to a project or point only through `point_readings_*` (never by `devices.site_id`).
 - **Delete = archive:** `DELETE /meters/:id` and `/sites/:id` set `archived_at` (+ `is_active = false`);
   lists hide archived rows (`?archived=1` shows them), ingest dead-letters archived meters, admins
   restore with `POST .../restore`. Raw readings are removed only by `deploy/scripts/purge-archived-meter.sh`
