@@ -47,6 +47,12 @@ export interface Scope {
      * roles; for internal users the tenant the request names, else null (all).
      */
     filterTenantId: string | null;
+    /**
+     * Set when the request came with an API key (Phase 9; the gateway turns
+     * the key into a short-lived token): what it may read, and where.
+     * projectIds null = all of the tenant's projects.
+     */
+    apiKey: { id: string; scopes: string[]; projectIds: string[] | null } | null;
 }
 
 export const isInternalRole = (role: Role) => role === 'super_admin' || role === 'engineer';
@@ -63,6 +69,10 @@ export function buildScope(user: any, req?: { query?: any; body?: any }): Scope 
         role,
         tenantId: user?.tenantId ?? null,
         isInternal: internal,
+        apiKey: user?.apiKey && typeof user.apiKey === 'object'
+            ? { id: String(user.apiKey.id), scopes: Array.isArray(user.apiKey.scopes) ? user.apiKey.scopes.map(String) : [],
+                projectIds: Array.isArray(user.apiKey.projectIds) ? user.apiKey.projectIds.map(String) : null }
+            : null,
         filterTenantId: internal
             ? (typeof named === 'string' && UUID.test(named) ? named : null)
             // A client without a tenant sees nothing: filter on an id no row has.
@@ -70,17 +80,25 @@ export function buildScope(user: any, req?: { query?: any; body?: any }): Scope 
     };
 }
 
+/** API scope check: a user session may do anything its role allows; a key only its scopes. */
+export const hasApiScope = (s: Scope, scope: string) => !s.apiKey || s.apiKey.scopes.includes(scope);
+
+/** A key limited to some projects reaches only those. */
+export const projectAllowed = (s: Scope, projectId: string) => !s.apiKey?.projectIds || s.apiKey.projectIds.includes(projectId);
+
 /** May this scope change data? client_viewer and broker are read-only here. */
 export const canWrite = (s: Scope) => s.isInternal || s.role === 'client_admin';
 
 /**
  * Non-GET routes a client_viewer may still call: asking about a report,
- * marking an alert read, asking Grid-IQ to follow up a recommendation.
+ * marking an alert read, asking Grid-IQ to follow up a recommendation,
+ * requesting a data export (it only reads; an API key's token is a viewer's).
  */
 const VIEWER_ALLOWED = [
     /^\/meters\/[^/]+\/compliance\/ask$/,
     /^\/alerts\/[^/]+\/read$/,
     /^\/recommendations\/[^/]+\/notify$/,
+    /^\/v1\/exports$/,
 ];
 export function viewerMayCall(method: string, path: string): boolean {
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return true;

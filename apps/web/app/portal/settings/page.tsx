@@ -2,12 +2,14 @@
 
 // Portal settings: branding (shown on reports and share links) and the
 // team's users. A client_admin manages its own tenant's users (client roles
-// only); a client_viewer sees both read-only. API keys arrive with Phase 9.
+// only); a client_viewer sees both read-only. A client_admin also manages
+// the tenant's API keys (Phase 9).
 
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend, fmtDate } from "@/lib/api";
 import { useRole, canEdit } from "@/lib/portal";
+import { ApiKeysPanel } from "@/components/portal/ApiKeysPanel";
 import { PageHeader, Panel, Table, Badge, Loading, ErrorBox, Empty, Button, Field, inputClass } from "@/components/ops/ui";
 
 interface User { id: string; email: string; role: string; created_at: string; }
@@ -21,6 +23,7 @@ export default function PortalSettings() {
             <PageHeader title="Settings" subtitle={editable ? undefined : "Read only: ask an admin on your team to change these."} />
             <Branding editable={editable} />
             <Users editable={role === "client_admin"} />
+            {role === "client_admin" && <ApiKeysPanel />}
         </div>
     );
 }

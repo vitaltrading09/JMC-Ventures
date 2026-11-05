@@ -56,3 +56,6 @@ local/
 
 # Deploy state (image tags; written by deploy/deploy.sh)
 .deploy/
+
+# Public API exports in npm run dev (EXPORT_DIR=./exports)
+services/ingestion-service/exports/

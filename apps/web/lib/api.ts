@@ -38,6 +38,16 @@ export async function apiSend<T>(method: 'POST' | 'PATCH' | 'PUT' | 'DELETE', pa
     }));
 }
 
+/** Absolute URL of a gateway path, for links (PDF downloads, docs, signed export links). */
+export function apiUrl(path: string): string {
+    return `${API}${path}`;
+}
+
+/** POST a multipart form (file upload). */
+export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+    return parse<T>(await fetch(`${API}${path}`, { method: 'POST', credentials: 'include', body: form }));
+}
+
 /** Display time zone for every date and chart: South African local time. */
 export const TZ = 'Africa/Johannesburg';
 export const TZ_LABEL = 'SAST';

@@ -28,6 +28,8 @@ import {
 import { reviewRouter } from './review';
 import { opsRouter } from './ops';
 import { portalRouter } from './portal';
+import { v1Router } from './v1/routes';
+import { runExports, expireExports } from './v1/exports-job';
 import { randomBytes, createHash } from 'crypto';
 import {
     generateAndStoreSiteRecommendations,
@@ -318,7 +320,22 @@ function registerJobs(pool: Pool) {
         }
     });
 
-    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00)');
+    // Public API exports (src/v1/exports-job.ts): queued → CSV.gz in EXPORT_DIR; expired files deleted.
+    let exporting = false;
+    cron.schedule('* * * * *', async () => {
+        if (exporting) return;
+        exporting = true;
+        try {
+            await runExports(pool);
+            await expireExports(pool);
+        } catch (e: any) {
+            console.error('[EXPORT] run failed:', e?.message || e);
+        } finally {
+            exporting = false;
+        }
+    });
+
+    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00, exports 1m)');
 }
 
 // Health of the roles this process runs. Shared by the api /health route and
@@ -378,6 +395,10 @@ const authenticateToken = (req: any, res: any, next: any) => {
         req.user = { ...user, role: normaliseRole(user?.role) };
         // Central tenant scope (src/scope.ts): every route filters through it.
         req.scope = buildScope(req.user, req);
+        // An API key's token is for the public API only (the gateway accepts keys on /v1 only).
+        if (req.scope.apiKey && !req.path.startsWith('/v1/')) {
+            return res.status(403).json({ error: 'API keys are accepted on /api/v1 only' });
+        }
         if (req.scope.role === 'client_viewer' && !viewerMayCall(req.method, req.path)) {
             return res.status(403).json({ error: 'Read-only role' });
         }
@@ -396,6 +417,8 @@ app.use(reviewRouter(pool, authenticateToken));
 app.use(opsRouter(pool, authenticateToken));
 // Client portal reads: projects, points, demand, load profile (src/portal.ts).
 app.use(portalRouter(pool, authenticateToken));
+// Public API v1 (src/v1/routes.ts): API keys or sessions, OpenAPI at /v1/openapi.json, docs at /v1/docs.
+app.use(v1Router(pool, authenticateToken));
 
 // Deep health for an external uptime monitor (src/health.ts). Token header,
 // no JWT: the monitor is not a user. Disabled unless HEALTH_TOKEN is set.

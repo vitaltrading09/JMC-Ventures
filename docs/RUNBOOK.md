@@ -139,6 +139,26 @@ The calls below are what the console uses, for scripting (`https://app.<domain>/
 
 **Audit.** Publishing, approving, withdrawing, deployments and corrections are recorded in `audit_log` (who, when, before, after, reason).
 
+## Public API, keys and exports
+**Docs.** `https://app.<domain>/api/docs/` (Swagger UI); the spec is `/api/v1/openapi.json`.
+
+**API keys.**
+- A client admin creates keys in the portal (Settings → API keys); the key is shown once.
+- As super_admin: `POST /api/auth/keys {"tenant_id","name","scopes":[...],"project_ids":[...]}`.
+- Revoke: `DELETE /api/auth/keys/<id>`. The gateway caches a check for 60 s, so a revoked key stops within a minute.
+- `readings:raw` is never a default: grant it only when a client needs every sample.
+- Keys are logged by their prefix (`gq_live_<prefix>_…`); create and revoke are in `audit_log`.
+
+**Rate limit.** `API_KEY_RATE_PER_MIN` (gateway, default 120 per key per minute). Change it in `.env`, then `docker compose up -d gateway`.
+
+**Exports.**
+- Files are in `${DATA_DIR}/exports/<id>.csv.gz`, written by the `jobs` container.
+- The jobs container deletes them 7 days after they are done. They are not in the backups (they can be made again).
+- A failed export keeps its error in `exports.error`: `docker compose exec timescaledb psql -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT id, status, error FROM exports ORDER BY created_at DESC LIMIT 20"`.
+- Signed download links last 1 hour and are signed with `JWT_SECRET`; rotating the secret invalidates open links (callers ask `GET /api/v1/exports/<id>` again).
+
+**Report PDFs.** Attach the PDF while the report is a draft (ops → Review → Reports → Attach), then approve and publish. To replace the PDF of a published report, withdraw it first. Files are kept in `${DATA_DIR}/uploads/report-pdfs/`.
+
 ## Archived meters and sites
 In the app, "delete" **archives**: the meter or site leaves the lists and stops ingesting (its messages are dead-lettered as unknown meter), while its readings, reports and alerts are kept.
 
