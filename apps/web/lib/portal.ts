@@ -8,7 +8,26 @@ export interface PortalTiles {
     today_kwh: number | null;
     coverage_24h: number | null;
     open_alerts: number;
+    /** Every metered point: live = data within 2 min, delayed = within 15, silent = none for 15+. */
+    meters: {
+        point_id: string; name: string; role: string;
+        last_reading_at: string | null; seconds_ago: number | null;
+        state: "live" | "delayed" | "silent";
+        kw: number | null; v: number | null; pf: number | null;
+    }[];
+    top_alerts: { id: string; severity: string; type: string; message: string; created_at: string; point_id: string | null }[];
+    findings: { id: string; type: string; priority: number; title: string; review_status: string; saving_zar: number | null; point_id: string | null }[];
 }
+
+/** Open the AI consultant chat (components/dashboard/ChatWidget.tsx) with a question. */
+export function askConsultant(text: string) {
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("gridiq:ask", { detail: text }));
+}
+
+/** A finding the client sees before Grid-IQ has reviewed it. */
+export const isDraftFinding = (reviewStatus: string | null | undefined) => reviewStatus === "draft" || reviewStatus === "in_review";
+/** Where a finding came from: the rule engine (type RULE_*) or the AI engine. */
+export const findingSource = (type: string | null | undefined) => (type?.startsWith("RULE_") ? "Automated finding" : "AI finding");
 
 export interface PortalProject {
     id: string;

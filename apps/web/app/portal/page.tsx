@@ -12,16 +12,16 @@ import { PageHeader, Panel, Loading, ErrorBox, Empty, Badge } from "@/components
 interface Alert { id: string; meter_name: string; type: string; severity: string; message: string; created_at: string; is_read: boolean; }
 
 export default function PortalOverview() {
-    const projects = useQuery({ queryKey: ["portal-projects"], queryFn: () => apiGet<PortalProject[]>("/ingestion/portal/projects"), refetchInterval: 60_000 });
-    const alerts = useQuery({ queryKey: ["alerts"], queryFn: () => apiGet<Alert[]>("/ingestion/alerts") });
+    const projects = useQuery({ queryKey: ["portal-projects"], queryFn: () => apiGet<PortalProject[]>("/ingestion/portal/projects"), refetchInterval: 15_000 });
+    const alerts = useQuery({ queryKey: ["alerts"], queryFn: () => apiGet<Alert[]>("/ingestion/alerts"), refetchInterval: 30_000 });
     const open = (alerts.data ?? []).filter((a) => !a.is_read).slice(0, 8);
 
     return (
         <div className="space-y-6">
-            <PageHeader title="Overview" subtitle={`Your projects at a glance. Live values are 1-minute averages; times ${TZ_LABEL}.`} />
+            <PageHeader title="Overview" subtitle={`What every meter is doing now. Live values are 1-minute averages, refreshed every 15 s; times ${TZ_LABEL}.`} />
             {projects.isLoading ? <Loading /> : projects.error ? <ErrorBox error={projects.error} /> : (projects.data ?? []).length === 0
                 ? <Empty>No projects yet.</Empty> : (
-                    <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    <div className="grid lg:grid-cols-2 2xl:grid-cols-3 gap-4">
                         {projects.data!.filter((p) => p.status !== "archived").map((p) => <ProjectCard key={p.id} p={p} />)}
                     </div>
                 )}

@@ -5,14 +5,14 @@
 // Findings, Reports. Every figure states its basis and that times are SAST.
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { BarChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, CartesianGrid } from "recharts";
 import { ChevronRight } from "lucide-react";
 import { apiGet, apiSend, apiUrl, fmtAgo, fmtDate, fmtDateTime, TZ_LABEL } from "@/lib/api";
 import { num, zar } from "@/lib/format";
 import { ROLE_LABEL } from "@/lib/ops";
-import { PortalProjectDetail, PortalPoint, pointTree, defaultPoint, canEdit } from "@/lib/portal";
+import { PortalProjectDetail, PortalPoint, pointTree, defaultPoint, canEdit, askConsultant, isDraftFinding, findingSource } from "@/lib/portal";
 import { BalanceView, Balance } from "@/components/fleet/BalanceView";
 import HealthCheckReport from "@/components/report/HealthCheckReport";
 import { SldView } from "@/components/sld/SldView";
@@ -263,9 +263,14 @@ export function PowerQualityTab({ project }: { project: PortalProjectDetail }) {
     );
 }
 
-// ── Findings (published only) ───────────────────────────────────────────────
+// ── Findings (published; drafts too when the platform shares them, labelled) ──
 export function FindingsTab({ project }: { project: PortalProjectDetail }) {
     const q = useQuery({ queryKey: ["findings", project.id], queryFn: () => apiGet<any[]>(`/ingestion/sites/${project.id}/recommendations`) });
+    // A link to #finding-<id> (overview tiles): scroll to it once the findings have loaded.
+    useEffect(() => {
+        if (!q.data || typeof window === "undefined" || !window.location.hash.startsWith("#finding-")) return;
+        document.getElementById(window.location.hash.slice(1))?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, [q.data]);
     const [asked, setAsked] = useState<Record<string, string>>({});
     const notify = useMutation({
         mutationFn: (id: string) => apiSend("POST", `/ingestion/recommendations/${id}/notify`, {}),
@@ -274,13 +279,17 @@ export function FindingsTab({ project }: { project: PortalProjectDetail }) {
     });
     if (q.isLoading) return <Loading />;
     if (q.error) return <ErrorBox error={q.error} />;
-    if ((q.data ?? []).length === 0) return <Panel><Empty>No findings published for this project yet. Grid-IQ reviews every finding before it appears here.</Empty></Panel>;
+    if ((q.data ?? []).length === 0) return <Panel><Empty>No findings for this project yet.</Empty></Panel>;
     return (
         <div className="space-y-4">
             {q.data!.map((f) => (
-                <Panel key={f.id}>
+                <div key={f.id} id={`finding-${f.id}`} className="scroll-mt-24"><Panel>
                     <div className="flex items-start justify-between gap-4">
                         <div>
+                            <div className="flex items-center gap-2 flex-wrap mb-1">
+                                {isDraftFinding(f.review_status) && <Badge tone="blue">Draft · not yet reviewed by Grid-IQ</Badge>}
+                                <span className="text-xs text-slate-400">{findingSource(f.type)}</span>
+                            </div>
                             <p className="text-xs text-slate-500">{f.meter_name ? `${f.meter_name} · ` : ""}{f.confidence} confidence{f.reviewed_at ? ` · reviewed ${fmtDate(f.reviewed_at)}` : ""}</p>
                             <h3 className="text-base font-semibold text-white mt-1">{f.title}</h3>
                         </div>
@@ -293,9 +302,10 @@ export function FindingsTab({ project }: { project: PortalProjectDetail }) {
                     {f.evidence?.from && <p className="text-xs text-slate-500 mt-3">Based on {fmtDateTime(f.evidence.from)} – {fmtDateTime(f.evidence.to)} {TZ_LABEL}{f.standard_reference ? ` · ${f.standard_reference}` : ""}</p>}
                     <div className="flex items-center gap-3 mt-3">
                         <Button variant="secondary" disabled={notify.isPending || !!asked[f.id]} onClick={() => notify.mutate(f.id)}>Ask Grid-IQ to follow up</Button>
+                        <Button variant="secondary" onClick={() => askConsultant(`Explain this finding for ${project.name} and what we should do first: "${f.title}". ${f.problem ?? ""}`)}>Ask the AI consultant</Button>
                         {asked[f.id] && <span className="text-sm text-slate-400">{asked[f.id]}</span>}
                     </div>
-                </Panel>
+                </Panel></div>
             ))}
         </div>
     );

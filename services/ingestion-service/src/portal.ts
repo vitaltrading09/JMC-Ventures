@@ -11,16 +11,18 @@
 //   GET /points/:id/load-profile         hour × weekday averages, baseload
 //   GET /points/:id/demand               30-minute billed demand
 //   GET /points/:id/power-quality        NRS 048-2 assessment of the current deployment
+//   GET /points/:id/metering-report      period report: energy, TOU, demand, extremes, feasibility
 //
 // No internal fields: no device codes, corrections, commissioning or notes.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Router } from 'express';
 import type { Pool } from 'pg';
-import { withScope, findSite, findPoint, tenantSql, telemetrySql } from './scope';
+import { withScope, findSite, findPoint, tenantSql, telemetrySql, seesUnpublishedFindings } from './scope';
 import { planRead, pointSeriesSql } from './aggregates';
 import { loadPointEnergy } from './fleet/balance';
 import { assessPowerQuality } from './power-quality';
+import { meteringReport, MAX_REPORT_DAYS } from './metering-report';
 
 interface Queryable { query(text: string, values?: unknown[]): Promise<{ rows: any[] }> }
 
@@ -50,9 +52,9 @@ async function livePoints(db: Queryable, pointIds: string[]) {
 }
 
 /** The tiles on the projects list: current incomer kW, today's kWh, coverage, open alerts. */
-async function projectTiles(db: Queryable, projectId: string) {
+async function projectTiles(db: Queryable, projectId: string, seesDrafts: boolean) {
     const pts = await db.query(`
-        SELECT mp.id, mp.role, mp.parent_point_id, d.device_id, d.installed_at
+        SELECT mp.id, mp.name, mp.role, mp.parent_point_id, d.device_id, d.installed_at
         FROM measurement_points mp
         LEFT JOIN deployments d ON d.measurement_point_id = mp.id AND d.removed_at IS NULL
         WHERE mp.project_id = $1 AND mp.archived_at IS NULL`, [projectId]);
@@ -79,7 +81,47 @@ async function projectTiles(db: Queryable, projectId: string) {
         SELECT count(*)::int AS n FROM alerts
         WHERE meter_id = ANY($1) AND NOT is_read AND created_at >= NOW() - INTERVAL '7 days'`,
         [deployed.map((p) => p.device_id)])).rows[0].n : 0;
+    // The tile's detail (2026-11): every metered point with its live state, and the top
+    // open alerts and findings, so a client sees at once what each meter is doing.
+    const devIds = deployed.map((p) => p.device_id);
+    const pointOf = new Map<string, string>(deployed.map((p) => [p.device_id, p.id]));
+    const allLive = await livePoints(db, deployed.map((p) => p.id));
+    const lastSeen = new Map<string, Date | null>(devIds.length ? (await db.query(`
+        SELECT d AS device_id,
+               (SELECT max(time) FROM meter_readings WHERE meter_id = d AND time > NOW() - INTERVAL '1 day') AS at
+        FROM unnest($1::uuid[]) AS d`, [devIds])).rows.map((x) => [x.device_id, x.at]) : []);
+    const meters = deployed.map((p) => {
+        const at = lastSeen.get(p.device_id) ?? null;
+        const age = at ? Math.max(0, (Date.now() - new Date(at).getTime()) / 1000) : null;
+        const lv = allLive.get(p.id);
+        return {
+            point_id: p.id, name: p.name, role: p.role,
+            last_reading_at: at, seconds_ago: age === null ? null : Math.round(age),
+            // live: data within 2 minutes; delayed: within 15; silent: nothing for 15 minutes or more.
+            state: age === null ? 'silent' : age <= 120 ? 'live' : age <= 900 ? 'delayed' : 'silent',
+            kw: lv?.kw ?? null, v: lv?.v ?? null, pf: lv?.pf ?? null,
+        };
+    });
+    const topAlerts = devIds.length ? (await db.query(`
+        SELECT id, severity, type, message, created_at, meter_id FROM alerts
+        WHERE meter_id = ANY($1) AND NOT is_read AND created_at >= NOW() - INTERVAL '7 days'
+        ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'WARNING' THEN 2 WHEN 'MEDIUM' THEN 2 ELSE 3 END,
+                 created_at DESC
+        LIMIT 3`, [devIds])).rows.map((a) => ({
+            id: a.id, severity: a.severity, type: a.type, message: a.message, created_at: a.created_at,
+            point_id: pointOf.get(a.meter_id) ?? null,
+        })) : [];
+    const findings = (await db.query(`
+        SELECT id, type, priority, title, review_status, estimated_monthly_saving_zar AS saving_zar, meter_id
+        FROM recommendations
+        WHERE site_id = $1 AND status = 'ACTIVE'
+          AND ${seesDrafts ? "review_status <> 'dismissed'" : "review_status = 'published'"}
+        ORDER BY priority, created_at DESC LIMIT 3`, [projectId])).rows.map((f) => ({
+            id: f.id, type: f.type, priority: f.priority, title: f.title, review_status: f.review_status,
+            saving_zar: num(f.saving_zar), point_id: f.meter_id ? pointOf.get(f.meter_id) ?? null : null,
+        }));
     return {
+        meters, top_alerts: topAlerts, findings,
         incomer_kw: kw === null ? null : Math.round(kw * 10) / 10,
         incomer_at: incomers.length ? (live.get(incomers[0])?.at ?? null) : null,
         today_kwh: todayKwh,
@@ -118,7 +160,7 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
             WHERE p.archived_at IS NULL AND ${tenantSql(req.scope, 'p.tenant_id', params)}
             ORDER BY (p.status = 'active') DESC, p.name`, params);
         const out = [];
-        for (const p of q.rows) out.push({ ...p, tiles: p.telemetry_visible ? await projectTiles(pool, p.id) : null });
+        for (const p of q.rows) out.push({ ...p, tiles: p.telemetry_visible ? await projectTiles(pool, p.id, seesUnpublishedFindings(req.scope)) : null });
         res.json(out);
     }));
 
@@ -248,6 +290,19 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
             basis: 'NRS 048-2: 10-minute values (readings_10m) of the box currently at this point, since its install',
             report,
         });
+    }));
+
+    // Metering report for a period (src/metering-report.ts): energy and TOU split, maximum
+    // demand, best/worst values, feasibility pointers and rough peak-shaving / arbitrage /
+    // solar sizing. Default: the last 30 days; at most MAX_REPORT_DAYS.
+    r.get('/points/:id/metering-report', auth, handle(async (req, res) => {
+        const p = await point(req, res);
+        if (!p) return;
+        const to = req.query.to ? new Date(String(req.query.to)) : new Date();
+        const from = req.query.from ? new Date(String(req.query.from)) : new Date(to.getTime() - 30 * 86_400_000);
+        if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) return res.status(400).json({ error: 'from must be before to' });
+        if (to.getTime() - from.getTime() > MAX_REPORT_DAYS * 86_400_000) return res.status(400).json({ error: `A report covers at most ${MAX_REPORT_DAYS} days` });
+        res.json(await meteringReport(pool, p.id, from, to));
     }));
 
     return r;

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { apiGet, fmtDate } from "@/lib/api";
@@ -25,13 +25,15 @@ export default function PortalProjectPage() {
     const { id } = useParams<{ id: string }>();
     const role = useRole();
     const q = useQuery({ queryKey: ["portal-project", id], queryFn: () => apiGet<PortalProjectDetail>(`/ingestion/portal/projects/${id}`), refetchInterval: 60_000 });
-    const [tab, setTab] = useState<Tab | null>(null);
+    // ?tab=findings (links from the overview tiles) opens that tab.
+    const asked = useSearchParams().get("tab");
+    const [tab, setTab] = useState<Tab | null>(TABS.some(([k]) => k === asked) ? (asked as Tab) : null);
 
     if (q.isLoading) return <Loading />;
     if (q.error || !q.data) return <ErrorBox error={q.error ?? "Not found"} />;
     const p = q.data;
     const tabs = TABS.filter(([k]) => p.telemetry_visible || !TELEMETRY_TABS.includes(k));
-    const current: Tab = tab ?? tabs[0][0];
+    const current: Tab = tab && tabs.some(([k]) => k === tab) ? tab : tabs[0][0];
 
     return (
         <div className="space-y-5">

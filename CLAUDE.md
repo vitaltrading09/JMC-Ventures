@@ -228,6 +228,31 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   - **Tests**: `test/v1.test.js` (unit). `test/db/public-api.test.js` runs the real gateway,
     auth and api end to end (keys, scopes, corrections, CSV, PDF, exports and expiry).
     The scoping test also scans the v1 route declarations.
+- **Client dashboard, rule findings, metering report (2026-11, after Phase 9)**:
+  - Portal overview tiles (`components/portal/ProjectCard.tsx`, from `GET /portal/projects` →
+    `tiles.meters | top_alerts | findings`): per metered point a live / delayed / silent light
+    (last raw reading ≤ 2 min / ≤ 15 min / older), 1-minute kW, V, PF; the top 3 open alerts and
+    findings, each linking to its detail; refreshed every 15 s. A finding's chat button opens the
+    AI consultant with the question (`askConsultant` → `gridiq:ask` event → `ChatWidget`).
+  - **Draft findings for clients**: `CLIENT_SEES_DRAFT_FINDINGS=true` (compose default, owner's
+    decision) lets clients read draft / in-review findings, labelled "Draft · not yet reviewed"
+    (`seesUnpublishedFindings` in `src/scope.ts`); dismissed ones and internal notes stay hidden.
+    Unset (code default, tests) = published only. `/v1/findings` stays published-only.
+  - **Rule findings** (`src/findings-rules.ts`, jobs role hourly and 2 min after start, no AI
+    key needed): per installed point, 7 days of `point_readings_10m`/`30m` → drafts of type
+    `RULE_LOW_PF | RULE_HIGH_THD_V | RULE_CURRENT_IMBALANCE | RULE_MDI_EXCEEDED | RULE_VOLTAGE_SAGS
+    | RULE_HIGH_BASELOAD` with `evidence.engine = 'rules'` and the numbers used. A draft is refreshed
+    while the condition holds and superseded when it clears; published and recently dismissed ones
+    are left alone.
+  - **Metering report** (`src/metering-report.ts`, `GET /points/:id/metering-report?from&to`, ≤ 93
+    days, default 30; page `/portal/projects/[id]/points/[pointId]/report`, linked from the point
+    page, printable): register energy, TOU split and cost, maximum demand and when, load factor,
+    baseload, average weekday/weekend day, best and worst 10-minute values with phase and time,
+    feasibility pointers, and rough peak-shaving / TOU-arbitrage / solar own-use sizing with
+    the assumptions (`ASSUMPTIONS`) and a disclaimer.
+  - A 30-minute interval counts as covered when 80 % of its minutes have samples **or** its
+    samples span ≥ 22.5 min (sparse boxes, e.g. one reading every 5 minutes). Only the new code
+    uses this; `src/demand.ts` and data-health alerting still use minutes only.
 - The ingest container reaches the broker as `mqtts://${MQTT_DOMAIN}:8883`.
   `MQTT_DOMAIN` is a network alias of the mosquitto container, so the TLS
   hostname matches the certificate without leaving the host.
@@ -384,6 +409,23 @@ then `npm run dev`. The ingestion service runs all three roles in one process
 After adding or pulling a migration, apply it from the host with
 `npm run migrate -w packages/db` (uses `DATABASE_URL` from your shell). Services
 refuse to start until it has run.
+
+### Live demo feed (local dev only)
+
+The five demo meters publish over MQTT every 5 s through the real ingest path
+(`src/demo-feed.ts`, compose profile `demo`), so the portal tiles show them live.
+Run `scripts/seed-readings.ts` first to fill history up to now. One-time setup:
+```bash
+# .env: DEMO_FEED_ALLOW=true and DEMO_FEED_MQTT_PASSWORD=<random>
+# mosquitto/config/acl: the "user demo-feed / topic write acuvim/+/telemetry" block (acl.example)
+MSYS_NO_PATHCONV=1 docker compose exec mosquitto mosquitto_passwd -b /mosquitto/config/passwd demo-feed '<DEMO_FEED_MQTT_PASSWORD>'
+docker compose kill -s SIGHUP mosquitto
+docker compose --profile demo up -d demo-feed     # stop: docker compose --profile demo stop demo-feed
+```
+- The energy register continues from each meter's last stored value. Rows are normal MQTT rows
+  (`time_source = 'DEVICE'`), on demo meters only. Never create the `demo-feed` broker user on a server.
+- Caddy's local certificates last ~12 h: if ingest or the feed log `certificate has expired`,
+  run `bash deploy/scripts/sync-mqtt-certs.sh`.
 
 ### Public link to the local stack (Cloudflare quick tunnel, testing only)
 

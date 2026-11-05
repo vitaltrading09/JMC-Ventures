@@ -23,13 +23,14 @@ import { fleetRouter, extendFirstDeployment } from './fleet/routes';
 import { runCommissioning } from './fleet/commissioning';
 import {
     buildScope, normaliseRole, viewerMayCall, tenantSql, telemetrySql, exclusiveDeviceSql, forClient, canWrite,
-    findSite, findMeter, findOwned, meterParam, siteParam, requireWrite,
+    findSite, findMeter, findOwned, meterParam, siteParam, requireWrite, seesUnpublishedFindings,
 } from './scope';
 import { reviewRouter } from './review';
 import { opsRouter } from './ops';
 import { portalRouter } from './portal';
 import { v1Router } from './v1/routes';
 import { runExports, expireExports } from './v1/exports-job';
+import { runRuleFindings } from './findings-rules';
 import { randomBytes, createHash } from 'crypto';
 import {
     generateAndStoreSiteRecommendations,
@@ -335,7 +336,25 @@ function registerJobs(pool: Pool) {
         }
     });
 
-    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00, exports 1m)');
+    // Rule-based findings (src/findings-rules.ts): drafts from 7 days of measured data,
+    // hourly and once two minutes after start. No AI provider needed.
+    let findingRules = false;
+    const runRules = async () => {
+        if (findingRules) return;
+        findingRules = true;
+        try {
+            const c = await runRuleFindings(pool);
+            if (c.inserted || c.cleared) console.log(`[FINDINGS] rules: ${c.points} points, ${c.inserted} new, ${c.refreshed} refreshed, ${c.cleared} cleared`);
+        } catch (e: any) {
+            console.error('[FINDINGS] rules run failed:', e?.message || e);
+        } finally {
+            findingRules = false;
+        }
+    };
+    cron.schedule('7 * * * *', runRules);
+    setTimeout(runRules, 120_000).unref();
+
+    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00, exports 1m, rule findings 1h)');
 }
 
 // Health of the roles this process runs. Shared by the api /health route and
@@ -2365,7 +2384,7 @@ app.get('/sites/scores', authenticateToken, async (req: any, res) => {
 // GET /sites/:id/recommendations — active recommendations for a site
 app.get('/sites/:id/recommendations', authenticateToken, siteParam(pool), async (req: any, res) => {
     try {
-        const recs = await getSiteRecommendations(pool, req.params.id, req.scope.isInternal);
+        const recs = await getSiteRecommendations(pool, req.params.id, seesUnpublishedFindings(req.scope));
         res.json(recs.map((r) => forClient(req.scope, r)));
     } catch (err) {
         res.status(500).json({ error: 'Error fetching recommendations' });
@@ -2375,7 +2394,7 @@ app.get('/sites/:id/recommendations', authenticateToken, siteParam(pool), async 
 // GET /recommendations — all recommendations for the tenant
 app.get('/recommendations', authenticateToken, async (req: any, res) => {
     try {
-        const recs = await getTenantRecommendations(pool, req.scope.filterTenantId, req.scope.isInternal);
+        const recs = await getTenantRecommendations(pool, req.scope.filterTenantId, seesUnpublishedFindings(req.scope));
         res.json(recs.map((r) => forClient(req.scope, r)));
     } catch (err) {
         res.status(500).json({ error: 'Error fetching recommendations' });
@@ -2407,7 +2426,7 @@ app.post('/sites/:id/recommendations/generate', authenticateToken, siteParam(poo
 // GET /meters/:id/recommendations — active recommendations for a single meter
 app.get('/meters/:id/recommendations', authenticateToken, meterParam(pool), async (req: any, res) => {
     try {
-        const recs = await getMeterRecommendations(pool, req.params.id, req.scope.isInternal);
+        const recs = await getMeterRecommendations(pool, req.params.id, seesUnpublishedFindings(req.scope));
         res.json(recs.map((r) => forClient(req.scope, r)));
     } catch (err) {
         res.status(500).json({ error: 'Error fetching meter recommendations' });
@@ -2443,7 +2462,7 @@ app.post('/recommendations/:id/notify', authenticateToken, async (req: any, res)
     try {
         // The recommendation belongs to this tenant and, for a client, is published.
         const rec = await findOwned(client, req.scope, 'recommendations', id,
-            req.scope.isInternal ? 'TRUE' : "x.review_status = 'published'");
+            seesUnpublishedFindings(req.scope) ? "x.review_status <> 'dismissed'" : "x.review_status = 'published'");
         if (!rec) return res.status(403).json({ error: 'Forbidden' });
 
         // Prevent duplicate active leads for the same recommendation

@@ -34,6 +34,9 @@ x-ingestion-env: &ingestion-env
   COMPRESS_AFTER_DAYS: ${COMPRESS_AFTER_DAYS:-15}
   # Broker portfolio routes and the renewal sweep (kept, off by default).
   FEATURE_BROKER: ${FEATURE_BROKER:-false}
+  # Clients also see draft (unreviewed) findings, labelled as drafts (owner's
+  # decision 2026-11). false = published findings only, the strict review gate.
+  CLIENT_SEES_DRAFT_FINDINGS: ${CLIENT_SEES_DRAFT_FINDINGS:-true}
 
 services:
   caddy:
@@ -201,6 +204,33 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+
+  # Live demo feed (profile "demo", local dev only): the five demo meters
+  # publish over MQTT every few seconds, through the real ingest path
+  # (src/demo-feed.ts). Needs DEMO_FEED_ALLOW=true and the demo-feed broker
+  # user (CLAUDE.md, "Live demo feed"). Never on a server.
+  demo-feed:
+    <<: *ingestion-image
+    profiles: [demo]
+    restart: unless-stopped
+    command: ["node", "dist/demo-feed.js"]
+    healthcheck:
+      disable: true
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      # Its own opt-in, separate from the seed scripts' ALLOW_DEMO_SEED.
+      ALLOW_DEMO_SEED: ${DEMO_FEED_ALLOW:-false}
+      MQTT_BROKER_URL: mqtts://${MQTT_DOMAIN}:8883
+      MQTT_CA_CERT: ${MQTT_CA_CERT:-}
+      MQTT_TLS_REJECT_UNAUTHORIZED: ${MQTT_TLS_REJECT_UNAUTHORIZED:-true}
+      DEMO_FEED_MQTT_USERNAME: ${DEMO_FEED_MQTT_USERNAME:-demo-feed}
+      DEMO_FEED_MQTT_PASSWORD: ${DEMO_FEED_MQTT_PASSWORD:-}
+      DEMO_FEED_INTERVAL_S: ${DEMO_FEED_INTERVAL_S:-5}
+    volumes:
+      - ${DATA_DIR:-./.data}/mqtt-certs:/mqtt-certs:ro
+    depends_on:
+      - mosquitto
+      - ingest
 
   # Cloudflare quick tunnel (profile "tunnel", local testing only): a temporary
   # public https://<random>.trycloudflare.com address for this stack, with no

@@ -143,6 +143,22 @@ export function exclusiveDeviceSql(scope: Scope, deviceAlias: string, params: un
 
 /** Fields client roles never receive, even if a query selects them. */
 const INTERNAL_FIELDS = ['internal_notes', 'reviewed_by'];
+/**
+ * Whether clients also see draft (unreviewed) findings, which the portal labels
+ * "Draft, not yet reviewed". Internal users always do. Off unless
+ * CLIENT_SEES_DRAFT_FINDINGS=true (compose turns it on); dismissed findings and
+ * internal notes stay hidden either way. The public API (/v1/findings) stays
+ * published-only.
+ */
+export function clientSeesDraftFindings(): boolean {
+    return process.env.CLIENT_SEES_DRAFT_FINDINGS === 'true';
+}
+
+/** May this scope read findings that are not yet published (drafts, in review)? */
+export function seesUnpublishedFindings(scope: Scope): boolean {
+    return scope.isInternal || clientSeesDraftFindings();
+}
+
 export function forClient<T extends Record<string, any>>(scope: Scope, row: T): T {
     if (scope.isInternal || !row) return row;
     const out: any = { ...row };

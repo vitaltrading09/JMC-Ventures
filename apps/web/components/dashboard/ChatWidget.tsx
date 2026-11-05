@@ -23,6 +23,22 @@ export function ChatWidget() {
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
+    // Other pages open the chat with a question: askConsultant(text) in lib/portal.ts
+    // dispatches "gridiq:ask"; the question is sent once the widget is open.
+    const [pending, setPending] = useState<string | null>(null);
+    useEffect(() => {
+        const onAsk = (e: Event) => {
+            const text = (e as CustomEvent<string>).detail;
+            if (typeof text === 'string' && text.trim()) { setIsOpen(true); setPending(text); }
+        };
+        window.addEventListener('gridiq:ask', onAsk);
+        return () => window.removeEventListener('gridiq:ask', onAsk);
+    }, []);
+    useEffect(() => {
+        if (pending && !isLoading) { const q = pending; setPending(null); sendMessage(q); }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pending, isLoading]);
+
     // Fetch context + suggestions when chat opens
     useEffect(() => {
         if (!isOpen || context) return;
