@@ -385,6 +385,22 @@ After adding or pulling a migration, apply it from the host with
 `npm run migrate -w packages/db` (uses `DATABASE_URL` from your shell). Services
 refuse to start until it has run.
 
+### Public link to the local stack (Cloudflare quick tunnel, testing only)
+
+No server, account, card or domain: compose profile `tunnel` runs `cloudflared` and gives a
+random `https://<words>.trycloudflare.com` address for the web app and `/api`.
+```bash
+# once: in .env, WEB_API_URL=/api (the web calls the API on its own origin), then
+docker compose build web && docker compose up -d web
+MSYS_NO_PATHCONV=1 docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile   # after a Caddyfile change
+docker compose --profile tunnel up -d tunnel && bash deploy/tunnel-url.sh
+docker compose --profile tunnel stop tunnel        # take it offline
+```
+- cloudflared reaches Caddy's plain `http://:8080` listener on the compose network (never
+  published); Caddy trusts its `X-Forwarded-Proto`, so redirects stay on the tunnel's https host.
+- The address changes on every start, works only while this PC runs, and carries no MQTT
+  (meters cannot use it). Anyone with the link reaches the login page.
+
 ### Test a meter reading via MQTT
 Local dev, plain listener on 127.0.0.1:1883 (from the override). The ACL only
 lets a user publish to `acuvim/<its username>/telemetry`, so the meter user

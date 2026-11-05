@@ -68,7 +68,9 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         # Baked into the client bundle; the browser calls the API via Caddy.
-        NEXT_PUBLIC_API_URL: https://${APP_DOMAIN}/api
+        # WEB_API_URL=/api (relative, same origin) lets one build serve any
+        # host name, e.g. a quick tunnel's random address (profile "tunnel").
+        NEXT_PUBLIC_API_URL: ${WEB_API_URL:-https://${APP_DOMAIN}/api}
         # The broker host shown to installers on the Add Meter screen.
         NEXT_PUBLIC_MQTT_HOST: ${MQTT_DOMAIN}
         NEXT_PUBLIC_FEATURE_BROKER: ${FEATURE_BROKER:-false}
@@ -199,6 +201,19 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+
+  # Cloudflare quick tunnel (profile "tunnel", local testing only): a temporary
+  # public https://<random>.trycloudflare.com address for this stack, with no
+  # Cloudflare account, domain or open port. Web only; meters cannot use it.
+  # Needs WEB_API_URL=/api in .env and a rebuilt web image. The address is in
+  # the logs and changes on every start:
+  #   docker compose --profile tunnel up -d tunnel && bash deploy/tunnel-url.sh
+  tunnel:
+    image: cloudflare/cloudflared:2025.11.1
+    profiles: [tunnel]
+    command: tunnel --no-autoupdate --url http://caddy:8080
+    depends_on:
+      - caddy
 
   # Tools (profile "tools": never started by `up`). The S3 client that
   # deploy/scripts/backup.sh and restore-drill.sh run with `compose run`.
