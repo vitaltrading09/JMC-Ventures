@@ -21,6 +21,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { freePorts } = require('./ports');
 
 const url = process.env.TEST_DATABASE_URL;
 // A fresh signing key per run, shared with the services this test starts.
@@ -78,8 +79,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
 
     const run = crypto.randomBytes(4).toString('hex');
     const uploadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gq-scope-'));
-    const apiPort = 39100 + Math.floor(Math.random() * 400);
-    const authPort = apiPort + 500;
+    const [apiPort, authPort] = await freePorts(2);
     const api = startService(path.join(ROOT, 'dist', 'main.js'), apiPort, { ROLES: 'api', UPLOAD_DIR: uploadDir, FEATURE_BROKER: 'false', OPENAI_API_KEY: '' });
     const auth = startService(path.join(ROOT, '..', 'auth-service', 'dist', 'main.js'), authPort, {});
     t.after(() => { api.child.kill(); auth.child.kill(); });

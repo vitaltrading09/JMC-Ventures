@@ -20,6 +20,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { freePorts } = require('./ports');
 
 const url = process.env.TEST_DATABASE_URL;
 const SECRET = crypto.randomBytes(32).toString('hex');
@@ -58,8 +59,7 @@ test('public API v1', { skip: !url && 'TEST_DATABASE_URL not set', timeout: 300_
     const exportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gq-v1-ex-'));
     process.env.EXPORT_DIR = exportDir;
     process.env.JWT_SECRET = SECRET; // the export job and link signing in this process
-    const base = 40100 + Math.floor(Math.random() * 300);
-    const [apiPort, authPort, gwPort] = [base, base + 400, base + 800];
+    const [apiPort, authPort, gwPort] = await freePorts(3);
     const api = start(path.join(ROOT, 'dist', 'main.js'), apiPort, { ROLES: 'api', UPLOAD_DIR: uploadDir, EXPORT_DIR: exportDir, OPENAI_API_KEY: '' });
     const auth = start(path.join(ROOT, '..', 'auth-service', 'dist', 'main.js'), authPort, {});
     const gw = start(path.join(ROOT, '..', 'api-gateway', 'dist', 'main.js'), gwPort, {
