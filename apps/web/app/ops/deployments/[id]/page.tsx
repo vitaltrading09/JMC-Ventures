@@ -49,7 +49,7 @@ export default function DeploymentPage() {
         }),
         onSuccess: () => { setCorr({ power_sign: "", scale_correction: "", ct_ratio_configured: "", pt_ratio_configured: "", reason: "" }); refresh(); },
     });
-    const [rm, setRm] = useState({ removed_at: "", device_status: "in_stock", reason: "" });
+    const [rm, setRm] = useState({ removed_at: "", device_status: "available", reason: "" });
     const remove = useMutation({
         mutationFn: () => apiSend("POST", `/ingestion/deployments/${id}/remove`, {
             device_status: rm.device_status, reason: rm.reason || undefined,
@@ -118,7 +118,7 @@ export default function DeploymentPage() {
                             <Field label="Disconnected at (your local time)" hint="Empty = now"><input type="datetime-local" className={inputClass} value={rm.removed_at} onChange={(e) => setRm({ ...rm, removed_at: e.target.value })} /></Field>
                             <Field label="Box goes to">
                                 <select className={inputClass} value={rm.device_status} onChange={(e) => setRm({ ...rm, device_status: e.target.value })}>
-                                    <option value="in_stock">Stock</option><option value="maintenance">Maintenance</option>
+                                    <option value="available">Available (depot)</option><option value="in_transit">In transit</option><option value="maintenance">Maintenance</option>
                                 </select>
                             </Field>
                             <div className="col-span-2"><Field label="Note"><input className={inputClass} value={rm.reason} onChange={(e) => setRm({ ...rm, reason: e.target.value })} /></Field></div>

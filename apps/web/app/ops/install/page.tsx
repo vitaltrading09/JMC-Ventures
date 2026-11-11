@@ -49,7 +49,7 @@ function Wizard() {
         queryFn: () => apiGet<{ points: Point[] }>(`/ingestion/projects/${projectId}`),
     });
 
-    const available = (devices.data ?? []).filter((d) => d.status === "in_stock" || d.status === "maintenance" || d.id === deviceId);
+    const available = (devices.data ?? []).filter((d) => d.status === "available" || d.status === "reserved" || d.status === "maintenance" || d.id === deviceId);
     const device = available.find((d) => d.id === deviceId);
     const freePoints = (project.data?.points ?? []).filter((p) => !p.archived_at && !p.deployment_id);
     const step = !deviceId ? 0 : !tenantId ? 1 : !projectId ? 2 : !pointId ? 3 : 4;

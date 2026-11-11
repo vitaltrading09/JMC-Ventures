@@ -316,7 +316,8 @@ export function feasibilityNotes(i: ReportInput, shape: ReturnType<typeof loadSh
 }
 
 /** The whole report from loaded rows (no database: unit-testable). */
-export function buildReport(i: ReportInput) {
+export function buildReport(i: ReportInput, opts: { sizing?: boolean } = {}) {
+    const sizing = opts.sizing !== false;
     const shape = loadShape(i.rows30);
     const ex = extremes(i.rows10);
     const pfVals = i.rows30.filter((x) => x.pf !== null && (x.kw ?? 0) > 0).map((x) => Math.abs(x.pf!));
@@ -333,8 +334,13 @@ export function buildReport(i: ReportInput) {
             basis: '30-minute billed demand (kVA), intervals at least 80 % covered' },
         extremes: ex,
         extremes_basis: '10-minute values (NRS 048-2 basis); minima and maxima are of the samples in each window',
-        feasibility: {
+        feasibility: !sizing ? {
             notes: feasibilityNotes(i, shape, ex, pfAvg),
+            sizing_available: false,
+            handover: 'GridIQ supplies the measured profile, demand and power-quality findings for an independent feasibility study (exports and API). System sizing is not part of this report.',
+        } : {
+            notes: feasibilityNotes(i, shape, ex, pfAvg),
+            sizing_available: true,
             peak_shaving: shaving,
             arbitrage: mid ? arbitrage(i.rows30, i.tariffs, mid.battery_energy_kwh ?? 0) : null,
             solar: solarOwnUse(i.rows30, i.tariffs),
@@ -348,7 +354,7 @@ export function buildReport(i: ReportInput) {
 const n = (v: any): number | null => (v === null || v === undefined ? null : Number(v));
 
 /** Load everything for a point and period, then build the report. */
-export async function meteringReport(db: Pool, pointId: string, from: Date, to: Date) {
+export async function meteringReport(db: Pool, pointId: string, from: Date, to: Date, opts: { sizing?: boolean } = {}) {
     const pt = (await db.query(`
         SELECT mp.id, mp.name, mp.role, mp.nominal_voltage_v, mp.project_id, p.name AS project_name,
                COALESCE(mp.contracted_mdi_kva, ss.contracted_mdi_kva) AS mdi,
@@ -393,7 +399,7 @@ export async function meteringReport(db: Pool, pointId: string, from: Date, to: 
         })),
         tariffs, mdiKva: n(pt.mdi), vNominal: n(pt.nominal_voltage_v) ?? 230,
         energy: energy.coverage > 0 ? { importKwh: energy.importKwh, exportKwh: energy.exportKwh, coverage: energy.coverage } : null,
-    });
+    }, opts);
     return {
         point: { id: pt.id, name: pt.name, role: pt.role, project_id: pt.project_id, project_name: pt.project_name, tariff_type: pt.tariff_type ?? null },
         period: { from, to, time_zone: 'Africa/Johannesburg (SAST, UTC+2)' },

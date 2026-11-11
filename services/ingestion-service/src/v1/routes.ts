@@ -16,7 +16,8 @@ import type { Pool } from 'pg';
 import fs from 'fs';
 import path from 'path';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { withScope, findSite, findPoint, tenantSql, telemetrySql, hasApiScope, projectAllowed, forClient, Scope } from '../scope';
+import { withScope, findSite, findPoint, tenantSql, telemetrySql, hasApiScope, projectAllowed, forClient, Scope, NO_ACCESS,
+    clampToAccess, alignInward, exportEntitledSql, deliverySql, AccessWindow } from '../scope';
 import { projectEnergyBalance } from '../fleet/balance';
 import { loadSeries, toCsv, datasetId, conventions, INTERVALS, Interval, MAX_RANGE_DAYS, COLUMNS } from './series';
 import { resolveStoredUploadPath } from '../roles';
@@ -75,8 +76,16 @@ export function v1Routes(pool: Pool): ApiRoute[] {
     const point = async (s: Scope, id: string) => {
         const p = await findPoint(pool, s, id);
         if (!p || !projectAllowed(s, p.project_id)) throw new ApiError(404, 'Point not found');
-        if (!p.telemetry_visible) throw new ApiError(403, 'Live data for this project is shared through published reports');
+        if (!p.telemetry_visible) throw new ApiError(403, NO_ACCESS);
         return p;
+    };
+    /** A range clamped to the caller's assessment window, aligned to whole intervals. */
+    const WIDTH: Record<Interval, number> = { raw: 1000, '1m': 60_000, '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000, '1d': DAY };
+    const inWindow = (from: Date, to: Date, interval: Interval, w: AccessWindow) => {
+        const c = clampToAccess(from, to, w);
+        const r = c && alignInward(c, WIDTH[interval], w, interval === '1d' ? 2 * 3_600_000 : 0);
+        if (!r) throw new ApiError(400, 'No part of this range lies inside the assessment period');
+        return r;
     };
     const rangeOf = (q: any, interval: Interval) => {
         const to = q.to ? dateParam(q.to, 'to') : new Date();
@@ -153,7 +162,8 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 needScope(req.scope, 'readings:read');
                 const p = await point(req.scope, req.params.id);
                 const interval = intervalOf(req.query.interval, req.scope);
-                const { from, to } = rangeOf(req.query, interval);
+                const asked = rangeOf(req.query, interval);
+                const { from, to } = inWindow(asked.from, asked.to, interval, p);
                 const rows = await loadSeries(pool, p.id, interval, from, to);
                 const id = datasetId(p.id, interval, from, to);
                 if (String(req.query.format ?? 'json') === 'csv') {
@@ -182,9 +192,10 @@ export function v1Routes(pool: Pool): ApiRoute[] {
             handler: async (req, res) => {
                 needScope(req.scope, 'energy:read');
                 const p = await project(req.scope, req.params.id);
-                if (!p.telemetry_visible) throw new ApiError(403, 'Live data for this project is shared through published reports');
-                const from = dateParam(req.query.from, 'from'), to = dateParam(req.query.to, 'to');
-                if (from >= to) throw new ApiError(400, 'from must be before to');
+                if (!p.telemetry_visible) throw new ApiError(403, NO_ACCESS);
+                const asked = { from: dateParam(req.query.from, 'from'), to: dateParam(req.query.to, 'to') };
+                if (asked.from >= asked.to) throw new ApiError(400, 'from must be before to');
+                const { from, to } = inWindow(asked.from, asked.to, 'raw', p);
                 const interval = String(req.query.interval ?? 'total');
                 if (!['total', 'day', 'month'].includes(interval)) throw new ApiError(400, 'interval: total, day or month');
                 const periods = splitPeriods(from, to, interval as any);
@@ -206,6 +217,7 @@ export function v1Routes(pool: Pool): ApiRoute[] {
             handler: async (req, res) => {
                 needScope(req.scope, 'findings:read');
                 const p = await project(req.scope, req.params.id);
+                if (!p.telemetry_visible) throw new ApiError(403, NO_ACCESS);
                 const q = await pool.query(`
                     SELECT id, meter_id, type, priority, title, problem, solution, estimated_monthly_saving_zar,
                            estimated_implementation_cost_zar, payback_months, confidence, standard_reference, evidence,
@@ -225,8 +237,10 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 needScope(req.scope, 'reports:read');
                 const p = await project(req.scope, req.params.id);
                 const q = await pool.query(`
-                    SELECT id, title, period_start, period_end, published_at, (pdf_path IS NOT NULL) AS has_pdf
-                    FROM reports WHERE project_id = $1 AND status = 'published' ORDER BY period_end DESC`, [p.id]);
+                    SELECT rp.id, rp.title, rp.period_start, rp.period_end, rp.published_at, (rp.pdf_path IS NOT NULL) AS has_pdf
+                    FROM reports rp JOIN projects pj ON pj.id = rp.project_id
+                    WHERE rp.project_id = $1 AND rp.status = 'published' AND ${deliverySql(req.scope, 'pj')}
+                    ORDER BY rp.period_end DESC`, [p.id]);
                 res.json(q.rows.map((r) => ({ ...r, pdf_url: r.has_pdf ? `/api/v1/reports/${r.id}.pdf` : null })));
             },
         },
@@ -243,7 +257,8 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 const params: unknown[] = [m[1]];
                 const r = (await pool.query(`
                     SELECT rp.id, rp.project_id, rp.pdf_path, rp.title FROM reports rp JOIN projects p ON p.id = rp.project_id
-                    WHERE rp.id = $1 AND rp.status = 'published' AND ${tenantSql(req.scope, 'p.tenant_id', params)}`, params)).rows[0];
+                    WHERE rp.id = $1 AND rp.status = 'published' AND ${tenantSql(req.scope, 'p.tenant_id', params)}
+                      AND ${deliverySql(req.scope, 'p')}`, params)).rows[0];
                 if (!r || !projectAllowed(req.scope, r.project_id)) throw new ApiError(404, 'Not found');
                 const file = r.pdf_path ? resolveStoredUploadPath(r.pdf_path) : null;
                 if (!file || !fs.existsSync(file)) throw new ApiError(404, 'No PDF attached to this report');
@@ -266,8 +281,9 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 const b = req.body ?? {};
                 const p = await point(req.scope, String(b.point_id ?? ''));
                 const interval = intervalOf(b.interval, req.scope);
-                const from = dateParam(b.from, 'from'), to = dateParam(b.to, 'to');
-                if (from >= to) throw new ApiError(400, 'from must be before to');
+                const asked = { from: dateParam(b.from, 'from'), to: dateParam(b.to, 'to') };
+                if (asked.from >= asked.to) throw new ApiError(400, 'from must be before to');
+                const { from, to } = inWindow(asked.from, asked.to, interval, p);
                 const maxDays = interval === 'raw' ? 31 : interval === '1m' ? 366 : 3660;
                 if (to.getTime() - from.getTime() > maxDays * DAY) throw new ApiError(400, `At most ${maxDays} days at interval ${interval}`);
                 const row = (await pool.query(`
@@ -326,7 +342,8 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 if (!UUID.test(req.params.id) || !checkDownload(req.params.id, Number(req.query.expires), String(req.query.sig ?? ''))) {
                     throw new ApiError(403, 'This download link is invalid or has expired');
                 }
-                const row = (await pool.query(`SELECT id, status FROM exports WHERE id = $1`, [req.params.id])).rows[0];
+                // Re-checked at download: an export never outlives the assessment it came from.
+                const row = (await pool.query(`SELECT e.id, e.status FROM exports e WHERE e.id = $1 AND ${exportEntitledSql('e')}`, [req.params.id])).rows[0];
                 const file = path.join(exportDir(), `${req.params.id}.csv.gz`);
                 if (!row || row.status !== 'done' || !fs.existsSync(file)) throw new ApiError(404, 'Export not available');
                 res.setHeader('Content-Type', 'application/gzip');

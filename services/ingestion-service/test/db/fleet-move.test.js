@@ -48,7 +48,7 @@ test('fleet: move a device between projects', { skip: !url && 'TEST_DATABASE_URL
     const dev = await call('POST', '/devices', { code: `t-${run}`, serial_number: `SN-${run}`, model: 'Acuvim II' });
     assert.strictEqual(dev.status, 201);
     assert.strictEqual(dev.body.mqtt_username, `t-${run}`);
-    assert.strictEqual(dev.body.status, 'in_stock');
+    assert.strictEqual(dev.body.status, 'available');
     const device = dev.body.id;
 
     // Hour-aligned timeline a few hours back.

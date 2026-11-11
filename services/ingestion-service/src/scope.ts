@@ -12,8 +12,15 @@
 //   broker                            nothing here; broker routes resolve
 //                                     their own grants (FEATURE_BROKER)
 //
-// Live data visibility: a client sees no telemetry for a project with
-// live_data_visible = false until a report for it has been published.
+// Live data visibility (GridIQ assessment model, 2026-11-11): a client sees
+// telemetry, findings and chat for a project only through an access grant on an
+// assessment of that project whose window [start_at, end_at) contains NOW(),
+// that is active and not closed early, and whose grant is not revoked. This is
+// evaluated in SQL on every request, so expiry needs no background job and
+// no token, session or cache can extend it. API-key requests inherit the
+// assessment window (the key is the tenant's, limited to its projects).
+// Client reads are also clamped to the window ([access_from, access_to)).
+// projects.live_data_visible no longer grants anything (kept for staff views).
 //
 // Moved devices: the legacy per-meter routes find a device through its
 // current project (devices.site_id), and its readings are keyed by device
@@ -122,11 +129,107 @@ function tenantParam(scope: Scope, params: unknown[]): string {
     return `$${params.length}`;
 }
 
+/** A user id that is safe to inline in SQL (validated), or null. */
+const safeUuid = (v: unknown): string | null => (typeof v === 'string' && UUID.test(v) ? v.toLowerCase() : null);
+
+/**
+ * The live assessments (alias a) a scope may use, as a WHERE condition: in
+ * window, active, not closed; for a user, through an unrevoked grant naming
+ * the user or, before the user existed, the user's email.
+ */
+export function liveAssessmentSql(scope: Scope, assessmentAlias = 'a'): string {
+    const a = assessmentAlias;
+    const live = `${a}.status = 'active' AND ${a}.closed_at IS NULL AND ${a}.start_at <= NOW() AND NOW() < ${a}.end_at`;
+    if (scope.apiKey) return live;
+    const uid = safeUuid(scope.userId);
+    if (!uid) return 'FALSE';
+    return `${live} AND EXISTS (SELECT 1 FROM assessment_grants g WHERE g.assessment_id = ${a}.id AND g.revoked_at IS NULL
+              AND (g.user_id = '${uid}'::uuid
+                   OR (g.user_id IS NULL AND g.email = (SELECT lower(u.email) FROM users u WHERE u.id = '${uid}'::uuid))))`;
+}
+
 /** Live-data condition on a project alias: always TRUE for internal users. */
 export function telemetrySql(scope: Scope, projectAlias: string): string {
     if (scope.isInternal) return 'TRUE';
-    return `(${projectAlias}.live_data_visible OR EXISTS (SELECT 1 FROM reports rp
-              WHERE rp.project_id = ${projectAlias}.id AND rp.status = 'published'))`;
+    return `EXISTS (SELECT 1 FROM assessments ax WHERE ax.project_id = ${projectAlias}.id AND ${liveAssessmentSql(scope, 'ax')})`;
+}
+
+/**
+ * The time window a client may read for a project: [access_from, access_to)
+ * over its live assessments, as two select-list expressions. NULL for
+ * internal users (no clamp).
+ */
+export function accessWindowSql(scope: Scope, projectAlias: string): string {
+    if (scope.isInternal) return 'NULL::timestamptz AS access_from, NULL::timestamptz AS access_to';
+    const w = (agg: string, col: string) =>
+        `(SELECT ${agg}(${col}) FROM assessments ax WHERE ax.project_id = ${projectAlias}.id AND ${liveAssessmentSql(scope, 'ax')})`;
+    return `${w('min', 'ax.start_at')} AS access_from, ${w('max', 'ax.end_at')} AS access_to`;
+}
+
+export interface AccessWindow { access_from?: Date | string | null; access_to?: Date | string | null }
+
+/**
+ * Clamps a requested range to a client's access window (and to now).
+ * Internal users (no window) get the range unchanged. Null when nothing is left.
+ */
+export function clampToAccess(from: Date, to: Date, w: AccessWindow): { from: Date; to: Date } | null {
+    let f = from.getTime(), t = to.getTime();
+    if (w.access_from) f = Math.max(f, new Date(w.access_from).getTime());
+    if (w.access_to) t = Math.min(t, new Date(w.access_to).getTime(), Date.now());
+    return f < t ? { from: new Date(f), to: new Date(t) } : null;
+}
+
+/**
+ * Aligns a clamped range inward to whole buckets of widthMs, so no aggregate
+ * bucket that lies partly outside a client's window is returned. Internal
+ * users get the range unchanged.
+ */
+export function alignInward(r: { from: Date; to: Date }, widthMs: number, w: AccessWindow, offsetMs = 0): { from: Date; to: Date } | null {
+    if (!w.access_from && !w.access_to) return r;
+    const f = w.access_from ? Math.ceil((r.from.getTime() + offsetMs) / widthMs) * widthMs - offsetMs : r.from.getTime();
+    const t = w.access_to ? Math.floor((r.to.getTime() + offsetMs) / widthMs) * widthMs - offsetMs : r.to.getTime();
+    return f < t ? { from: new Date(f), to: new Date(t) } : null;
+}
+
+/**
+ * Whoever started an export (alias e) may still receive it: staff always; a
+ * client user only while it holds a live grant on the point's project; an
+ * API key only while the project has a live assessment. Checked when the job
+ * runs and again at download, so an export never outlives the assessment.
+ */
+export function exportEntitledSql(e = 'e'): string {
+    const live = `ax.status = 'active' AND ax.closed_at IS NULL AND ax.start_at <= NOW() AND NOW() < ax.end_at`;
+    return `(
+        (${e}.api_key_id IS NULL AND EXISTS (SELECT 1 FROM users u WHERE u.id = ${e}.created_by AND u.role IN ('super_admin', 'engineer')))
+        OR EXISTS (SELECT 1 FROM assessments ax JOIN measurement_points mpx ON mpx.project_id = ax.project_id
+                   WHERE mpx.id = ${e}.measurement_point_id AND ${live}
+                     AND (${e}.api_key_id IS NOT NULL OR EXISTS (
+                          SELECT 1 FROM assessment_grants g WHERE g.assessment_id = ax.id AND g.revoked_at IS NULL
+                            AND (g.user_id = ${e}.created_by
+                                 OR (g.user_id IS NULL AND g.email = (SELECT lower(u.email) FROM users u WHERE u.id = ${e}.created_by)))))))`;
+}
+
+/**
+ * Final-delivery access to a project's frozen deliverables (published reports
+ * and their PDFs) for a client: during a live assessment, or for the
+ * assessment's delivery_days after it ended (capped by retention), through a
+ * grant that receives reports. It never reopens readings, findings or chat.
+ */
+export function deliverySql(scope: Scope, projectAlias: string): string {
+    if (scope.isInternal) return 'TRUE';
+    const uid = safeUuid(scope.userId);
+    const grant = scope.apiKey ? 'TRUE' : !uid ? 'FALSE' : `EXISTS (SELECT 1 FROM assessment_grants g WHERE g.assessment_id = ad.id AND g.revoked_at IS NULL
+              AND g.receives_reports
+              AND (g.user_id = '${uid}'::uuid
+                   OR (g.user_id IS NULL AND g.email = (SELECT lower(u.email) FROM users u WHERE u.id = '${uid}'::uuid))))`;
+    return `(${telemetrySql(scope, projectAlias)} OR EXISTS (
+        SELECT 1 FROM assessments ad WHERE ad.project_id = ${projectAlias}.id
+          AND ad.status IN ('active', 'ended') AND ad.start_at IS NOT NULL
+          AND NOW() >= LEAST(ad.end_at, COALESCE(ad.closed_at, ad.end_at))
+          AND NOW() < LEAST(LEAST(ad.end_at, COALESCE(ad.closed_at, ad.end_at)) + make_interval(days => ad.delivery_days),
+                            COALESCE(ad.retention_until, 'infinity'::timestamptz))
+          AND ad.retention_status = 'retained'
+          AND ${grant}))`;
 }
 
 /**
@@ -173,6 +276,7 @@ interface Queryable { query(text: string, values?: unknown[]): Promise<{ rows: a
 export interface ScopedSite {
     id: string; tenant_id: string; name: string; address: string | null; archived_at: Date | null;
     live_data_visible: boolean; telemetry_visible: boolean;
+    access_from: Date | null; access_to: Date | null;
 }
 
 /** A site/project the scope may reach, or null. */
@@ -182,7 +286,7 @@ export async function findSite(db: Queryable, scope: Scope, id: string): Promise
     const t = tenantSql(scope, 'p.tenant_id', params);
     const r = await db.query(`
         SELECT p.id, p.tenant_id, p.name, p.address, p.archived_at, p.live_data_visible,
-               ${telemetrySql(scope, 'p')} AS telemetry_visible
+               ${telemetrySql(scope, 'p')} AS telemetry_visible, ${accessWindowSql(scope, 'p')}
         FROM projects p WHERE p.id = $1 AND ${t}`, params);
     return r.rows[0] ?? null;
 }
@@ -209,7 +313,7 @@ export async function findMeter(db: Queryable, scope: Scope, id: string): Promis
 export interface ScopedPoint {
     id: string; name: string; role: string; project_id: string; project_name: string; tenant_id: string;
     nominal_voltage_v: string | null; ct_primary_a: string | null; contracted_mdi_kva: string | null;
-    telemetry_visible: boolean;
+    telemetry_visible: boolean; access_from: Date | null; access_to: Date | null;
 }
 
 /** A measurement point the scope may reach (through its project), or null. */
@@ -220,7 +324,7 @@ export async function findPoint(db: Queryable, scope: Scope, id: string): Promis
     const r = await db.query(`
         SELECT mp.id, mp.name, mp.role, mp.project_id, p.name AS project_name, p.tenant_id,
                mp.nominal_voltage_v, mp.ct_primary_a, mp.contracted_mdi_kva,
-               ${telemetrySql(scope, 'p')} AS telemetry_visible
+               ${telemetrySql(scope, 'p')} AS telemetry_visible, ${accessWindowSql(scope, 'p')}
         FROM measurement_points mp JOIN projects p ON p.id = mp.project_id
         WHERE mp.id = $1 AND ${t}`, params);
     return r.rows[0] ?? null;
@@ -238,6 +342,8 @@ export async function findOwned(db: Queryable, scope: Scope, table: 'alerts' | '
 
 // ── Express middleware ──────────────────────────────────────────────────────
 
+export const NO_ACCESS = 'No active assessment: live data, history and chat are available only during the assessment period';
+
 type Mw = (req: any, res: any, next: any) => void;
 
 /** Resolves :id to a meter in scope (403 otherwise) as req.meter. */
@@ -247,8 +353,11 @@ export function meterParam(db: Queryable, opts: { telemetry?: boolean; write?: b
             if (opts.write && !canWrite(req.scope)) return res.status(403).json({ error: 'Read-only role' });
             const m = await findMeter(db, req.scope, req.params.id);
             if (!m) return res.status(403).json({ error: 'Forbidden' });
-            if (opts.telemetry && !m.telemetry_visible) {
-                return res.status(403).json({ error: 'Live data for this project is shared through published reports' });
+            // Legacy per-meter telemetry is keyed by device across every
+            // deployment and cannot be confined to an assessment window:
+            // clients read through the point views (/points/:id/...).
+            if (opts.telemetry && !req.scope.isInternal) {
+                return res.status(403).json({ error: 'Readings are available through the assessment views (/points/:id)', code: 'use_point_views' });
             }
             req.meter = m;
             next();
@@ -264,7 +373,7 @@ export function siteParam(db: Queryable, opts: { telemetry?: boolean; write?: bo
             const s = await findSite(db, req.scope, req.params.id);
             if (!s) return res.status(403).json({ error: 'Forbidden' });
             if (opts.telemetry && !s.telemetry_visible) {
-                return res.status(403).json({ error: 'Live data for this project is shared through published reports' });
+                return res.status(403).json({ error: NO_ACCESS, code: 'no_active_assessment' });
             }
             req.site = s;
             next();

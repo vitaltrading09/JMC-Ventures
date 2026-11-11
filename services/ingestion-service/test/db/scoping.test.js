@@ -6,8 +6,8 @@
 //     aimed at tenant B's ids (path, body and ?tenant_id=), returns nothing of
 //     B and changes nothing of B.
 //   - A client never sees drafts, internal notes or unpublished reports.
-//   - client_viewer is read-only; live_data_visible hides telemetry until a
-//     report is published; a device that served another client is not
+//   - client_viewer is read-only; telemetry follows a live assessment grant
+//     (GridIQ, 2026-11-11) and stops at end_at without any job; a device that served another client is not
 //     reachable through the legacy meter routes; share links serve published
 //     reports only; the SLD upload checks the site before touching the disk.
 //   - The auth service lets only super_admin manage tenants and users.
@@ -65,6 +65,7 @@ function routes() {
     scan('ops.ts', 'r');
     scan('portal.ts', 'r');
     scan('v1/routes.ts', 'r');
+    scan('assessments/routes.ts', 'r');
     // The public API declares its routes as objects: { method: 'get', path: '/v1/...' }.
     const v1 = fs.readFileSync(path.join(ROOT, 'src', 'v1', 'routes.ts'), 'utf8');
     for (const m of v1.matchAll(/method: '(get|post)', path: '([^']+)'/g)) out.push([m[1].toUpperCase(), m[2]]);
@@ -132,8 +133,20 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         await q(`INSERT INTO site_diagrams (site_id, layout) VALUES ($1, $2)`, [x.site, JSON.stringify({ nodes: [{ id: `${x.mark}-diagram` }], edges: [] })]);
         const user = async (role) => (await q(`INSERT INTO users (tenant_id, email, password_hash, role) VALUES ($1, $2, 'x', $3) RETURNING id`,
             [x.tenant, `${role}.${x.mark}@test.local`, role]))[0].id;
-        x.adminToken = jwt.sign({ userId: await user('client_admin'), tenantId: x.tenant, role: 'client_admin' }, SECRET);
-        x.viewerToken = jwt.sign({ userId: await user('client_viewer'), tenantId: x.tenant, role: 'client_viewer' }, SECRET);
+        x.adminId = await user('client_admin');
+        x.viewerId = await user('client_viewer');
+        x.adminToken = jwt.sign({ userId: x.adminId, tenantId: x.tenant, role: 'client_admin' }, SECRET);
+        x.viewerToken = jwt.sign({ userId: x.viewerId, tenantId: x.tenant, role: 'client_viewer' }, SECRET);
+        // A live assessment of the site, granted to both users.
+        x.assessment = (await q(`
+            INSERT INTO assessments (tenant_id, project_id, title, status, duration_days, start_at, end_at, payment_state, internal_notes)
+            VALUES ($1, $2, $3, 'active', 7, NOW() - INTERVAL '2 days', NOW() + INTERVAL '5 days', 'paid', $4) RETURNING id`,
+            [x.tenant, x.site, `${x.mark}-assessment`, `${x.mark}-INTERNAL-assessment-note`]))[0].id;
+        await q(`INSERT INTO assessment_points (assessment_id, measurement_point_id) VALUES ($1, $2)`, [x.assessment, x.point]);
+        for (const [uid, role] of [[x.adminId, 'client_admin'], [x.viewerId, 'client_viewer']]) {
+            x.grant = (await q(`INSERT INTO assessment_grants (assessment_id, user_id, email) VALUES ($1, $2, $3) RETURNING id`,
+                [x.assessment, uid, `${role}.${x.mark}@test.local`.toLowerCase()]))[0].id;
+        }
         x.legacyToken = jwt.sign({ userId: null, tenantId: x.tenant, role: 'admin' }, SECRET); // a pre-Phase-7 token
         return x;
     };
@@ -162,6 +175,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         sites: x.site, meters: x.meter, alerts: x.alert, shares: x.share, recommendations: x.rec, leads: x.lead,
         projects: x.site, points: x.point, devices: x.meter, deployments: x.deployment, reports: x.report,
         clients: x.tenant, 'broker-access': crypto.randomUUID(), exports: x.export,
+        assessments: x.assessment, grants: x.grant, 'assessment-packages': crypto.randomUUID(),
     });
     const fill = (p, x) => {
         const map = ids(x);
@@ -170,7 +184,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
     const ROUTES = routes().filter(([, p]) => !['/health', '/health/deep', '/public/report/:token'].includes(p));
     assert.ok(ROUTES.length > 60, `only ${ROUTES.length} routes found`);
 
-    const bSecrets = [B.mark, B.tenant, B.site, B.meter, B.alert, B.share, B.rec, B.draft, B.lead, B.report, B.unpublished, B.deployment, B.export];
+    const bSecrets = [B.mark, B.tenant, B.site, B.meter, B.alert, B.share, B.rec, B.draft, B.lead, B.report, B.unpublished, B.deployment, B.export, B.assessment];
     const leaks = (text) => bSecrets.filter((s) => text.includes(s));
 
     await t.test('tenant A, aimed at tenant B, gets nothing of B from any route', async () => {
@@ -225,7 +239,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
 
     await t.test('a client never sees drafts, internal notes or unpublished reports', async () => {
         const failures = [];
-        const hidden = [A.draft, `${A.mark}-DRAFT`, `${A.mark}-INTERNAL`, A.unpublished, `${A.mark}-UNPUB`, 'internal_notes'];
+        const hidden = [A.draft, `${A.mark}-DRAFT`, `${A.mark}-INTERNAL`, A.unpublished, `${A.mark}-UNPUB`, 'internal_notes', '"payment_reference"', '"quote"'];
         for (const [method, p] of ROUTES.filter(([m]) => m === 'GET')) {
             const r = await call(A.adminToken, 'GET', fill(p, A));
             const seen = hidden.filter((h) => r.text.includes(h));
@@ -252,27 +266,55 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         }
         assert.deepStrictEqual(failures, []);
         assert.strictEqual((await call(A.viewerToken, 'POST', `/alerts/${A.alert}/read`)).status, 200);
-        assert.strictEqual((await call(A.viewerToken, 'GET', `/meters/${A.meter}/readings?raw=1`)).status, 200);
+        assert.strictEqual((await call(A.viewerToken, 'GET', `/points/${A.point}/readings`)).status, 200);
+        // Legacy device-keyed telemetry is staff-only: it cannot be confined to an assessment.
+        assert.strictEqual((await call(A.viewerToken, 'GET', `/meters/${A.meter}/readings?raw=1`)).status, 403);
     });
 
-    await t.test('live_data_visible = false hides telemetry until a report is published', async () => {
-        const site = (await q(`INSERT INTO projects (tenant_id, name, live_data_visible) VALUES ($1, $2, false) RETURNING id`, [A.tenant, `${A.mark}-hidden`]))[0].id;
-        const meter = (await q(`INSERT INTO meters (site_id, name) VALUES ($1, 'hidden meter') RETURNING id`, [site]))[0].id;
+    await t.test('telemetry follows a live assessment grant, and stops at end_at with no job running', async () => {
+        const site = (await q(`INSERT INTO projects (tenant_id, name) VALUES ($1, $2) RETURNING id`, [A.tenant, `${A.mark}-later`]))[0].id;
+        const meter = (await q(`INSERT INTO meters (site_id, name) VALUES ($1, 'later meter') RETURNING id`, [site]))[0].id;
         await q(`INSERT INTO meter_readings (time, meter_id, power_active_total, time_source) VALUES (NOW() - INTERVAL '1 minute', $1, 5, 'DEVICE')`, [meter]);
-        assert.strictEqual((await call(A.adminToken, 'GET', `/meters/${meter}/readings?raw=1`)).status, 403);
+        const read = () => call(A.adminToken, 'GET', `/points/${meter}/readings`);
+        // No assessment: nothing, whatever the project says.
+        assert.strictEqual((await read()).status, 403);
         assert.strictEqual((await call(A.adminToken, 'GET', `/projects/${site}/energy-balance`)).status, 404);
-        const list = JSON.parse((await call(A.adminToken, 'GET', '/meters')).text);
-        assert.strictEqual(list.find((m) => m.id === meter).latest_reading, null);
-        assert.strictEqual((await call(ops, 'GET', `/meters/${meter}/readings?raw=1`)).status, 200);
-        // Publish a report: draft → approved → published, by an internal user.
-        const rep = JSON.parse((await call(ops, 'POST', '/reports', { project_id: site, period_start: iso(now - 86_400_000), period_end: iso(now) })).text);
-        assert.strictEqual((await call(ops, 'POST', `/reports/${rep.id}/publish`)).status, 409); // not approved yet
-        assert.strictEqual((await call(A.adminToken, 'POST', `/reports/${rep.id}/approve`)).status, 403); // clients cannot
-        assert.strictEqual((await call(ops, 'POST', `/reports/${rep.id}/approve`)).status, 200);
-        assert.strictEqual((await call(ops, 'POST', `/reports/${rep.id}/publish`)).status, 200);
-        assert.strictEqual((await call(A.adminToken, 'GET', `/meters/${meter}/readings?raw=1`)).status, 200);
-        const log = await q(`SELECT action FROM audit_log WHERE entity_id = $1 ORDER BY id`, [rep.id]);
-        assert.deepStrictEqual(log.map((r) => r.action), ['report.create', 'report.approve', 'report.publish']);
+        assert.strictEqual((await call(ops, 'GET', `/points/${meter}/readings`)).status, 200);
+        // Staff: draft → payment → grant → start.
+        const a = JSON.parse((await call(ops, 'POST', '/assessments', { project_id: site, duration_days: 7 })).text);
+        assert.strictEqual(a.status, 'draft');
+        assert.strictEqual((await call(A.adminToken, 'POST', `/assessments/${a.id}/start`, { confirm: true })).status, 403); // clients cannot
+        assert.strictEqual((await call(ops, 'POST', `/assessments/${a.id}/start`, { confirm: true })).status, 409);       // unpaid
+        assert.strictEqual((await call(ops, 'PATCH', `/assessments/${a.id}`, { payment_state: 'paid', payment_reference: 'INV-1' })).status, 200);
+        const email = `client_admin.${A.mark}@test.local`.toLowerCase();
+        assert.strictEqual((await call(ops, 'POST', `/assessments/${a.id}/grants`, { email })).status, 201);
+        assert.strictEqual((await read()).status, 403); // granted, but the clock has not started
+        const started = JSON.parse((await call(ops, 'POST', `/assessments/${a.id}/start`, { confirm: true })).text);
+        assert.strictEqual(started.status, 'active');
+        assert.strictEqual(new Date(started.end_at) - new Date(started.start_at), 7 * 86_400_000);
+        assert.strictEqual((await read()).status, 200);
+        // The viewer of the same tenant has no grant on this one.
+        assert.strictEqual((await call(A.viewerToken, 'GET', `/points/${meter}/readings`)).status, 403);
+        // The clock runs out (the expiry job is not running here): access stops at once,
+        // for the still-valid session token, while A's other assessment stays live.
+        await q(`UPDATE assessments SET start_at = NOW() - INTERVAL '7 days', end_at = NOW() - INTERVAL '1 second' WHERE id = $1`, [a.id]);
+        assert.strictEqual((await q(`SELECT status FROM assessments WHERE id = $1`, [a.id]))[0].status, 'active');
+        assert.strictEqual((await read()).status, 403);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/readings`)).status, 200);
+        // An extension (audited) reopens it; an early close shuts it again.
+        assert.strictEqual((await call(ops, 'POST', `/assessments/${a.id}/extend`, { days: 2 })).status, 400); // reason required
+        assert.strictEqual((await call(ops, 'POST', `/assessments/${a.id}/extend`, { days: 2, reason: 'meter offline for a day' })).status, 200);
+        assert.strictEqual((await read()).status, 200);
+        assert.strictEqual((await call(ops, 'POST', `/assessments/${a.id}/close`, { reason: 'client asked' })).status, 200);
+        assert.strictEqual((await read()).status, 403);
+        const log = await q(`SELECT action FROM audit_log WHERE entity_type = 'assessment' AND entity_id = $1 ORDER BY id`, [a.id]);
+        assert.deepStrictEqual(log.map((r) => r.action),
+            ['assessment.create', 'assessment.update', 'assessment.grant', 'assessment.start', 'assessment.extend', 'assessment.close']);
+        // A revoked grant ends access too.
+        await q(`UPDATE assessment_grants SET revoked_at = NOW() WHERE assessment_id = $1`, [A.assessment]);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/readings`)).status, 403);
+        await q(`UPDATE assessment_grants SET revoked_at = NULL WHERE assessment_id = $1`, [A.assessment]);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/readings`)).status, 200);
     });
 
     await t.test('a device that served another client is out of reach of the legacy meter routes', async () => {

@@ -14,15 +14,26 @@
 //   GET /points/:id/metering-report      period report: energy, TOU, demand, extremes, feasibility
 //
 // No internal fields: no device codes, corrections, commissioning or notes.
+//
+// Assessment access (2026-11-11): a client reaches a point's data only while
+// it holds a live assessment grant on the project (src/scope.ts), and every
+// range is clamped to that assessment's window and aligned inward to whole
+// buckets, so nothing from before the start or after the end is returned.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Router } from 'express';
 import type { Pool } from 'pg';
-import { withScope, findSite, findPoint, tenantSql, telemetrySql, seesUnpublishedFindings } from './scope';
+import { withScope, findSite, findPoint, tenantSql, telemetrySql, seesUnpublishedFindings, clampToAccess, alignInward, NO_ACCESS } from './scope';
 import { planRead, pointSeriesSql } from './aggregates';
 import { loadPointEnergy } from './fleet/balance';
 import { assessPowerQuality } from './power-quality';
 import { meteringReport, MAX_REPORT_DAYS } from './metering-report';
+
+/**
+ * PV / battery / arbitrage sizing is outside GridIQ's product (the feasibility
+ * tool belongs to another party): off unless FEATURE_TOOLS=true.
+ */
+const featureSizing = () => process.env.FEATURE_TOOLS === 'true';
 
 interface Queryable { query(text: string, values?: unknown[]): Promise<{ rows: any[] }> }
 
@@ -139,12 +150,19 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
             res.status(500).json({ error: 'Database error' });
         }
     };
-    // A point in scope whose project shares live data; 403 otherwise.
+    // A point in scope with a live assessment (clients); 403 otherwise.
     const point = async (req: any, res: any) => {
         const p = await findPoint(pool, req.scope, req.params.id);
         if (!p) { res.status(403).json({ error: 'Forbidden' }); return null; }
-        if (!p.telemetry_visible) { res.status(403).json({ error: 'Live data for this project is shared through published reports' }); return null; }
+        if (!p.telemetry_visible) { res.status(403).json({ error: NO_ACCESS, code: 'no_active_assessment' }); return null; }
         return p;
+    };
+    // The last `days` up to now, clamped to the access window and aligned to
+    // whole buckets of widthMs; null (and an empty answer) if nothing is left.
+    const lastDays = (p: any, days: number, widthMs: number) => {
+        const to = new Date();
+        const c = clampToAccess(new Date(to.getTime() - days * 86_400_000), to, p);
+        return c ? alignInward(c, widthMs, p) : null;
     };
 
     r.get('/portal/projects', auth, handle(async (req, res) => {
@@ -199,9 +217,12 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         const to = req.query.to ? new Date(String(req.query.to)) : new Date();
         const from = req.query.from ? new Date(String(req.query.from)) : new Date(to.getTime() - 86_400_000);
         if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) return res.status(400).json({ error: 'from must be before to' });
-        const plan = planRead(from, to);
+        const clamped = clampToAccess(from, to, p);
+        const plan = planRead(clamped?.from ?? from, clamped?.to ?? to);
         const bucket = plan.source === 'raw' && plan.bucketSeconds < 60 ? '1 minute' : plan.bucket;
-        const rows = await pool.query(pointSeriesSql(plan.source), [bucket, p.id, from, to]);
+        const range = clamped && alignInward(clamped, Math.max(60, plan.bucketSeconds) * 1000, p);
+        if (!range) return res.json([]);
+        const rows = await pool.query(pointSeriesSql(plan.source), [bucket, p.id, range.from, range.to]);
         res.setHeader('X-Readings-Source', `${plan.source === 'raw' ? 'point_readings_1m' : `point_${plan.source}`}; bucket=${bucket}`);
         res.json(rows.rows);
     }));
@@ -210,24 +231,25 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         const p = await point(req, res);
         if (!p) return;
         const days = Math.min(Math.max(parseInt(String(req.query.days ?? '28')) || 28, 7), 90);
+        const w = lastDays(p, days, 3_600_000) ?? { from: new Date(), to: new Date() };
         const q = await pool.query(`
             WITH h AS (
                 SELECT bucket AT TIME ZONE 'Africa/Johannesburg' AS local, power_active_total_avg AS kw
                 FROM point_readings_1h
-                WHERE measurement_point_id = $1 AND bucket >= NOW() - ($2 || ' days')::interval AND power_active_total_avg IS NOT NULL
+                WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3 AND power_active_total_avg IS NOT NULL
             )
             SELECT extract(isodow FROM local)::int AS weekday, extract(hour FROM local)::int AS hour,
                    avg(kw) AS kw, count(*)::int AS hours
-            FROM h GROUP BY 1, 2 ORDER BY 1, 2`, [p.id, days]);
+            FROM h GROUP BY 1, 2 ORDER BY 1, 2`, [p.id, w.from, w.to]);
         const base = await pool.query(`
             SELECT percentile_cont(0.1) WITHIN GROUP (ORDER BY power_active_total_avg) AS p10,
                    percentile_cont(0.5) WITHIN GROUP (ORDER BY power_active_total_avg) FILTER (
                        WHERE extract(hour FROM bucket AT TIME ZONE 'Africa/Johannesburg') NOT BETWEEN 6 AND 17
                           OR extract(isodow FROM bucket AT TIME ZONE 'Africa/Johannesburg') >= 6) AS after_hours
             FROM point_readings_1h
-            WHERE measurement_point_id = $1 AND bucket >= NOW() - ($2 || ' days')::interval AND power_active_total_avg IS NOT NULL`, [p.id, days]);
+            WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3 AND power_active_total_avg IS NOT NULL`, [p.id, w.from, w.to]);
         res.json({
-            point_id: p.id, days, timezone: 'Africa/Johannesburg',
+            point_id: p.id, days, timezone: 'Africa/Johannesburg', from: w.from, to: w.to,
             basis: 'hourly averages of active power (point_readings_1h), by local weekday (1 = Monday) and hour',
             cells: q.rows.map((x) => ({ weekday: x.weekday, hour: x.hour, kw: Math.round(Number(x.kw) * 10) / 10, hours: x.hours })),
             baseload_kw: base.rows[0].p10 === null ? null : Math.round(Number(base.rows[0].p10) * 10) / 10,
@@ -239,18 +261,19 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         const p = await point(req, res);
         if (!p) return;
         const days = Math.min(Math.max(parseInt(String(req.query.days ?? '30')) || 30, 1), 365);
+        const w = lastDays(p, days, 1_800_000) ?? { from: new Date(), to: new Date() };
         // 30-minute intervals at least 80 % covered (billing basis): 24 of 30
         // minutes with data, or, for a meter that reports less often than once
         // a minute, its samples × its reporting interval ≥ 24 minutes.
         const spacing = Number((await pool.query(`
             SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM t_last - t_first) / (n - 1)) AS s
             FROM point_readings_1h
-            WHERE measurement_point_id = $1 AND bucket >= NOW() - ($2 || ' days')::interval AND n > 1`, [p.id, days])).rows[0].s) || 0;
+            WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3 AND n > 1`, [p.id, w.from, w.to])).rows[0].s) || 0;
         const iv = await pool.query(`
             SELECT bucket, kva_demand, kw_demand, minutes FROM point_readings_30m
-            WHERE measurement_point_id = $1 AND bucket >= NOW() - ($2 || ' days')::interval
-              AND (minutes >= 24 OR ($3 > 60 AND n * $3 >= 0.8 * 1800))
-            ORDER BY bucket`, [p.id, days, spacing]);
+            WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3
+              AND (minutes >= 24 OR ($4 > 60 AND n * $4 >= 0.8 * 1800))
+            ORDER BY bucket`, [p.id, w.from, w.to, spacing]);
         const rows = iv.rows.map((x) => ({ bucket: x.bucket, kva: num(x.kva_demand), kw: num(x.kw_demand) }));
         const top = [...rows].filter((x) => x.kva !== null).sort((a, b) => b.kva! - a.kva!).slice(0, 5);
         const daily = new Map<string, { date: string; kva: number; kw: number | null; at: Date }>();
@@ -263,7 +286,7 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         const mdi = num(p.contracted_mdi_kva);
         const max = top[0] ?? null;
         res.json({
-            point_id: p.id, days, timezone: 'Africa/Johannesburg',
+            point_id: p.id, days, timezone: 'Africa/Johannesburg', from: w.from, to: w.to,
             basis: `30-minute minute-weighted averages (point_readings_30m), intervals at least 80 % measured${spacing > 60 ? ` (meter reports every ${Math.round(spacing)} s)` : ''}`,
             intervals_assessed: rows.length,
             max_kva: max?.kva ?? null, max_kw: max?.kw ?? null, max_at: max?.bucket ?? null,
@@ -282,8 +305,11 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         if (!dep) return res.json({ point_id: p.id, report: null, reason: 'no_device' });
         // The current deployment only: never data the box took somewhere else.
         const requested = Math.min(Math.max(parseInt(String(req.query.days ?? '7')) || 7, 1), 90);
-        const sinceInstall = Math.ceil((Date.now() - new Date(dep.installed_at).getTime()) / 86_400_000);
-        const days = Math.max(1, Math.min(requested, sinceInstall));
+        // Clients: never before their assessment start (whole days back from now).
+        const since = Math.max(new Date(dep.installed_at).getTime(), p.access_from ? new Date(p.access_from).getTime() : 0);
+        const sinceStart = Math.floor((Date.now() - since) / 86_400_000);
+        if (p.access_from && sinceStart < 1) return res.json({ point_id: p.id, report: null, reason: 'insufficient_data', basis: 'needs one full day of the assessment' });
+        const days = Math.max(1, Math.min(requested, p.access_from ? sinceStart : Math.ceil((Date.now() - since) / 86_400_000)));
         const report = await assessPowerQuality(pool, dep.device_id, days);
         res.json({
             point_id: p.id, days, requested_days: requested, timezone: 'Africa/Johannesburg',
@@ -302,7 +328,10 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         const from = req.query.from ? new Date(String(req.query.from)) : new Date(to.getTime() - 30 * 86_400_000);
         if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) return res.status(400).json({ error: 'from must be before to' });
         if (to.getTime() - from.getTime() > MAX_REPORT_DAYS * 86_400_000) return res.status(400).json({ error: `A report covers at most ${MAX_REPORT_DAYS} days` });
-        res.json(await meteringReport(pool, p.id, from, to));
+        const c = clampToAccess(from, to, p);
+        const range = c && alignInward(c, 1_800_000, p);
+        if (!range) return res.status(400).json({ error: 'No part of this period lies inside the assessment', code: 'outside_assessment' });
+        res.json(await meteringReport(pool, p.id, range.from, range.to, { sizing: featureSizing() }));
     }));
 
     return r;

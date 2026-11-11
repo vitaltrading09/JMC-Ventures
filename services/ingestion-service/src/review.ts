@@ -16,7 +16,7 @@ import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
 import { randomBytes } from 'crypto';
-import { requireInternal, tenantSql, forClient, withScope } from './scope';
+import { requireInternal, tenantSql, forClient, withScope, deliverySql } from './scope';
 import { uploadDir, resolveStoredUploadPath } from './roles';
 
 export type ReviewStatus = 'draft' | 'in_review' | 'published' | 'dismissed';
@@ -137,7 +137,7 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
     r.get('/reports', authenticate, handle(async (req, res) => {
         const params: unknown[] = [];
         const where = [tenantSql(req.scope, 'p.tenant_id', params)];
-        if (!req.scope.isInternal) where.push(`rp.status = 'published'`);
+        if (!req.scope.isInternal) where.push(`rp.status = 'published'`, deliverySql(req.scope, 'p'));
         if (req.query.project_id) {
             if (!UUID.test(String(req.query.project_id))) return res.json([]);
             params.push(req.query.project_id);
@@ -151,7 +151,7 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         if (!UUID.test(req.params.id)) return res.status(404).json({ error: 'Not found' });
         const params: unknown[] = [req.params.id];
         const where = [`rp.id = $1`, tenantSql(req.scope, 'p.tenant_id', params)];
-        if (!req.scope.isInternal) where.push(`rp.status = 'published'`);
+        if (!req.scope.isInternal) where.push(`rp.status = 'published'`, deliverySql(req.scope, 'p'));
         const row = (await pool.query(`${reportSelect} WHERE ${where.join(' AND ')}`, params)).rows[0];
         if (!row) return res.status(404).json({ error: 'Not found' });
         res.json(forClient(req.scope, row));
@@ -237,7 +237,7 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         if (!UUID.test(req.params.id)) return res.status(404).json({ error: 'Not found' });
         const params: unknown[] = [req.params.id];
         const where = [`rp.id = $1`, tenantSql(req.scope, 'p.tenant_id', params)];
-        if (!req.scope.isInternal) where.push(`rp.status = 'published'`);
+        if (!req.scope.isInternal) where.push(`rp.status = 'published'`, deliverySql(req.scope, 'p'));
         const row = (await pool.query(`${reportSelect} WHERE ${where.join(' AND ')}`, params)).rows[0];
         const file = row?.pdf_path ? resolveStoredUploadPath(row.pdf_path) : null;
         if (!row || !file || !fs.existsSync(file)) return res.status(404).json({ error: 'No PDF attached to this report' });

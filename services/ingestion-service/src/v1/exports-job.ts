@@ -17,6 +17,7 @@ import path from 'path';
 import zlib from 'zlib';
 import type { Pool } from 'pg';
 import { loadSeries, csvHeader, csvRows, datasetId, MAX_RANGE_DAYS, Interval } from './series';
+import { exportEntitledSql } from '../scope';
 
 const DAY = 86_400_000;
 export const EXPORT_TTL_DAYS = 7;
@@ -76,6 +77,13 @@ export async function runExports(pool: Pool, max = 5): Promise<number> {
             UPDATE exports SET status = 'running', started_at = NOW()
             WHERE id = (SELECT id FROM exports WHERE status = 'queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED)
             RETURNING *`)).rows[0];
+        if (!job) break;
+        // The requester's assessment may have ended while the job waited.
+        const ok = (await pool.query(`SELECT 1 FROM exports e WHERE e.id = $1 AND ${exportEntitledSql('e')}`, [job.id])).rows.length > 0;
+        if (!ok) {
+            await pool.query(`UPDATE exports SET status = 'failed', error = 'assessment access ended before the export ran', finished_at = NOW() WHERE id = $1`, [job.id]);
+            continue;
+        }
         if (!job) break;
         const file = path.join(dir, `${job.id}.csv.gz`);
         try {

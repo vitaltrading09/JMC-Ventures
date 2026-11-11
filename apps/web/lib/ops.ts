@@ -8,7 +8,7 @@ export interface FleetRow {
     name: string;
     serial_number: string | null;
     model: string | null;
-    status: "in_stock" | "deployed" | "maintenance" | "retired";
+    status: "available" | "reserved" | "in_transit" | "deployed" | "maintenance" | "retired";
     mqtt_username: string | null;
     calibration_due_on: string | null;
     firmware: string | null;

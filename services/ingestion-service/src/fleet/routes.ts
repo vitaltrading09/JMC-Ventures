@@ -20,7 +20,7 @@ export const isInternal = (user: any) => !!user && INTERNAL_ROLES.has(user.role)
 
 const PROJECT_STATUSES = ['planned', 'active', 'completed', 'archived'];
 const POINT_ROLES = ['incomer', 'sub_load', 'pv', 'bess', 'generator', 'other'];
-const DEVICE_STATUSES = ['in_stock', 'deployed', 'maintenance', 'retired'];
+const DEVICE_STATUSES = ['available', 'reserved', 'in_transit', 'deployed', 'maintenance', 'retired'];
 
 export class InputError extends Error {}
 
@@ -418,7 +418,7 @@ export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, ne
 
     r.post('/deployments/:id/remove', ...guard, handle(async (req, res) => {
         const removedAt = optDate(req.body?.removed_at, 'removed_at') ?? new Date();
-        const nextStatus = oneOf(req.body?.device_status ?? 'in_stock', ['in_stock', 'maintenance'], 'device_status');
+        const nextStatus = oneOf(req.body?.device_status ?? 'available', ['available', 'in_transit', 'maintenance'], 'device_status');
         const out = await tx(async (c) => {
             const before = await c.query(`SELECT * FROM deployments WHERE id = $1 FOR UPDATE`, [req.params.id]);
             if (!before.rows.length) return { status: 404, body: { error: 'Not found' } };
