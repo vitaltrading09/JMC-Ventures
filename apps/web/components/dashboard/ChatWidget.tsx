@@ -7,6 +7,7 @@
 // CustomEvent("gridiq:ask", { detail: "..." })) (lib/portal.ts askConsultant).
 
 import { useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { MessageSquare, X, Send, Sparkles, Lock } from "lucide-react";
 import { apiGet, apiSend } from "@/lib/api";
 import { usePortalAssessments } from "@/components/portal/AssessmentBanner";
@@ -30,7 +31,10 @@ export function ChatWidget() {
     const end = useRef<HTMLDivElement>(null);
     const assessments = usePortalAssessments();
     const live = (assessments.data ?? []).filter((a) => a.live);
-    const current = live.find((a) => a.id === sel) ?? live[0] ?? null;
+    // Default to the assessment of the site on screen (/portal/projects/<id>/...).
+    const pathname = usePathname();
+    const onScreen = /^\/portal\/projects\/([0-9a-f-]{36})/.exec(pathname ?? "")?.[1];
+    const current = live.find((a) => a.id === sel) ?? live.find((a) => a.project_id === onScreen) ?? live[0] ?? null;
 
     useEffect(() => {
         const onAsk = (e: Event) => { const q = (e as CustomEvent<string>).detail; if (q) { setOpen(true); setPending(q); } };
