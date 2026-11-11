@@ -1,203 +1,144 @@
 "use client";
 
+// GridIQ sign-in. Clients sign in with a one-time code emailed to them (no
+// password to share or reuse); staff may use a password, followed by an
+// authenticator code when MFA is enabled. A session proves who you are; what
+// you can see still follows your assessment's dates on every request.
+
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Zap, Lock, Mail, ArrowRight, ShieldCheck, Building2, Loader2, AlertCircle } from "lucide-react";
+import { Zap, Lock, Mail, ArrowRight, ShieldCheck, Loader2, AlertCircle, KeyRound, CalendarClock } from "lucide-react";
+
+type Step = "email" | "code" | "password" | "mfa";
+const API = process.env.NEXT_PUBLIC_API_URL;
+const input = "w-full bg-slate-900 border border-slate-800 rounded-lg pl-10 pr-4 py-2.5 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500";
 
 export default function LoginPage() {
     const router = useRouter();
+    const [step, setStep] = useState<Step>("email");
     const [email, setEmail] = useState("");
+    const [code, setCode] = useState("");
     const [password, setPassword] = useState("");
+    const [mfaToken, setMfaToken] = useState("");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const [info, setInfo] = useState("");
 
-    const handleLogin = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setLoading(true);
-        setError("");
-
-        try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/login`, {
-                method: "POST",
-                credentials: "include",  // receive the HTTPOnly session cookie
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ email, password }),
-            });
-
-            const data = await res.json();
-
-            if (!res.ok) {
-                throw new Error(data.error || "Login failed");
-            }
-
-            // Token is now in an HTTPOnly cookie set by the server (not readable by JS).
-            // Only store non-sensitive display info in localStorage.
-            localStorage.setItem("user", JSON.stringify(data.user));
-
-            // Grid-IQ staff to the ops console, everyone else to the client portal.
-            const role = data.user?.role;
-            router.push(role === "super_admin" || role === "engineer" ? "/ops" : "/portal");
-
-        } catch (err: any) {
-            setError(err.message);
-        } finally {
-            setLoading(false);
-        }
+    const post = async (path: string, body: unknown) => {
+        const res = await fetch(`${API}/auth${path}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        const data = await res.json().catch(() => ({}));
+        return { ok: res.ok, status: res.status, data };
     };
+    const done = (data: any) => {
+        if (data.mfa_required) {
+            if (data.mfa_token) { setMfaToken(data.mfa_token); setStep("mfa"); setInfo("Enter the code from your authenticator app."); }
+            else setError(data.error ?? "Two-factor authentication must be set up for this account.");
+            return;
+        }
+        localStorage.setItem("user", JSON.stringify(data.user)); // display info only; the session is an HttpOnly cookie
+        const role = data.user?.role;
+        router.push(role === "super_admin" || role === "engineer" ? "/ops" : "/portal");
+    };
+    const run = (fn: () => Promise<void>) => async (e: React.FormEvent) => {
+        e.preventDefault();
+        setLoading(true); setError("");
+        try { await fn(); } catch { setError("Could not reach GridIQ. Check your connection and try again."); } finally { setLoading(false); }
+    };
+
+    const requestCode = run(async () => {
+        const r = await post("/login/code/request", { email });
+        if (!r.ok) { setError(r.data.error ?? "Could not send a code"); return; }
+        setInfo(r.data.message); setStep("code");
+    });
+    const verifyCode = run(async () => {
+        const r = await post("/login/code/verify", { email, code });
+        if (!r.ok) { setError(r.data.error ?? "That code is not valid"); return; }
+        done(r.data);
+    });
+    const passwordLogin = run(async () => {
+        const r = await post("/login", { email, password });
+        if (!r.ok) { setError(r.data.error === "Invalid credentials" ? "Invalid email or password" : r.data.error ?? "Sign-in failed"); return; }
+        done(r.data);
+    });
+    const mfa = run(async () => {
+        const r = await post("/login/mfa", { mfa_token: mfaToken, code });
+        if (!r.ok) { setError(r.data.error ?? "That code is not valid"); return; }
+        done(r.data);
+    });
 
     return (
         <div className="min-h-screen bg-slate-950 flex flex-col md:flex-row">
-            {/* Brand Side (Left/Top) */}
-            <div className="md:w-1/2 bg-gradient-to-br from-slate-900 via-slate-900 to-blue-950 p-8 md:p-12 flex flex-col justify-between relative overflow-hidden">
-                {/* Background Accents */}
-                <div className="absolute top-0 right-0 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
-                <div className="absolute bottom-0 left-0 w-64 h-64 bg-purple-500/10 rounded-full blur-3xl translate-y-1/2 -translate-x-1/2"></div>
-
-                {/* Logo */}
-                <div className="relative z-10">
-                    <Link href="/" className="flex items-center gap-2 mb-8">
-                        <Zap className="h-8 w-8 text-blue-500" />
-                        <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">
-                            Grid-IQ
-                        </span>
-                    </Link>
-                </div>
-
-                {/* Content */}
-                <div className="relative z-10 max-w-md space-y-6">
-                    <h1 className="text-4xl md:text-5xl font-bold text-white leading-tight">
-                        Energy Clarity for the <br />
-                        <span className="text-blue-400">Modern Enterprise</span>.
-                    </h1>
+            <div className="md:w-1/2 bg-gradient-to-br from-slate-900 via-slate-900 to-blue-950 p-8 md:p-12 flex flex-col justify-between">
+                <Link href="/" className="flex items-center gap-2 mb-8">
+                    <Zap className="h-8 w-8 text-blue-500" />
+                    <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">GridIQ</span>
+                </Link>
+                <div className="max-w-md space-y-5">
+                    <h1 className="text-4xl font-bold text-white leading-tight">Measured, not guessed.</h1>
                     <p className="text-lg text-slate-400">
-                        AI-driven power quality monitoring and recommendations for industrial and commercial sites.
-                        Monitor, diagnose, and optimize your electrical infrastructure.
+                        GridIQ installs a calibrated meter at your site for a fixed assessment period, shows you what it measures while it runs,
+                        and hands over reports and clean data at the end.
                     </p>
-                    <div className="flex flex-wrap gap-4 pt-4">
-                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/50 border border-slate-700 text-sm text-slate-300">
-                            <ShieldCheck className="h-4 w-4 text-emerald-400" />
-                            Enterprise Secure
-                        </div>
-                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/50 border border-slate-700 text-sm text-slate-300">
-                            <Building2 className="h-4 w-4 text-blue-400" />
-                            Multi-Tenant Ready
-                        </div>
+                    <div className="flex flex-wrap gap-3 text-sm text-slate-300">
+                        <span className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/50 border border-slate-700"><CalendarClock className="h-4 w-4 text-blue-400" />Access for your assessment period</span>
+                        <span className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/50 border border-slate-700"><ShieldCheck className="h-4 w-4 text-emerald-400" />One-time sign-in codes</span>
                     </div>
                 </div>
-
-                {/* Footer */}
-                <div className="relative z-10 text-sm text-slate-500 mt-8 md:mt-0">
-                    &copy; 2024 Grid-IQ Intelligence. All rights reserved.
-                </div>
+                <p className="text-sm text-slate-500 mt-8">© GridIQ</p>
             </div>
 
-            {/* Form Side (Right/Bottom) */}
-            <div className="md:w-1/2 bg-slate-950 flex items-center justify-center p-8">
-                <div className="w-full max-w-md space-y-8">
-                    <div className="text-center md:text-left">
+            <div className="md:w-1/2 flex items-center justify-center p-8">
+                <div className="w-full max-w-md space-y-6">
+                    <div>
                         <h2 className="text-2xl font-bold text-white">Sign in</h2>
                         <p className="mt-2 text-sm text-slate-400">
-                            Welcome back. Please enter your credentials.
+                            {step === "email" && "Enter the email address GridIQ invited. We email you a one-time code."}
+                            {step === "code" && `Enter the 6-digit code sent to ${email}.`}
+                            {step === "password" && "Staff sign-in with a password."}
+                            {step === "mfa" && "Two-factor authentication."}
                         </p>
                     </div>
+                    {error && <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-2"><AlertCircle className="h-4 w-4" />{error}</div>}
+                    {info && !error && step !== "email" && <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-300 text-sm">{info}</div>}
 
-                    <form onSubmit={handleLogin} className="space-y-6">
-                        {error && (
-                            <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm flex items-center gap-2">
-                                <AlertCircle className="h-4 w-4" />
-                                {error}
-                            </div>
-                        )}
-
-                        <div className="space-y-4">
-                            <div>
-                                <label htmlFor="email" className="block text-sm font-medium text-slate-300 mb-1">Email Address</label>
-                                <div className="relative">
-                                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-500" />
-                                    <input
-                                        id="email"
-                                        type="email"
-                                        value={email}
-                                        onChange={(e) => setEmail(e.target.value)}
-                                        placeholder="name@company.com"
-                                        required
-                                        className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-10 pr-4 py-2.5 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
-                                    />
-                                </div>
-                            </div>
-                            <div>
-                                <div className="flex items-center justify-between mb-1">
-                                    <label htmlFor="password" className="block text-sm font-medium text-slate-300">Password</label>
-                                    <a href="#" className="text-sm font-medium text-blue-400 hover:text-blue-300">Forgot password?</a>
-                                </div>
-                                <div className="relative">
-                                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-500" />
-                                    <input
-                                        id="password"
-                                        type="password"
-                                        value={password}
-                                        onChange={(e) => setPassword(e.target.value)}
-                                        placeholder="••••••••"
-                                        required
-                                        className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-10 pr-4 py-2.5 text-white placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
-                                    />
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="flex items-center">
-                            <input
-                                id="remember-me"
-                                name="remember-me"
-                                type="checkbox"
-                                className="h-4 w-4 rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-blue-500 focus:ring-offset-slate-900"
-                            />
-                            <label htmlFor="remember-me" className="ml-2 block text-sm text-slate-400">
-                                Remember me for 30 days
-                            </label>
-                        </div>
-
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white rounded-lg py-2.5 font-medium shadow-[0_0_20px_rgba(37,99,235,0.3)] transition-all group"
-                        >
-                            {loading ? (
-                                <Loader2 className="h-5 w-5 animate-spin" />
-                            ) : (
-                                <>
-                                    Sign In
-                                    <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
-                                </>
-                            )}
-                        </button>
-
-                        <div className="relative">
-                            <div className="absolute inset-0 flex items-center">
-                                <div className="w-full border-t border-slate-800"></div>
-                            </div>
-                            <div className="relative flex justify-center text-sm">
-                                <span className="px-2 bg-slate-950 text-slate-500">Or continue with</span>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-4">
-                            <button type="button" className="flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg py-2.5 text-sm font-medium text-white transition-colors">
-                                <span className="text-[#EA4335]">G</span> Google
-                            </button>
-                            <button type="button" className="flex items-center justify-center gap-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg py-2.5 text-sm font-medium text-white transition-colors">
-                                <span className="text-[#0078D4]">M</span> Microsoft
-                            </button>
-                        </div>
-                    </form>
-
-                    <p className="text-center text-sm text-slate-500">
-                        Don't have an account?{" "}
-                        <a href="#" className="font-medium text-blue-400 hover:text-blue-300">Contact Sales</a>
-                    </p>
+                    {step === "email" && (
+                        <form onSubmit={requestCode} className="space-y-4">
+                            <div className="relative"><Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-500" />
+                                <input type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.co.za" className={input} /></div>
+                            <Submit loading={loading} label="Email me a code" />
+                            <button type="button" onClick={() => { setStep("password"); setError(""); }} className="text-sm text-slate-400 hover:text-white">Staff: sign in with a password</button>
+                        </form>
+                    )}
+                    {(step === "code" || step === "mfa") && (
+                        <form onSubmit={step === "code" ? verifyCode : mfa} className="space-y-4">
+                            <div className="relative"><KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-500" />
+                                <input inputMode="numeric" autoComplete="one-time-code" pattern="\d{6}" maxLength={6} required value={code}
+                                    onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} placeholder="123456" className={input + " tracking-[0.4em] text-lg"} /></div>
+                            <Submit loading={loading} label={step === "code" ? "Sign in" : "Verify"} />
+                            {step === "code" && <button type="button" onClick={() => { setStep("email"); setCode(""); setError(""); }} className="text-sm text-slate-400 hover:text-white">Use another address or send a new code</button>}
+                        </form>
+                    )}
+                    {step === "password" && (
+                        <form onSubmit={passwordLogin} className="space-y-4">
+                            <div className="relative"><Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-500" />
+                                <input type="email" required autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@grid-iq.co.za" className={input} /></div>
+                            <div className="relative"><Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-500" />
+                                <input type="password" required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" className={input} /></div>
+                            <Submit loading={loading} label="Sign in" />
+                            <button type="button" onClick={() => { setStep("email"); setError(""); }} className="text-sm text-slate-400 hover:text-white">Sign in with an email code instead</button>
+                        </form>
+                    )}
                 </div>
             </div>
         </div>
+    );
+}
+
+function Submit({ loading, label }: { loading: boolean; label: string }) {
+    return (
+        <button type="submit" disabled={loading} className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white font-medium py-2.5 rounded-lg disabled:opacity-50">
+            {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <>{label}<ArrowRight className="h-4 w-4" /></>}
+        </button>
     );
 }

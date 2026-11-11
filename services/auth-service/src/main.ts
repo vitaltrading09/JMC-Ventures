@@ -41,6 +41,7 @@ app.get('/health', (req, res) => {
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { apiKeyRouter } from './api-keys';
+import { loginRouter, needsMfa, mfaChallenge } from './login';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET || JWT_SECRET === 'gridiq-super-secret-key-change-in-prod' || JWT_SECRET.length < 32) {
@@ -51,6 +52,25 @@ if (!JWT_SECRET || JWT_SECRET === 'gridiq-super-secret-key-change-in-prod' || JW
 // COOKIE_SECURE must be explicitly set to 'true' via env — not inferred from
 // NODE_ENV — so we can run production mode over HTTP until TLS is provisioned.
 const COOKIE_SECURE = process.env.COOKIE_SECURE === 'true';
+
+/**
+ * A session: a 24 h JWT in an HttpOnly cookie. It proves who the user is; it
+ * never extends data access, which follows a live assessment on every request.
+ */
+function issueSession(res: any, user: any) {
+  const token = jwt.sign(
+    { userId: user.id, email: user.email, role: user.role, tenantId: user.tenant_id },
+    JWT_SECRET as string,
+    { expiresIn: '24h' }
+  );
+  res.setHeader('Set-Cookie', [
+    `token=${token}`, 'HttpOnly', 'Path=/', 'Max-Age=86400', 'SameSite=Strict', ...(COOKIE_SECURE ? ['Secure'] : []),
+  ].join('; '));
+  res.json({ user: { id: user.id, email: user.email, name: user.full_name || user.email, role: user.role, tenantId: user.tenant_id } });
+}
+
+// Passwordless sign-in (email code) and staff MFA (src/login.ts).
+app.use(loginRouter(pool, JWT_SECRET as string, issueSession));
 
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
@@ -69,45 +89,17 @@ app.post('/login', async (req, res) => {
     // 2. Verify Password
     // Handle legacy/seed "hashed_secret" case for dev convenience if needed, 
     // but better to just fix the data. We assume data is proper bcrypt hash.
-    const valid = await bcrypt.compare(password, user.password_hash);
+    // Passwordless accounts ('!…' marker) sign in with an email code only.
+    const valid = typeof password === 'string' && !String(user.password_hash).startsWith('!')
+      && await bcrypt.compare(password, user.password_hash);
 
     if (!valid) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // 3. Generate JWT
-    const token = jwt.sign(
-      {
-        userId: user.id,
-        email: user.email,
-        role: user.role,
-        tenantId: user.tenant_id
-      },
-      JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
-    // 4. Set HTTPOnly cookie (not readable by JS — XSS-safe) + return user display info
-    const cookieOptions = [
-      `token=${token}`,
-      'HttpOnly',
-      'Path=/',
-      'Max-Age=86400',
-      'SameSite=Strict',
-      ...(COOKIE_SECURE ? ['Secure'] : []),
-    ].join('; ');
-    res.setHeader('Set-Cookie', cookieOptions);
-
-    res.json({
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.full_name || 'Admin User',
-        role: user.role,
-        tenantId: user.tenant_id
-      }
-    });
-
+    // 3. Staff with MFA: a second step before any session.
+    if (needsMfa(user)) return res.json(mfaChallenge(JWT_SECRET as string, user));
+    issueSession(res, user);
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Internal server error' });

@@ -72,7 +72,7 @@ export function ProjectCard({ p }: { p: PortalProject }) {
             </div>
 
             {!t ? (
-                <p className="text-sm text-slate-400">Live data for this project is shared through published reports.</p>
+                <p className="text-sm text-slate-400">No live assessment: live data, history and the consultant are available only during an assessment.</p>
             ) : (
                 <>
                     <div className="grid grid-cols-3 gap-3">

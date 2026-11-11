@@ -28,7 +28,7 @@ export default function PortalProjects() {
                                         <td className="py-2.5 pr-4">{p.tiles.today_kwh === null ? "–" : `${num(p.tiles.today_kwh)} kWh`}</td>
                                         <td className="py-2.5 pr-4">{p.tiles.coverage_24h === null ? "–" : `${Math.round(p.tiles.coverage_24h * 100)} %`}</td>
                                     </>
-                                ) : <td colSpan={3} className="py-2.5 pr-4 text-xs text-slate-500">live data shared through published reports</td>}
+                                ) : <td colSpan={3} className="py-2.5 pr-4 text-xs text-slate-500">no live assessment</td>}
                                 <td className="py-2.5 pr-4 text-xs">{p.latest_report ? `${p.latest_report.title ?? "Report"} (to ${fmtDate(new Date(new Date(p.latest_report.period_end).getTime() - 1))})` : "none yet"}</td>
                             </tr>
                         ))}

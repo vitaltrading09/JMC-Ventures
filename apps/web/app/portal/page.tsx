@@ -1,12 +1,13 @@
 "use client";
 
-// Portal overview: every project at a glance, open alerts, latest published reports.
+// Portal overview: the caller's assessments, every project at a glance, open alerts.
 
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, fmtDateTime, TZ_LABEL } from "@/lib/api";
 import type { PortalProject } from "@/lib/portal";
 import { ProjectCard } from "@/components/portal/ProjectCard";
+import { AssessmentBanner } from "@/components/portal/AssessmentBanner";
 import { PageHeader, Panel, Loading, ErrorBox, Empty, Badge } from "@/components/ops/ui";
 
 interface Alert { id: string; meter_name: string; type: string; severity: string; message: string; created_at: string; is_read: boolean; }
@@ -19,6 +20,7 @@ export default function PortalOverview() {
     return (
         <div className="space-y-6">
             <PageHeader title="Overview" subtitle={`What every meter is doing now. Live values are 1-minute averages, refreshed every 15 s; times ${TZ_LABEL}.`} />
+            <AssessmentBanner />
             {projects.isLoading ? <Loading /> : projects.error ? <ErrorBox error={projects.error} /> : (projects.data ?? []).length === 0
                 ? <Empty>No projects yet.</Empty> : (
                     <div className="grid lg:grid-cols-2 2xl:grid-cols-3 gap-4">

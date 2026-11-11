@@ -17,7 +17,7 @@ import fs from 'fs';
 import path from 'path';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { withScope, findSite, findPoint, tenantSql, telemetrySql, hasApiScope, projectAllowed, forClient, Scope, NO_ACCESS,
-    clampToAccess, alignInward, exportEntitledSql, deliverySql, AccessWindow } from '../scope';
+    clampToAccess, alignInward, exportEntitledSql, deliverySql, AccessWindow, liveAssessmentSql } from '../scope';
 import { projectEnergyBalance } from '../fleet/balance';
 import { loadSeries, toCsv, datasetId, conventions, INTERVALS, Interval, MAX_RANGE_DAYS, COLUMNS } from './series';
 import { resolveStoredUploadPath } from '../roles';
@@ -107,6 +107,46 @@ export function v1Routes(pool: Pool): ApiRoute[] {
     const json = (schema: object) => ({ 'application/json': { schema } });
 
     return [
+        {
+            method: 'get', path: '/v1/assessments', openapiPath: '/v1/assessments', scope: 'projects:read',
+            summary: 'Assessments',
+            description: "Your tenant's assessments: the purchased measurement periods with their exact window [start_at, end_at), the points they cover, whether live access is open now, and the deletion date. Readings and exports are available only inside a live assessment's window.",
+            responses: { 200: { description: 'Assessments', content: json({ type: 'array', items: { type: 'object' } }) } },
+            handler: async (req, res) => {
+                needScope(req.scope, 'projects:read');
+                const params: unknown[] = [];
+                const q = await pool.query(`
+                    SELECT a.id, a.reference, a.title, a.project_id, a.status, a.duration_days, a.start_at, a.end_at, a.closed_at, a.timezone,
+                           a.report_status, a.retention_months, a.retention_until, a.retention_status,
+                           ${liveAssessmentSql({ ...req.scope, apiKey: req.scope.apiKey ?? { id: 'session', scopes: [], projectIds: null } }, 'a')} AS live,
+                           COALESCE((SELECT json_agg(ap.measurement_point_id) FROM assessment_points ap WHERE ap.assessment_id = a.id), '[]') AS point_ids
+                    FROM assessments a
+                    WHERE a.status NOT IN ('draft', 'cancelled') AND ${tenantSql(req.scope, 'a.tenant_id', params)}
+                    ORDER BY a.start_at DESC NULLS LAST`, params);
+                res.json(q.rows.filter((a) => projectAllowed(req.scope, a.project_id)));
+            },
+        },
+        {
+            method: 'get', path: '/v1/assessments/:id/package', openapiPath: '/v1/assessments/{id}/package', scope: 'reports:read',
+            summary: 'The data package of an assessment',
+            description: 'The frozen deliverables once the assessment is closed out: report PDFs, load_profile_30min.csv, readings_1min.csv, daily_energy.csv, findings.csv and manifest.json (units, conventions, SHA-256 per file). Available while the assessment is live or within its final-delivery window.',
+            params: [uuidPath('id', 'Assessment')],
+            responses: { 200: { description: 'File list with download paths', content: json({ type: 'object' }) }, 404: { description: 'Not found or not deliverable' } },
+            handler: async (req, res) => {
+                needScope(req.scope, 'reports:read');
+                if (!UUID.test(req.params.id)) throw new ApiError(404, 'Not found');
+                const params: unknown[] = [req.params.id];
+                const a = (await pool.query(`
+                    SELECT a.id, a.reference, a.project_id, a.package_path FROM assessments a JOIN projects p ON p.id = a.project_id
+                    WHERE a.id = $1 AND ${tenantSql(req.scope, 'a.tenant_id', params)} AND ${deliverySql(req.scope, 'p')}`, params)).rows[0];
+                if (!a || !projectAllowed(req.scope, a.project_id)) throw new ApiError(404, 'Not found');
+                const mpath = a.package_path ? path.join(a.package_path, 'manifest.json') : null;
+                if (!mpath || !fs.existsSync(mpath)) return res.json({ assessment_id: a.id, ready: false, files: [] });
+                const manifest = JSON.parse(fs.readFileSync(mpath, 'utf8'));
+                res.json({ assessment_id: a.id, reference: a.reference, ready: true, manifest,
+                           note: 'Download the files from the portal or the delivery link; the manifest lists their checksums.' });
+            },
+        },
         {
             method: 'get', path: '/v1/projects', openapiPath: '/v1/projects', scope: 'projects:read',
             summary: 'List projects',

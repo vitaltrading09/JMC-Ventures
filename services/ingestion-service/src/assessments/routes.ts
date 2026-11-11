@@ -23,6 +23,7 @@
 import { Router } from 'express';
 import type { Pool, PoolClient } from 'pg';
 import { withScope, requireInternal, forClient } from '../scope';
+import { enqueueEmail, appUrl } from '../notify/email';
 import {
     checkTransition, effectiveStatus, effectiveEnd, endFor, remainingMs, deliveryWindow, retentionUntil,
     formatDuration, formatZar, isLive, LifecycleError, DAY,
@@ -358,6 +359,12 @@ export function assessmentsRouter(pool: Pool, authenticateJwt: (req: any, res: a
                         const ret = retentionUntil({ ...before, start_at: start, end_at: end, closed_at: null });
                         await c.query(`UPDATE assessments SET status = 'active', start_at = $2, end_at = $3, retention_until = $4, updated_at = NOW() WHERE id = $1`,
                             [before.id, start, end, ret]);
+                        const gs = (await c.query(`SELECT id, email FROM assessment_grants WHERE assessment_id = $1 AND revoked_at IS NULL`, [before.id])).rows;
+                        for (const g of gs) {
+                            await enqueueEmail(c, { dedupeKey: `start:${before.id}:${g.id}`, to: g.email, assessmentId: before.id, purpose: 'activation',
+                                subject: `GridIQ ${before.reference}: your assessment has started`,
+                                text: `Your GridIQ assessment ${before.reference} of ${before.project_name} started at ${start.toISOString().slice(0, 16).replace('T', ' ')} UTC and ends at ${end.toISOString().slice(0, 16).replace('T', ' ')} UTC (${before.duration_days} × 24 hours).\nLive data, history and the consultant are available until then: ${appUrl()}/portal` });
+                        }
                         break;
                     }
                     case 'extend': {
@@ -417,6 +424,13 @@ export function assessmentsRouter(pool: Pool, authenticateJwt: (req: any, res: a
                 VALUES ($1, $2, $3, $4, $5) RETURNING *`,
                 [a.id, user?.id ?? null, email, b.receives_reports !== false, req.scope.userId])).rows[0];
             await audit(c, req.scope, 'assessment.grant', 'assessment', a.id, undefined, row);
+            // Invitation: sign in with an email code; nothing reusable is sent.
+            await enqueueEmail(c, { dedupeKey: `invite:${row.id}`, to: email, assessmentId: a.id, purpose: 'invite',
+                subject: `GridIQ: you have access to ${a.reference} (${a.project_name})`,
+                text: [`You have been given access to the GridIQ assessment ${a.reference} of ${a.project_name}.`, '',
+                    a.start_at ? `It runs from ${new Date(a.start_at).toISOString().slice(0, 16).replace('T', ' ')} to ${new Date(a.end_at).toISOString().slice(0, 16).replace('T', ' ')} UTC.`
+                        : 'You will receive another message when the measurement period starts.',
+                    '', `Sign in with this email address at ${appUrl()}/login (a one-time code is emailed to you each time).`].join('\n') });
             return { ...row, user_exists: !!user };
         });
         if (!out) return res.status(404).json({ error: 'Not found' });
@@ -520,7 +534,8 @@ export function assessmentsRouter(pool: Pool, authenticateJwt: (req: any, res: a
             ]),
             ...maintenance.rows.map((m) => ({ at: m.occurred_at, kind: m.kind, text: m.description, ref: m.id })),
         ].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
-        res.json({ device: dev, deployments: deployments.rows, maintenance: maintenance.rows, assessments: assessments.rows, timeline });
+        res.json({ device: dev, deployments: deployments.rows, maintenance: maintenance.rows, assessments: assessments.rows, timeline,
+                   health: await deviceHealth(pool, dev.id) });
     }));
 
     return r;
@@ -541,4 +556,46 @@ export async function expireAssessments(pool: Pool): Promise<number> {
             VALUES ('system', 'assessment.expire', 'assessment', $1, $2, 'end_at reached')`, [a.id, JSON.stringify({ end_at: a.end_at })]);
     }
     return q.rows.length;
+}
+
+/**
+ * Health of one device, as separate dimensions (prompt section 7): a box that
+ * talks but sends stale values is not measuring; missing messages do not
+ * prove an outage; a measured zero is a valid measurement.
+ *   communication   last message received (ingested_at), any timestamp
+ *   freshness       last measurement timestamp (device time) and its lag
+ *   completeness    received vs expected samples over 24 h, at its own cadence
+ *   quality         clock drift, duplicate/conflicting timestamps, unmapped channels
+ *   electrical      open alerts from measured values (7 days), never inferred from silence
+ */
+export async function deviceHealth(db: Pool, deviceId: string) {
+    const r = (await db.query(`
+        WITH recent AS (
+            SELECT time, ingested_at, device_time FROM meter_readings
+            WHERE meter_id = $1 AND time > NOW() - INTERVAL '2 days'
+        )
+        SELECT (SELECT max(ingested_at) FROM recent) AS last_contact,
+               (SELECT max(time) FROM recent) AS last_measurement,
+               (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY abs(extract(epoch FROM ingested_at - device_time)))
+                  FROM recent WHERE ingested_at > NOW() - INTERVAL '1 hour' AND device_time IS NOT NULL) AS clock_lag_s,
+               (SELECT ROUND(device_coverage($1, NOW() - INTERVAL '24 hours')::numeric, 3)) AS coverage_24h,
+               (SELECT COALESCE(sum(conflicts), 0)::int FROM ingest_stats WHERE meter_id = $1 AND hour > NOW() - INTERVAL '24 hours') AS conflicts_24h,
+               (SELECT count(*)::int FROM ingest_unknown_params WHERE meter_id = $1) AS unknown_params,
+               (SELECT count(*)::int FROM alerts WHERE meter_id = $1 AND NOT is_read AND created_at > NOW() - INTERVAL '7 days'
+                  AND type NOT IN ('METER_SILENT', 'LOW_COVERAGE', 'CLOCK_DRIFT', 'CONFLICTS_RISING')) AS electrical_alerts_7d
+        `, [deviceId])).rows[0];
+    const ago = (d: Date | null) => (d ? Math.round((Date.now() - new Date(d).getTime()) / 1000) : null);
+    return {
+        communication: { last_contact_at: r.last_contact, seconds_ago: ago(r.last_contact),
+            basis: 'when the platform last received a message from this box (any timestamp)' },
+        freshness: { last_measurement_at: r.last_measurement, seconds_ago: ago(r.last_measurement),
+            basis: 'device timestamp of the newest stored measurement; a backlog replay can be recent contact with old measurements' },
+        completeness: { coverage_24h: r.coverage_24h === null ? null : Number(r.coverage_24h),
+            basis: 'samples received in the last 24 h ÷ samples expected at the box’s own median reporting interval' },
+        quality: { clock_lag_s: r.clock_lag_s === null ? null : Math.round(Number(r.clock_lag_s)), conflicts_24h: r.conflicts_24h,
+            unknown_params: r.unknown_params,
+            basis: 'median |receive time − device time| over the last hour; duplicate timestamps with different values; channels not mapped' },
+        electrical: { open_alerts_7d: r.electrical_alerts_7d,
+            basis: 'alerts raised from measured values (voltage, THD, demand, events); silence is never treated as an outage' },
+    };
 }

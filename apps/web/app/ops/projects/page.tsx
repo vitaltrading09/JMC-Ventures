@@ -41,7 +41,7 @@ export default function ProjectsPage() {
                                     {p.end_client_name && <p className="text-xs text-slate-500">{p.end_client_name}</p>}</td>
                                 <td className="py-2.5 pr-4">{p.tenant_name}</td>
                                 <td className="py-2.5 pr-4"><Badge tone={p.status === "active" ? "green" : p.status === "planned" ? "blue" : "grey"}>{p.status}</Badge>
-                                    {!p.live_data_visible && <span className="ml-1"><Badge tone="amber">live data hidden</Badge></span>}</td>
+                                    </td>
                                 <td className="py-2.5 pr-4 whitespace-nowrap text-xs">{fmtDate(p.starts_on)} – {fmtDate(p.ends_on)}</td>
                                 <td className="py-2.5 pr-4">{p.points} / {p.active_deployments}</td>
                                 <td className="py-2.5 pr-4">{p.active_deployments ? pct(p.coverage_24h) : "–"}</td>

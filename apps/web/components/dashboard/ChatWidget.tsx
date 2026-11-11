@@ -1,262 +1,114 @@
 "use client";
 
-import { useState, useRef, useEffect } from 'react';
-import { MessageSquare, X, Send, Loader2, Sparkles, Bot, User, Zap, AlertTriangle } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
+// The assessment consultant (GridIQ prompt section 12). Available while the
+// caller holds a live assessment; the server picks the data (the assessment's
+// own dataset) and enforces access and budgets. Answers state their basis.
+// Other components open it with a question: window.dispatchEvent(new
+// CustomEvent("gridiq:ask", { detail: "..." })) (lib/portal.ts askConsultant).
 
-interface ChatMessage {
-    id: string;
-    role: 'user' | 'assistant';
-    content: string;
-}
+import { useEffect, useRef, useState } from "react";
+import { MessageSquare, X, Send, Sparkles, Lock } from "lucide-react";
+import { apiGet, apiSend } from "@/lib/api";
+import { usePortalAssessments } from "@/components/portal/AssessmentBanner";
+
+interface Msg { role: "user" | "assistant"; content: string; basis?: string }
+
+const SUGGESTIONS = [
+    "What caused the highest demand peak, and what evidence do we have?",
+    "Is the harmonic distortion concentrated in one phase or period?",
+    "Why is the power factor lower at night?",
+    "What should we tell the feasibility engineer?",
+];
 
 export function ChatWidget() {
-    const [isOpen, setIsOpen] = useState(false);
-    const [userInput, setUserInput] = useState("");
-    const [isLoading, setIsLoading] = useState(false);
-    const [context, setContext] = useState("");
-    const [suggestions, setSuggestions] = useState<string[]>([]);
-    const [showSuggestions, setShowSuggestions] = useState(true);
-    const [messages, setMessages] = useState<ChatMessage[]>([
-        { id: '1', role: 'assistant', content: 'Hello! I\'m your **Grid-IQ AI Consultant** — I have access to your live energy data. Ask me anything about your sites, power quality, costs, or alerts.' }
-    ]);
-
-    const messagesEndRef = useRef<HTMLDivElement>(null);
-
-    // Other pages open the chat with a question: askConsultant(text) in lib/portal.ts
-    // dispatches "gridiq:ask"; the question is sent once the widget is open.
+    const [open, setOpen] = useState(false);
+    const [input, setInput] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [msgs, setMsgs] = useState<Msg[]>([]);
     const [pending, setPending] = useState<string | null>(null);
+    const [sel, setSel] = useState<string | null>(null);
+    const end = useRef<HTMLDivElement>(null);
+    const assessments = usePortalAssessments();
+    const live = (assessments.data ?? []).filter((a) => a.live);
+    const current = live.find((a) => a.id === sel) ?? live[0] ?? null;
+
     useEffect(() => {
-        const onAsk = (e: Event) => {
-            const text = (e as CustomEvent<string>).detail;
-            if (typeof text === 'string' && text.trim()) { setIsOpen(true); setPending(text); }
-        };
-        window.addEventListener('gridiq:ask', onAsk);
-        return () => window.removeEventListener('gridiq:ask', onAsk);
+        const onAsk = (e: Event) => { const q = (e as CustomEvent<string>).detail; if (q) { setOpen(true); setPending(q); } };
+        window.addEventListener("gridiq:ask", onAsk);
+        return () => window.removeEventListener("gridiq:ask", onAsk);
     }, []);
     useEffect(() => {
-        if (pending && !isLoading) { const q = pending; setPending(null); sendMessage(q); }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [pending, isLoading]);
+        if (!open || !current) return;
+        apiGet<{ messages: Msg[] }>(`/ingestion/assessments/${current.id}/chat`).then((r) => setMsgs(r.messages)).catch(() => setMsgs([]));
+    }, [open, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs]);
+    useEffect(() => { if (open && pending && current && !busy) { const q = pending; setPending(null); send(q); } }, [open, pending, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Fetch context + suggestions when chat opens
-    useEffect(() => {
-        if (!isOpen || context) return;
-        const fetchContext = async () => {
-            try {
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/ai-context`, {
-                    credentials: 'include',
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    setContext(data.context || '');
-                    if (data.suggestions?.length) setSuggestions(data.suggestions);
-                }
-            } catch (err) {
-                console.error("Failed to fetch AI context:", err);
-            }
-        };
-        fetchContext();
-    }, [isOpen]);
-
-    useEffect(() => {
-        if (messagesEndRef.current) {
-            messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
-        }
-    }, [messages, isLoading]);
-
-    const sendMessage = async (text: string) => {
-        if (!text.trim() || isLoading) return;
-        setShowSuggestions(false);
-
-        const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: text };
-        setMessages(prev => [...prev, userMsg]);
-        setUserInput("");
-        setIsLoading(true);
-
-        const botId = (Date.now() + 1).toString();
-        setMessages(prev => [...prev, { id: botId, role: 'assistant', content: '' }]);
-
+    const send = async (text: string) => {
+        if (!text.trim() || !current) return;
+        setInput("");
+        setMsgs((m) => [...m, { role: "user", content: text }, { role: "assistant", content: "" }]);
+        setBusy(true);
         try {
-            // First, proactively fetch the absolute freshest context so the AI has real-time data
-            let currentContext = context;
-            const ctxRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/ai-context`, {
-                credentials: 'include',
-            });
-            if (ctxRes.ok) {
-                const ctxData = await ctxRes.json();
-                currentContext = ctxData.context || '';
-                setContext(currentContext);
-            }
-
-            const apiMessages = messages.concat(userMsg).map(m => ({ role: m.role, content: m.content }));
-
-            const res = await fetch('/api/chat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: apiMessages, context: currentContext }),
-            });
-
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || `API error ${res.status}`);
-
-            setMessages(prev =>
-                prev.map(m => m.id === botId ? { ...m, content: data.text || 'No response.' } : m)
-            );
-        } catch (err: any) {
-            console.error("Chat error:", err);
-            setMessages(prev =>
-                prev.map(m => m.id === botId ? { ...m, content: `**Error:** ${err.message}` } : m)
-            );
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        sendMessage(userInput);
-    };
-
-    // Detect and style special card sections from AI markdown
-    const renderMessage = (content: string) => {
-        if (!content) return (
-            <span className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" />
-                <span className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
-                <span className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }} />
-            </span>
-        );
-
-        // Check if content has alert or insight cards — wrap them in styled containers
-        const hasAlert = content.includes('## 🚨 Alert');
-        const hasInsight = content.includes('## 💡 Insight');
-
-        return (
-            <div className={`prose prose-invert prose-sm max-w-none
-                ${hasAlert ? '[&_h2:has-text]:text-amber-400' : ''}
-                prose-h2:text-sm prose-h2:font-bold prose-h2:mt-2 prose-h2:mb-1
-                prose-strong:text-white prose-li:my-0.5 prose-p:my-1
-            `}>
-                <ReactMarkdown
-                    components={{
-                        h2: ({ children }) => {
-                            const text = String(children);
-                            if (text.includes('🚨')) return (
-                                <div className="flex items-center gap-1.5 text-amber-400 font-bold text-sm mt-3 mb-1 border-b border-amber-400/30 pb-1">
-                                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-                                    <span>{text.replace('🚨 ', '')}</span>
-                                </div>
-                            );
-                            if (text.includes('💡')) return (
-                                <div className="flex items-center gap-1.5 text-blue-400 font-bold text-sm mt-3 mb-1 border-b border-blue-400/30 pb-1">
-                                    <Zap className="w-3.5 h-3.5 flex-shrink-0" />
-                                    <span>{text.replace('💡 ', '')}</span>
-                                </div>
-                            );
-                            return <h2 className="text-white font-bold text-sm mt-2 mb-1">{children}</h2>;
-                        }
-                    }}
-                >
-                    {content}
-                </ReactMarkdown>
-            </div>
-        );
+            const r = await apiSend<{ answer: string; provider: string; basis: { period_from: string; period_to: string; provisional: boolean; coverage: { point: string; fraction: number | null }[] }; evidence: string[] }>(
+                "POST", `/ingestion/assessments/${current.id}/chat`, { message: text });
+            const cov = r.basis.coverage.map((c) => `${c.point} ${c.fraction === null ? "–" : Math.round(c.fraction * 100) + " %"}`).join(", ");
+            const basis = `Data ${r.basis.period_from.slice(0, 10)} → ${r.basis.period_to.slice(0, 10)}${r.basis.provisional ? " (provisional)" : ""} · coverage ${cov}${r.evidence.length ? ` · sections: ${r.evidence.join(", ")}` : ""}${r.provider === "none" ? " · no AI model used" : ""}`;
+            setMsgs((m) => [...m.slice(0, -1), { role: "assistant", content: r.answer, basis }]);
+        } catch (e: any) {
+            setMsgs((m) => [...m.slice(0, -1), { role: "assistant", content: `Could not answer: ${e.message}` }]);
+        } finally { setBusy(false); }
     };
 
     return (
-        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end">
-            {isOpen && (
-                <div className="w-[360px] sm:w-[420px] h-[540px] max-h-[80vh] bg-slate-900 border border-slate-700/60 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.6)] flex flex-col mb-4 overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-300">
-
-                    {/* Header */}
-                    <div className="px-4 py-3 bg-gradient-to-r from-blue-900/50 to-indigo-900/50 border-b border-slate-700/60 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5">
-                            <div className="w-9 h-9 rounded-full bg-blue-500/20 border border-blue-500/30 flex items-center justify-center text-blue-400">
-                                <Sparkles className="w-4 h-4" />
-                            </div>
-                            <div>
-                                <h3 className="font-semibold text-white text-sm">Grid-IQ AI</h3>
-                                <p className="text-xs text-blue-400 font-medium flex items-center gap-1">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                                    Live data connected · Gemini 2.5
-                                </p>
-                            </div>
+        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end print:hidden">
+            {open && (
+                <div className="w-[360px] sm:w-[440px] h-[560px] max-h-[80vh] bg-slate-900 border border-slate-700/60 rounded-2xl shadow-2xl flex flex-col mb-4 overflow-hidden">
+                    <div className="px-4 py-3 bg-gradient-to-r from-blue-900/50 to-indigo-900/50 border-b border-slate-700/60 flex items-center gap-2.5">
+                        <Sparkles className="w-4 h-4 text-blue-400" />
+                        <div className="flex-1 min-w-0">
+                            <h3 className="font-semibold text-white text-sm">GridIQ consultant</h3>
+                            {live.length > 1 ? (
+                                <select className="bg-transparent text-xs text-slate-300" value={current?.id ?? ""} onChange={(e) => setSel(e.target.value)}>
+                                    {live.map((a) => <option key={a.id} value={a.id} className="bg-slate-900">{a.reference} · {a.project_name}</option>)}
+                                </select>
+                            ) : <p className="text-xs text-slate-400 truncate">{current ? `${current.reference} · ${current.project_name}` : "No live assessment"}</p>}
                         </div>
-                        <button onClick={() => setIsOpen(false)} className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
-                            <X className="w-4 h-4" />
-                        </button>
+                        <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
                     </div>
-
-                    {/* Messages */}
-                    <div className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
-                        {messages.map((m) => (
-                            <div key={m.id} className={`flex gap-2.5 ${m.role === 'user' ? 'ml-auto flex-row-reverse max-w-[80%]' : 'max-w-[92%]'}`}>
-                                <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs ${m.role === 'user' ? 'bg-indigo-500 text-white' : 'bg-slate-800 border border-slate-700 text-blue-400'}`}>
-                                    {m.role === 'user' ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
-                                </div>
-                                <div className={`px-3.5 py-2.5 rounded-2xl text-sm ${m.role === 'user'
-                                    ? 'bg-indigo-500 text-white rounded-tr-none'
-                                    : 'bg-slate-800 border border-slate-700/50 text-slate-200 rounded-tl-none'
-                                    }`}>
-                                    {m.role === 'user' ? m.content : renderMessage(m.content)}
-                                </div>
-                            </div>
-                        ))}
-
-                        {/* Smart suggestion chips — only shown at start */}
-                        {showSuggestions && suggestions.length > 0 && messages.length <= 1 && (
-                            <div className="flex flex-col gap-1.5 pt-1">
-                                <p className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">Quick questions</p>
-                                {suggestions.map((s, i) => (
-                                    <button
-                                        key={i}
-                                        onClick={() => sendMessage(s)}
-                                        className="text-left text-xs px-3 py-2 rounded-xl border border-slate-700 bg-slate-800/60 hover:bg-slate-700/60 hover:border-blue-500/40 text-slate-300 hover:text-white transition-all"
-                                    >
-                                        {s}
-                                    </button>
+                    {!current ? (
+                        <div className="flex-1 p-6 text-sm text-slate-300 flex gap-3"><Lock className="w-5 h-5 text-slate-500 shrink-0" />
+                            The consultant answers questions about an assessment while it is running. You have no live assessment right now.</div>
+                    ) : (
+                        <>
+                            <div className="flex-1 overflow-y-auto p-4 space-y-3 text-sm">
+                                {msgs.length === 0 && (
+                                    <div className="space-y-2">
+                                        <p className="text-slate-400">Ask about this assessment's measurements. Answers cite the data they use; general explanations are labelled as such. Advisory only: never work on live equipment yourself.</p>
+                                        {SUGGESTIONS.map((s) => <button key={s} onClick={() => send(s)} className="block text-left w-full text-blue-300 hover:text-blue-200 text-xs border border-slate-700 rounded-lg px-3 py-2">{s}</button>)}
+                                    </div>
+                                )}
+                                {msgs.map((m, i) => (
+                                    <div key={i} className={m.role === "user" ? "text-right" : ""}>
+                                        <div className={`inline-block max-w-[90%] rounded-xl px-3 py-2 whitespace-pre-wrap text-left ${m.role === "user" ? "bg-blue-600 text-white" : "bg-slate-800 text-slate-100"}`}>
+                                            {m.content || <span className="text-slate-500">…</span>}
+                                        </div>
+                                        {m.basis && <p className="text-[11px] text-slate-500 mt-1">{m.basis}</p>}
+                                    </div>
                                 ))}
+                                <div ref={end} />
                             </div>
-                        )}
-
-                        <div ref={messagesEndRef} />
-                    </div>
-
-                    {/* Input */}
-                    <div className="p-3 border-t border-slate-700/60 bg-slate-900/50">
-                        <form onSubmit={handleSubmit} className="relative flex items-center">
-                            <input
-                                value={userInput}
-                                onChange={(e) => setUserInput(e.target.value)}
-                                placeholder="Ask about your energy data..."
-                                className="w-full bg-slate-800/80 border border-slate-700 text-sm text-white rounded-full pl-4 pr-12 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all placeholder:text-slate-500"
-                            />
-                            <button
-                                type="submit"
-                                disabled={isLoading || !userInput.trim()}
-                                className="absolute right-1.5 p-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-full transition-colors"
-                            >
-                                {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                            </button>
-                        </form>
-                        <p className="text-center mt-2 text-[10px] text-slate-600">Grid-IQ AI · Always verify critical decisions manually</p>
-                    </div>
+                            <form onSubmit={(e) => { e.preventDefault(); send(input); }} className="p-3 border-t border-slate-800 flex gap-2">
+                                <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask about this assessment…" disabled={busy}
+                                    className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                                <button disabled={busy || !input.trim()} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg px-3"><Send className="w-4 h-4" /></button>
+                            </form>
+                        </>
+                    )}
                 </div>
             )}
-
-            {/* FAB */}
-            <button
-                onClick={() => setIsOpen(!isOpen)}
-                className={`flex items-center justify-center w-14 h-14 rounded-full shadow-[0_0_20px_rgba(59,130,246,0.5)] transition-all duration-300 hover:scale-105 relative ${isOpen ? 'bg-slate-800 text-slate-300 border border-slate-700' : 'bg-blue-600 hover:bg-blue-500 text-white'}`}
-            >
-                {isOpen ? <X className="w-6 h-6" /> : <MessageSquare className="w-6 h-6" />}
-                {!isOpen && (
-                    <span className="absolute top-0 right-0 flex h-3 w-3">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                        <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500 border-2 border-slate-950" />
-                    </span>
-                )}
+            <button onClick={() => setOpen((v) => !v)} className="w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-lg flex items-center justify-center" aria-label="Open the GridIQ consultant">
+                {open ? <X className="w-6 h-6" /> : <MessageSquare className="w-6 h-6" />}
             </button>
         </div>
     );

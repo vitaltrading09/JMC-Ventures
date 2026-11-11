@@ -66,6 +66,8 @@ function routes() {
     scan('portal.ts', 'r');
     scan('v1/routes.ts', 'r');
     scan('assessments/routes.ts', 'r');
+    scan('reports/closeout.ts', 'r');
+    scan('consultant.ts', 'r');
     // The public API declares its routes as objects: { method: 'get', path: '/v1/...' }.
     const v1 = fs.readFileSync(path.join(ROOT, 'src', 'v1', 'routes.ts'), 'utf8');
     for (const m of v1.matchAll(/method: '(get|post)', path: '([^']+)'/g)) out.push([m[1].toUpperCase(), m[2]]);

@@ -46,7 +46,7 @@ export default function PortalPointPage() {
                 </div>} />
             {project.data.telemetry_visible
                 ? <MeasurementChart title={point.name} load={load} />
-                : <ErrorBox error="Live data for this project is shared through published reports." />}
+                : <ErrorBox error="No live assessment: readings for this point are available only during your assessment period." />}
         </div>
     );
 }

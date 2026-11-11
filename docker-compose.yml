@@ -37,6 +37,22 @@ x-ingestion-env: &ingestion-env
   # Clients also see draft (unreviewed) findings, labelled as drafts (owner's
   # decision 2026-11). false = published findings only, the strict review gate.
   CLIENT_SEES_DRAFT_FINDINGS: ${CLIENT_SEES_DRAFT_FINDINGS:-true}
+  # GridIQ assessments (2026-11-11). Links in emails point at the web app.
+  FRONTEND_URL: https://${APP_DOMAIN}
+  ASSESSMENT_LATE_DATA_HOURS: ${ASSESSMENT_LATE_DATA_HOURS:-2}
+  # Email: smtp (SMTP_URL, EMAIL_FROM) | file (dev: .eml files in EMAIL_DIR) | unset = not
+  # configured (messages fail visibly in the ops console).
+  EMAIL_PROVIDER: ${EMAIL_PROVIDER:-}
+  EMAIL_FROM: ${EMAIL_FROM:-}
+  SMTP_URL: ${SMTP_URL:-}
+  EMAIL_DIR: /data/outbox
+  # Consultant: anthropic | openai | none (default: whichever key is set).
+  AI_PROVIDER: ${AI_PROVIDER:-}
+  AI_MODEL: ${AI_MODEL:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  AI_MESSAGES_PER_HOUR: ${AI_MESSAGES_PER_HOUR:-30}
+  # PV / battery sizing in the metering report (outside the GridIQ product; off).
+  FEATURE_TOOLS: ${FEATURE_TOOLS:-false}
 
 services:
   caddy:
@@ -111,6 +127,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       # Served over HTTPS by Caddy, so the auth cookie is Secure.
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      # Sign-in codes link back to the web app; staff must use TOTP when true.
+      FRONTEND_URL: https://${APP_DOMAIN}
+      STAFF_MFA_REQUIRED: ${STAFF_MFA_REQUIRED:-false}
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -181,6 +200,9 @@ services:
       EVENT_ALERT_MIN_SECONDS: ${EVENT_ALERT_MIN_SECONDS:-10}
     volumes:
       - ${DATA_DIR:-./.data}/exports:/data/exports
+      # Close-out writes report PDFs (uploads) and the dev email adapter writes .eml files.
+      - ${DATA_DIR:-./.data}/uploads:/data/uploads
+      - ${DATA_DIR:-./.data}/outbox:/data/outbox
     depends_on:
       timescaledb:
         condition: service_healthy

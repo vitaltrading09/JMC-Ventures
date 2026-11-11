@@ -87,6 +87,12 @@ const PROJECT_FIELDS: FieldSpec = {
     status: (v) => oneOf(v, PROJECT_STATUSES, 'status'),
     starts_on: date('starts_on'), ends_on: date('ends_on'),
     live_data_visible: bool('live_data_visible'),
+    // Site context for site-specific analysis: nominal voltage, wiring, supply,
+    // operating hours, major loads (VSDs, capacitors, PV, generators), symptoms.
+    site_context: (v) => {
+        if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new InputError('site_context: an object');
+        return JSON.stringify(v);
+    },
 };
 const POINT_FIELDS: FieldSpec = {
     name: text,
@@ -104,6 +110,12 @@ const DEVICE_FIELDS: FieldSpec = {
     router_model: text, sim_iccid: text, notes: text,
     calibration_due_on: date('calibration_due_on'),
     status: (v) => oneOf(v, DEVICE_STATUSES.filter((s) => s !== 'deployed'), 'status'),
+    // What this asset can measure, confirmed per unit (nothing assumed from the model name):
+    // e.g. { "cadence_s": 1, "harmonic_orders": [3,5,7], "thd": true, "events": false, "waveform": false }.
+    capability_profile: (v) => {
+        if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new InputError('capability_profile: an object');
+        return JSON.stringify(v);
+    },
 };
 export const CORRECTION_FIELDS: FieldSpec = {
     power_sign: (v) => {
@@ -474,7 +486,7 @@ export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, ne
                    dv.calibration_due_on, dv.firmware, dv.comms_module,
                    dep.id AS deployment_id, dep.installed_at, dep.commissioning->>'overall' AS commissioning,
                    mp.id AS point_id, mp.name AS point_name, mp.role AS point_role,
-                   pr.id AS project_id, pr.name AS project_name, t.name AS tenant_name,
+                   pr.id AS project_id, pr.name AS project_name, t.name AS tenant_name, pr.gps_lat, pr.gps_lon, pr.address AS project_address,
                    (SELECT max(time) FROM meter_readings r WHERE r.meter_id = dv.id AND r.time >= NOW() - INTERVAL '30 days') AS last_seen,
                    -- Against the box's own reporting interval, since the later of 24 h ago and the install.
                    ROUND(device_coverage(dv.id, GREATEST(NOW() - INTERVAL '24 hours', COALESCE(dep.installed_at, NOW() - INTERVAL '24 hours')))::numeric, 3) AS coverage_24h,

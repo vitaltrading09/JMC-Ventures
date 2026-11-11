@@ -29,6 +29,10 @@ import { reviewRouter } from './review';
 import { opsRouter } from './ops';
 import { portalRouter } from './portal';
 import { assessmentsRouter, expireAssessments } from './assessments/routes';
+import { deliverablesRouter, runCloseouts, notifyNearingEnd } from './reports/closeout';
+import { sendDueEmails } from './notify/email';
+import { consultantRouter } from './consultant';
+import { runRetention } from './assessments/retention';
 import { v1Router } from './v1/routes';
 import { runExports, expireExports } from './v1/exports-job';
 import { runRuleFindings } from './findings-rules';
@@ -360,9 +364,19 @@ function registerJobs(pool: Pool) {
             if (n) console.log(`[assessments] ${n} ended`);
         } catch (e: any) { console.error('[assessments] expiry failed:', e?.message || e); }
     });
+    // Close-out after the end + late-data window; nearing-end notices; the email
+    // outbox; retention purges. Each is idempotent and safe to run on restart.
+    const job = (name: string, fn: () => Promise<number>) => async () => {
+        try { const n = await fn(); if (n) console.log(`[jobs] ${name}: ${n}`); }
+        catch (e: any) { console.error(`[jobs] ${name} failed:`, e?.message || e); }
+    };
+    cron.schedule('*/5 * * * *', job('assessment close-out', () => runCloseouts(pool)));
+    cron.schedule('*/15 * * * *', job('nearing-end notices', () => notifyNearingEnd(pool)));
+    cron.schedule('* * * * *', job('email outbox', () => sendDueEmails(pool)));
+    cron.schedule('17 * * * *', job('retention purge', () => runRetention(pool)));
     setTimeout(runRules, 120_000).unref();
 
-    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00, exports 1m, rule findings 1h, assessment expiry 1m)');
+    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00, exports 1m, rule findings 1h, assessment expiry 1m, close-out 5m, notices 15m, email 1m, retention 1h)');
 }
 
 // Health of the roles this process runs. Shared by the api /health route and
@@ -448,6 +462,10 @@ app.use(portalRouter(pool, authenticateToken));
 app.use(v1Router(pool, authenticateToken));
 // GridIQ assessments: packages, lifecycle, access grants, asset history (src/assessments/routes.ts).
 app.use(assessmentsRouter(pool, authenticateToken));
+// Report revisions, previews, deliverables and final-delivery links (src/reports/closeout.ts).
+app.use(deliverablesRouter(pool, authenticateToken));
+// The assessment consultant (src/consultant.ts): scoped retrieval, budgets, provider adapters.
+app.use(consultantRouter(pool, authenticateToken));
 
 // Deep health for an external uptime monitor (src/health.ts). Token header,
 // no JWT: the monitor is not a user. Disabled unless HEALTH_TOKEN is set.

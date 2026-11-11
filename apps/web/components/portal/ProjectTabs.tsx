@@ -4,6 +4,8 @@
 // Metering layout, Energy balance, Load profile, Demand, Power quality,
 // Findings, Reports. Every figure states its basis and that times are SAST.
 
+import { usePortalAssessments } from "@/components/portal/AssessmentBanner";
+import type { Assessment } from "@/lib/assessments";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -318,7 +320,9 @@ export function ReportsTab({ project, role }: { project: PortalProjectDetail; ro
     if (q.isLoading) return <Loading />;
     if (q.error) return <ErrorBox error={q.error} />;
     return (
-        <Panel title="Reports" subtitle="Reports Grid-IQ has reviewed and published. A share link shows the report to someone without an account.">
+        <div className="space-y-5">
+        <AssessmentDeliverables projectId={project.id} />
+        <Panel title="Reports" subtitle="Reports GridIQ has reviewed and issued. A share link shows the report to someone without an account while the assessment is live or in its delivery period.">
             {(q.data ?? []).length === 0 ? <Empty>No published report yet.</Empty> : (
                 <ul className="divide-y divide-slate-800">
                     {q.data!.map((r) => (
@@ -336,6 +340,42 @@ export function ReportsTab({ project, role }: { project: PortalProjectDetail; ro
                     ))}
                 </ul>
             )}
+        </Panel>
+        </div>
+    );
+}
+
+/** Per assessment of this project: the frozen deliverables and, while live, a provisional preview. */
+function AssessmentDeliverables({ projectId }: { projectId: string }) {
+    const mine = usePortalAssessments();
+    const list = (mine.data ?? []).filter((a) => a.project_id === projectId && (a.live || a.delivery_open));
+    if (!list.length) return null;
+    return (
+        <>
+            {list.map((a) => <Deliverables key={a.id} a={a} />)}
+        </>
+    );
+}
+
+function Deliverables({ a }: { a: Assessment }) {
+    const q = useQuery({ queryKey: ["deliverables", a.id], queryFn: () => apiGet<{ files: { name: string; title: string; url: string; sha256: string | null }[]; pending_review: string[] }>(`/ingestion/assessments/${a.id}/deliverables`) });
+    const origin = (() => { const b = process.env.NEXT_PUBLIC_API_URL ?? ""; return b.startsWith("/") ? "" : new URL(b).origin; })();
+    return (
+        <Panel title={`${a.reference} deliverables`} subtitle={a.live ? "Live assessment: the provisional preview covers the elapsed period only and is not final." : `Final files, available until ${fmtDate(a.delivery_until)}.`}>
+            {a.live && (
+                <p className="text-sm mb-3">
+                    <a className="text-blue-300 hover:underline" href={apiUrl(`/ingestion/assessments/${a.id}/preview.pdf?kind=overview`)} target="_blank" rel="noreferrer">Provisional overview (PDF)</a>
+                    {" · "}
+                    <a className="text-blue-300 hover:underline" href={apiUrl(`/ingestion/assessments/${a.id}/preview.pdf?kind=power_quality`)} target="_blank" rel="noreferrer">Provisional power quality (PDF)</a>
+                </p>
+            )}
+            {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : (q.data?.files ?? []).length === 0
+                ? <Empty>{a.live ? "The final reports and data package are produced when the assessment ends." : "Being prepared."}</Empty> : (
+                    <ul className="text-sm space-y-1">{q.data!.files.map((f) => (
+                        <li key={f.name}><a className="text-blue-300 hover:underline" href={`${origin}${f.url}`}>{f.name}</a> <span className="text-xs text-slate-500">{f.title}</span></li>
+                    ))}</ul>
+                )}
+            {(q.data?.pending_review ?? []).length > 0 && <p className="text-xs text-slate-500 mt-2">In engineering review: {q.data!.pending_review.join(", ")}.</p>}
         </Panel>
     );
 }

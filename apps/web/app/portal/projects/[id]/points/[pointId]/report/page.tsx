@@ -36,6 +36,8 @@ interface Report {
     extremes_basis: string;
     feasibility: {
         notes: { level: "info" | "watch" | "act"; text: string }[];
+        sizing_available?: boolean;
+        handover?: string;
         peak_shaving: { target_kva: number; demand_reduction_kva: number; battery_power_kw: number; battery_energy_kwh: number; days_with_shaving: number; monthly_saving_zar: number | null; indicative_cost_zar: number; simple_payback_years: number | null }[];
         arbitrage: { battery_kwh: number; avg_weekday_peak_kwh: number; displaced_kwh_per_day: number; margin_zar_per_kwh: number; monthly_saving_zar: number; indicative_cost_zar: number; simple_payback_years: number | null } | null;
         solar: { lowest_midday_load_kw: number | null; no_export_kwp: number | null; options: { kwp: number; self_consumption: number | null; share_of_load: number | null; monthly_generation_kwh: number; monthly_self_used_kwh: number; monthly_saving_zar: number; indicative_cost_zar: number; simple_payback_years: number | null }[] } | null;
@@ -239,6 +241,7 @@ export default function MeteringReportPage() {
                         )}
                     </Panel>
 
+                    {r.feasibility.sizing_available && r.feasibility.peak_shaving && r.feasibility.assumptions ? (<>
                     <Panel title="Peak shaving with a battery" subtitle="Cap the 30-minute billed demand at a target. Battery sized from the largest daily energy above the target in this period (usable kWh ÷ depth of discharge). Saving = demand reduction × the project's demand charge." className="mr-break">
                         {r.feasibility.peak_shaving.length === 0 ? <Empty>No billed demand in this period.</Empty> : (
                             <div className="overflow-x-auto [&_td]:whitespace-nowrap"><Table head={["Cap demand at", "Reduction", "Battery power", "Battery energy", "Days it worked", "Saving / month", "Indicative cost", "Payback"]}>
@@ -303,6 +306,12 @@ export default function MeteringReportPage() {
                             <li>{r.feasibility.assumptions.weekdays_per_month as number} weekdays and {num(r.feasibility.assumptions.days_per_month as number, 1)} days per month; public holidays not modelled</li>
                         </ul>
                     </Panel>
+                    </>) : (
+                        <Panel title="Feasibility handover" className="mr-break">
+                            <p className="text-sm text-slate-300">{r.feasibility.handover ?? "GridIQ supplies the measured data for an independent feasibility study."}</p>
+                            <p className="text-xs text-slate-500 mt-2">Use the Exports tab (or the API) for the interval load profile, demand and power-quality data of this assessment.</p>
+                        </Panel>
+                    )}
                 </>
             )}
         </div>

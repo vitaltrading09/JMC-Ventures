@@ -18,6 +18,7 @@ import multer from 'multer';
 import { randomBytes } from 'crypto';
 import { requireInternal, tenantSql, forClient, withScope, deliverySql } from './scope';
 import { uploadDir, resolveStoredUploadPath } from './roles';
+import { onAssessmentReportIssued } from './reports/closeout';
 
 export type ReviewStatus = 'draft' | 'in_review' | 'published' | 'dismissed';
 const REVIEW_STATUSES: ReviewStatus[] = ['draft', 'in_review', 'published', 'dismissed'];
@@ -257,6 +258,10 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
                     SELECT rp.* FROM reports rp JOIN projects p ON p.id = rp.project_id
                     WHERE rp.id = $1 AND ${tenantSql(req.scope, 'p.tenant_id', params)} FOR UPDATE OF rp`, params)).rows[0];
                 if (!before) { await c.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
+                if (action === 'withdraw' && before.dataset_sha256 && before.published_at) {
+                    await c.query('ROLLBACK');
+                    return res.status(409).json({ error: 'An issued assessment report cannot be withdrawn; issue a corrected revision instead' });
+                }
                 const to = reportTransition(before.status, action);
                 if (!to) { await c.query('ROLLBACK'); return res.status(409).json({ error: `Cannot ${action} a ${before.status} report` }); }
                 const set = action === 'approve' ? `, approved_by = $3, approved_at = NOW()`
@@ -268,6 +273,9 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
                 await audit(c, req.scope, `report.${action}`, 'report', after.id,
                     { status: before.status }, { status: to }, req.body?.reason ?? null);
                 await c.query('COMMIT');
+                // An assessment report issued after review: supersede the previous
+                // revision, refresh the package and send it to the recipients.
+                if (action === 'publish' && after.assessment_id) await onAssessmentReportIssued(pool, after).catch((e) => console.error('[review] delivery after publish failed:', e));
                 res.json(after);
             } catch (e) {
                 await c.query('ROLLBACK').catch(() => {});

@@ -4,11 +4,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-    Zap, LayoutDashboard, Radio, Wrench, ClipboardCheck, FolderKanban, HeartPulse, Users, Briefcase, LogOut, FileSpreadsheet,
+    Zap, LayoutDashboard, Radio, Wrench, ClipboardCheck, FolderKanban, HeartPulse, Users, LogOut, FileSpreadsheet, CalendarClock, Tags,
 } from "lucide-react";
 
 const LINKS = [
     { name: "Home",        href: "/ops",             icon: LayoutDashboard },
+    { name: "Assessments", href: "/ops/assessments", icon: CalendarClock },
     { name: "Fleet",       href: "/ops/fleet",       icon: Radio },
     { name: "Install",     href: "/ops/install",     icon: Wrench },
     { name: "Review",      href: "/ops/review",      icon: ClipboardCheck },
@@ -16,12 +17,12 @@ const LINKS = [
     { name: "Data health", href: "/ops/data-health", icon: HeartPulse },
     { name: "CSV import",  href: "/ops/import",      icon: FileSpreadsheet },
     { name: "Clients",     href: "/ops/clients",     icon: Users },
-    { name: "Leads",       href: "/ops/leads",       icon: Briefcase },
+    { name: "Packages",    href: "/ops/packages",    icon: Tags },
 ];
 
 export function OpsSidebar() {
     const pathname = usePathname();
-    const [user, setUser] = useState({ name: "Grid-IQ ops", email: "", initials: "GQ" });
+    const [user, setUser] = useState({ name: "GridIQ ops", email: "", initials: "GQ" });
 
     useEffect(() => {
         try {
@@ -48,7 +49,7 @@ export function OpsSidebar() {
             <div className="p-5">
                 <Link href="/ops" className="flex items-center gap-2">
                     <Zap className="h-7 w-7 text-blue-500" />
-                    <span className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">Grid-IQ</span>
+                    <span className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-green-400">GridIQ</span>
                     <span className="text-[10px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 rounded uppercase tracking-wider">Ops</span>
                 </Link>
             </div>
