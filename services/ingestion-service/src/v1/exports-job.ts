@@ -18,6 +18,7 @@ import zlib from 'zlib';
 import type { Pool } from 'pg';
 import { loadSeries, csvHeader, csvRows, datasetId, MAX_RANGE_DAYS, Interval } from './series';
 import { exportEntitledSql } from '../scope';
+import { store } from '../storage';
 
 const DAY = 86_400_000;
 export const EXPORT_TTL_DAYS = 7;
@@ -88,6 +89,8 @@ export async function runExports(pool: Pool, max = 5): Promise<number> {
         const file = path.join(dir, `${job.id}.csv.gz`);
         try {
             const { rows, bytes } = await writeExport(pool, job, file);
+            // FILE_STORE=r2: upload and drop the local copy; local: no-op.
+            await store().putFile('exports', `${job.id}.csv.gz`, file, 'application/gzip');
             await pool.query(`
                 UPDATE exports SET status = 'done', rows = $2, bytes = $3, finished_at = NOW(),
                        expires_at = NOW() + make_interval(days => $4) WHERE id = $1`, [job.id, rows, bytes, EXPORT_TTL_DAYS]);
@@ -105,6 +108,6 @@ export async function runExports(pool: Pool, max = 5): Promise<number> {
 export async function expireExports(pool: Pool): Promise<number> {
     const dir = exportDir();
     const q = await pool.query(`UPDATE exports SET status = 'expired' WHERE status = 'done' AND expires_at < NOW() RETURNING id`);
-    for (const { id } of q.rows) fs.rmSync(path.join(dir, `${id}.csv.gz`), { force: true });
+    for (const { id } of q.rows) { fs.rmSync(path.join(dir, `${id}.csv.gz`), { force: true }); await store().remove('exports', `${id}.csv.gz`); }
     return q.rowCount ?? 0;
 }

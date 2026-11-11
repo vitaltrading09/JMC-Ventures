@@ -21,7 +21,8 @@ import { withScope, findSite, findPoint, tenantSql, telemetrySql, hasApiScope, p
 import { projectEnergyBalance } from '../fleet/balance';
 import { loadSeries, toCsv, datasetId, conventions, INTERVALS, Interval, MAX_RANGE_DAYS, COLUMNS } from './series';
 import { resolveStoredUploadPath } from '../roles';
-import { exportDir } from './exports-job';
+import { store, pdfKey } from '../storage';
+import { packagePrefix } from '../reports/closeout';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DAY = 86_400_000;
@@ -140,9 +141,10 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                     SELECT a.id, a.reference, a.project_id, a.package_path FROM assessments a JOIN projects p ON p.id = a.project_id
                     WHERE a.id = $1 AND ${tenantSql(req.scope, 'a.tenant_id', params)} AND ${deliverySql(req.scope, 'p')}`, params)).rows[0];
                 if (!a || !projectAllowed(req.scope, a.project_id)) throw new ApiError(404, 'Not found');
-                const mpath = a.package_path ? path.join(a.package_path, 'manifest.json') : null;
-                if (!mpath || !fs.existsSync(mpath)) return res.json({ assessment_id: a.id, ready: false, files: [] });
-                const manifest = JSON.parse(fs.readFileSync(mpath, 'utf8'));
+                const prefix = packagePrefix(a.package_path);
+                const mbuf = prefix ? await store().read('exports', `${prefix}/manifest.json`) : null;
+                if (!mbuf) return res.json({ assessment_id: a.id, ready: false, files: [] });
+                const manifest = JSON.parse(mbuf.toString('utf8'));
                 res.json({ assessment_id: a.id, reference: a.reference, ready: true, manifest,
                            note: 'Download the files from the portal or the delivery link; the manifest lists their checksums.' });
             },
@@ -300,11 +302,11 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                     WHERE rp.id = $1 AND rp.status = 'published' AND ${tenantSql(req.scope, 'p.tenant_id', params)}
                       AND ${deliverySql(req.scope, 'p')}`, params)).rows[0];
                 if (!r || !projectAllowed(req.scope, r.project_id)) throw new ApiError(404, 'Not found');
-                const file = r.pdf_path ? resolveStoredUploadPath(r.pdf_path) : null;
-                if (!file || !fs.existsSync(file)) throw new ApiError(404, 'No PDF attached to this report');
+                const body = r.pdf_path ? await store().stream('uploads', pdfKey(r.pdf_path)) : null;
+                if (!body) throw new ApiError(404, 'No PDF attached to this report');
                 res.setHeader('Content-Type', 'application/pdf');
                 res.setHeader('Content-Disposition', `inline; filename="report-${r.id}.pdf"`);
-                fs.createReadStream(file).pipe(res);
+                body.pipe(res);
             },
         },
         {
@@ -384,11 +386,11 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 }
                 // Re-checked at download: an export never outlives the assessment it came from.
                 const row = (await pool.query(`SELECT e.id, e.status FROM exports e WHERE e.id = $1 AND ${exportEntitledSql('e')}`, [req.params.id])).rows[0];
-                const file = path.join(exportDir(), `${req.params.id}.csv.gz`);
-                if (!row || row.status !== 'done' || !fs.existsSync(file)) throw new ApiError(404, 'Export not available');
+                const body = row && row.status === 'done' ? await store().stream('exports', `${req.params.id}.csv.gz`) : null;
+                if (!body) throw new ApiError(404, 'Export not available');
                 res.setHeader('Content-Type', 'application/gzip');
                 res.setHeader('Content-Disposition', `attachment; filename="gridiq-export-${row.id}.csv.gz"`);
-                fs.createReadStream(file).pipe(res);
+                body.pipe(res);
             },
         },
     ];

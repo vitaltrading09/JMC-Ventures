@@ -28,9 +28,8 @@ import fs from 'fs';
 import path from 'path';
 import type { Pool, PoolClient } from 'pg';
 import { refreshAggregates } from '@gridiq/db';
-import { resolveStoredUploadPath } from '../roles';
-import { exportDir } from '../v1/exports-job';
-import { lateDataHours } from '../reports/closeout';
+import { lateDataHours, packagePrefix } from '../reports/closeout';
+import { store, pdfKey } from '../storage';
 
 /** The [from, to) ranges per device that belong to this assessment only. */
 export async function purgeRanges(db: Pool | PoolClient, assessmentId: string) {
@@ -101,8 +100,7 @@ export async function purgeAssessment(pool: Pool, assessmentId: string): Promise
         // Reports: content (dataset, PDF) removed; the row stays as a record that it existed.
         const reps = (await pool.query(`SELECT id, pdf_path FROM reports WHERE assessment_id = $1`, [assessmentId])).rows;
         for (const rp of reps) {
-            const f = rp.pdf_path ? resolveStoredUploadPath(rp.pdf_path) : null;
-            if (f && fs.existsSync(f)) { fs.rmSync(f); add('files', 1); }
+            if (rp.pdf_path && await store().remove('uploads', pdfKey(rp.pdf_path))) add('files', 1);
         }
         const c = await pool.connect();
         try {
@@ -115,16 +113,14 @@ export async function purgeAssessment(pool: Pool, assessmentId: string): Promise
 
         // The data package and API exports of these points in the range.
         const pkg = (await pool.query(`SELECT package_path FROM assessments WHERE id = $1`, [assessmentId])).rows[0]?.package_path;
-        const pkgRoot = pkg ? path.dirname(pkg) : null;
-        if (pkgRoot && fs.existsSync(pkgRoot)) { fs.rmSync(pkgRoot, { recursive: true, force: true }); add('files', 1); }
+        const prefix = packagePrefix(pkg);
+        // Every revision of the package: packages/<assessment>/.
+        if (prefix) add('files', await store().removePrefix('exports', `${prefix.split('/').slice(0, 2).join('/')}/`));
         if (pointIds.length && Number.isFinite(minT)) {
             const ex = (await pool.query(`
                 UPDATE exports SET status = 'expired' WHERE measurement_point_id = ANY($1) AND period_from < $3 AND period_to > $2 AND status <> 'expired'
                 RETURNING id`, [pointIds, new Date(minT), new Date(maxT)])).rows;
-            for (const e of ex) {
-                const f = path.join(exportDir(), `${e.id}.csv.gz`);
-                if (fs.existsSync(f)) { fs.rmSync(f); add('files', 1); }
-            }
+            for (const e of ex) if (await store().remove('exports', `${e.id}.csv.gz`)) add('files', 1);
             add('exports', ex.length);
         }
         add('delivery_links', (await pool.query(`DELETE FROM delivery_links WHERE assessment_id = $1`, [assessmentId])).rowCount);

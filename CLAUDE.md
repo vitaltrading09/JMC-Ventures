@@ -41,7 +41,6 @@ commercial, industrial and agricultural sites (ZAR, Africa/Johannesburg by defau
 
 ```
 Browser ──https──▶ caddy (:443, APP_DOMAIN)
-                     ├── /api/chat*  → web:3000   (Next.js route, not the gateway)
                      ├── /api/*      → gateway:8081 (prefix stripped)
                      │                   ├── /auth/*      → auth:3001
                      │                   └── /ingestion/* → api:3002   (ROLES=api)
@@ -301,7 +300,7 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     `deploy/scripts/apply-tombstones.sh` before starting services.
   - Consultant (`src/consultant.ts`): `POST /assessments/:id/chat`, server-side dataset retrieval, budgets
     (`ai_budget_cents`, `AI_MESSAGES_PER_HOUR`), providers anthropic (default `claude-opus-5-5`) / openai / none;
-    without a provider it answers from the dataset. `apps/web/app/api/chat` (old OpenAI route) is no longer used.
+    without a provider it answers from the dataset. The old OpenAI route `apps/web/app/api/chat` was removed (Cloudflare branch).
   - Auth (`services/auth-service/src/login.ts`): email-code sign-in (10 min, single use, 5 attempts, throttled, no
     enumeration, codes only hashed and never logged; invited recipients become client_viewers on first sign-in),
     staff TOTP (`/mfa/setup`, `/mfa/enable`, `STAFF_MFA_REQUIRED`). Sessions are HttpOnly cookies (already were).
@@ -324,7 +323,6 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
 | `/dashboard/tools/pv-sizer`, `/dashboard/savings`, `/dashboard/value`, `/dashboard/sites/[id]` (simulation tab) | Sizing and value tools, kept behind `NEXT_PUBLIC_FEATURE_TOOLS` (build arg from `FEATURE_TOOLS`, off by default). Every other old `/dashboard` and `/admin` URL redirects (`movedTo` in `middleware.ts`): clients to `/portal`, staff to `/ops` | Flagged |
 | `/ops` | **Ops console (Phase 8, internal roles):** Home, Fleet (+ device), Install wizard, Deployment (commissioning, corrections, remove), Review (findings, reports), Projects (+ project: points, energy balance, tariffs, live-data switch), Data health, Clients, Leads. Staff land here after login | ✅ Done |
 | `/portal` | **Client portal (Phase 8):** Overview (live tiles), Projects, Project (tabs: Overview, Metering layout, Energy balance, Load profile, Demand, Power quality, Findings, Reports), Point (the per-meter chart, by point), Alerts, Settings (branding, users). Reads `src/portal.ts` (point views, scoped); no internal fields | ✅ Done |
-| `/api/chat` | AI chat route (OpenAI — pending migration to Claude). Caddy routes `/api/chat*` to web, all other `/api/*` to the gateway | ✅ Done |
 
 ### Backend Services
 
@@ -357,7 +355,7 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   project page, read-only in the portal's Metering layout tab.
 - The per-meter/point chart: `components/charts/MeasurementChart.tsx` (3-phase V/I, P/Q/S, PF,
   THD, frequency, energy; NRS 048-2 reference lines; states its aggregate and SAST).
-- The AI chat widget (`components/dashboard/ChatWidget.tsx`, `/api/chat`) sits in the portal layout.
+- The consultant widget (`components/dashboard/ChatWidget.tsx`, API `/ingestion/assessments/:id/chat`) sits in the portal layout.
 - Adding meters is ops-only: Fleet → New box (shows the broker username and topic), then Install.
   The old Add Meter screen is gone; CSV import is `/ops/import`.
 

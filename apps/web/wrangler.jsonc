@@ -1,0 +1,18 @@
+// Cloudflare Worker for the GridIQ web app (built with @opennextjs/cloudflare).
+// Setup: docs/gridiq/CLOUDFLARE.md. The Worker serves pages only; /api/* is
+// passed through to the GridIQ server by worker.ts (API_ORIGIN, a Worker
+// variable: set it in the dashboard, or with `wrangler deploy --var`).
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "gridiq-web",
+  "main": "worker.ts",
+  "compatibility_date": "2025-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  // API_ORIGIN lives in the dashboard (Settings → Variables); deploys keep it.
+  "keep_vars": true,
+  "observability": { "enabled": true }
+}

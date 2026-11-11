@@ -1,0 +1,5 @@
+
+# Cloudflare Workers build output
+.open-next/
+.wrangler/
+.dev.vars

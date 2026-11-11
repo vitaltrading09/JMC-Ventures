@@ -26,9 +26,10 @@ import { Router } from 'express';
 import type { Pool, PoolClient } from 'pg';
 import { buildAssessmentDataset, canonical, sha256, TEMPLATE_VERSION, CALC_VERSION, RULE_VERSION } from './dataset';
 import { renderReportPdf, TITLES } from './pdf';
-import { writePackage, packageDir } from './package';
+import { writePackage, packageDir, exportRoot } from './package';
+import { store, pdfKey } from '../storage';
 import { enqueueForGrantee, appUrl } from '../notify/email';
-import { uploadDir, toStoredUploadPath, resolveStoredUploadPath } from '../roles';
+import { uploadDir } from '../roles';
 import { withScope, requireInternal, liveAssessmentSql, deliverySql, NO_ACCESS } from '../scope';
 
 type Kind = 'overview' | 'power_quality' | 'handover';
@@ -36,7 +37,13 @@ const KINDS: Kind[] = ['overview', 'power_quality', 'handover'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const lateDataHours = () => Math.max(0, Number(process.env.ASSESSMENT_LATE_DATA_HOURS ?? 2) || 0);
 
-const pdfDir = () => path.join(uploadDir(), 'report-pdfs');
+/** A package's storage prefix; rows from before the storage layer hold an absolute local path. */
+export function packagePrefix(p: string | null): string | null {
+    if (!p) return null;
+    if (!path.isAbsolute(p)) return p;
+    const rel = path.relative(exportRoot(), p).split(path.sep).join('/');
+    return rel.startsWith('..') ? null : rel;
+}
 
 /**
  * Freeze a new report revision for an assessment: dataset, hash, PDF. `issue`
@@ -63,10 +70,10 @@ export async function createRevision(db: Pool, assessmentId: string, kind: Kind,
              o.actorId ?? null, assessmentId, kind, revision, prev?.id ?? null, o.reason ?? null, !!o.provisional, ds, hash, o.cutoff,
              CALC_VERSION, RULE_VERSION, TEMPLATE_VERSION])).rows[0];
         const pdf = await renderReportPdf(kind, ds, { revision, sha256: hash, status: o.issue ? 'published' : 'draft', generatedAt: new Date(), reason: o.reason });
-        fs.mkdirSync(pdfDir(), { recursive: true });
-        const file = path.join(pdfDir(), `${row.id}.pdf`);
-        fs.writeFileSync(file, pdf);
-        await c.query(`UPDATE reports SET pdf_path = $2, pdf_sha256 = $3 WHERE id = $1`, [row.id, toStoredUploadPath(file), sha256(pdf)]);
+        const key = `report-pdfs/${row.id}.pdf`;
+        await store().put('uploads', key, pdf, 'application/pdf');
+        const file = path.join(uploadDir(), 'report-pdfs', `${row.id}.pdf`);   // local store only
+        await c.query(`UPDATE reports SET pdf_path = $2, pdf_sha256 = $3 WHERE id = $1`, [row.id, key, sha256(pdf)]);
         if (o.issue) {
             await c.query(`UPDATE reports SET status = 'published', approved_at = NOW(), published_at = NOW() WHERE id = $1`, [row.id]);
             if (prev?.published_at) await c.query(`UPDATE reports SET superseded_at = NOW() WHERE id = $1`, [prev.id]);
@@ -95,8 +102,7 @@ export async function buildPackage(db: Pool, assessmentId: string) {
     const overview = reps.find((r) => r.kind === 'overview');
     if (!overview) throw new Error('no issued overview yet');
     const ds = (await db.query(`SELECT dataset FROM reports WHERE id = $1`, [overview.id])).rows[0].dataset;
-    const pdfs = reps.filter((r) => r.pdf_path).map((r) => ({ name: `${r.kind}-r${r.revision}.pdf`, file: resolveStoredUploadPath(r.pdf_path)! }))
-        .filter((x) => x.file && fs.existsSync(x.file));
+    const pdfs = reps.filter((r) => r.pdf_path).map((r) => ({ name: `${r.kind}-r${r.revision}.pdf`, pdfPath: r.pdf_path as string }));
     const pkg = await writePackage(db, ds, overview.revision, pdfs);
     await db.query(`UPDATE assessments SET package_path = $2 WHERE id = $1`, [assessmentId, pkg.dir]);
     return pkg;
@@ -339,8 +345,10 @@ async function deliverablesList(pool: Pool, a: any, base: string) {
         name: `${r.kind}-r${r.revision}.pdf`, title: `${TITLES[r.kind as Kind]} (revision ${r.revision})`, sha256: r.pdf_sha256, url: `${base}/${r.kind}-r${r.revision}.pdf`,
     }));
     let manifest: any = null;
-    if (a.package_path && fs.existsSync(path.join(a.package_path, 'manifest.json'))) {
-        manifest = JSON.parse(fs.readFileSync(path.join(a.package_path, 'manifest.json'), 'utf8'));
+    const prefix = packagePrefix(a.package_path);
+    const mbuf = prefix ? await store().read('exports', `${prefix}/manifest.json`) : null;
+    if (mbuf) {
+        manifest = JSON.parse(mbuf.toString('utf8'));
         for (const f of manifest.files) if (!f.name.endsWith('.pdf')) files.push({ name: f.name, title: f.description, sha256: f.sha256, url: `${base}/${f.name}` });
         files.push({ name: 'manifest.json', title: 'Manifest and data dictionary', sha256: null, url: `${base}/manifest.json` });
     }
@@ -351,19 +359,19 @@ async function deliverablesList(pool: Pool, a: any, base: string) {
 async function sendFile(pool: Pool, a: any, name: string, res: any) {
     if (!/^[a-z0-9_.-]+$/i.test(name) || name.includes('..')) return res.status(404).json({ error: 'Not found' });
     const m = /^(overview|power_quality|handover)-r(\d+)\.pdf$/.exec(name);
-    let file: string | null = null;
+    let body = null;
     if (m) {
         const r = (await pool.query(`SELECT pdf_path FROM reports WHERE assessment_id = $1 AND kind = $2 AND revision = $3 AND status = 'published'`,
             [a.id, m[1], Number(m[2])])).rows[0];
-        file = r?.pdf_path ? resolveStoredUploadPath(r.pdf_path) : null;
-    } else if (a.package_path) {
-        const f = path.join(a.package_path, name);
-        if (path.dirname(f) === path.resolve(a.package_path)) file = f;
+        body = r?.pdf_path ? await store().stream('uploads', pdfKey(r.pdf_path)) : null;
+    } else {
+        const prefix = packagePrefix(a.package_path);
+        body = prefix ? await store().stream('exports', `${prefix}/${name}`) : null;
     }
-    if (!file || !fs.existsSync(file)) return res.status(404).json({ error: 'Not found' });
+    if (!body) return res.status(404).json({ error: 'Not found' });
     res.setHeader('Content-Type', name.endsWith('.pdf') ? 'application/pdf' : name.endsWith('.json') ? 'application/json' : 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${a.reference}-${name}"`);
-    fs.createReadStream(file).pipe(res);
+    body.pipe(res);
 }
 
 export { packageDir };

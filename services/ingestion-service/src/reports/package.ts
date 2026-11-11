@@ -9,15 +9,18 @@
 // injection; numeric values (including negative ones) are written as numbers.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import fs from 'fs';
 import path from 'path';
 import type { Pool } from 'pg';
 import { sha256 } from './dataset';
+import { store, pdfKey } from '../storage';
 
 export const PACKAGE_SCHEMA = 'gridiq.assessment-package/1';
 
 /** Same directory as the API exports (EXPORT_DIR, /data/exports in compose). */
 export const exportRoot = () => path.resolve(process.env.EXPORT_DIR || '/data/exports');
+/** Storage key prefix (area 'exports') of a package revision; kept in assessments.package_path. */
+export const packageKey = (assessmentId: string, revision: number) => `packages/${assessmentId}/r${revision}`;
+/** Local directory of a package (local store only; kept for older callers). */
 export const packageDir = (assessmentId: string, revision: number) => path.join(exportRoot(), 'packages', assessmentId, `r${revision}`);
 
 /** A CSV cell: numbers as numbers, null as empty, text quoted and formula-safe. */
@@ -35,9 +38,10 @@ export const csvLine = (cells: unknown[]) => cells.map(csvCell).join(',');
 const num = (v: any): number | null => (v === null || v === undefined ? null : Number(v));
 
 /** Writes every file of the package and the manifest; returns the manifest. */
-export async function writePackage(db: Pool, ds: any, revision: number, pdfs: { name: string; file: string }[]) {
-    const dir = packageDir(ds.assessment.id, revision);
-    fs.mkdirSync(dir, { recursive: true });
+export async function writePackage(db: Pool, ds: any, revision: number, pdfs: { name: string; pdfPath: string }[]) {
+    const dir = packageKey(ds.assessment.id, revision);
+    const st = store();
+    const pending: Promise<void>[] = [];
     const from = new Date(ds.assessment.period_from), to = new Date(ds.assessment.period_to);
     const files: { name: string; description: string; rows: number | null; bytes: number; sha256: string }[] = [];
     const header = [
@@ -48,7 +52,7 @@ export async function writePackage(db: Pool, ds: any, revision: number, pdfs: { 
     ];
     const write = (name: string, description: string, lines: string[], rows: number | null) => {
         const body = [...header, ...lines].join('\n') + '\n';
-        fs.writeFileSync(path.join(dir, name), body);
+        pending.push(st.put('exports', `${dir}/${name}`, Buffer.from(body), name.endsWith('.csv') ? 'text/csv; charset=utf-8' : undefined));
         files.push({ name, description, rows, bytes: Buffer.byteLength(body), sha256: sha256(body) });
     };
 
@@ -98,8 +102,9 @@ export async function writePackage(db: Pool, ds: any, revision: number, pdfs: { 
     write('findings.csv', 'Rule findings with their review state (observations and recommended verification; not engineering conclusions)', fi, fi.length - 1);
 
     for (const pdf of pdfs) {
-        const buf = fs.readFileSync(pdf.file);
-        fs.copyFileSync(pdf.file, path.join(dir, pdf.name));
+        const buf = await st.read('uploads', pdfKey(pdf.pdfPath));
+        if (!buf) continue;
+        await st.put('exports', `${dir}/${pdf.name}`, buf, 'application/pdf');
         files.push({ name: pdf.name, description: 'report PDF (frozen revision)', rows: null, bytes: buf.length, sha256: sha256(buf) });
     }
 
@@ -122,6 +127,7 @@ export async function writePackage(db: Pool, ds: any, revision: number, pdfs: { 
         generated_at: new Date().toISOString(),
     };
     const mbody = JSON.stringify(manifest, null, 2);
-    fs.writeFileSync(path.join(dir, 'manifest.json'), mbody);
+    await Promise.all(pending);
+    await st.put('exports', `${dir}/manifest.json`, Buffer.from(mbody), 'application/json');
     return { dir, manifest, manifest_sha256: sha256(mbody) };
 }

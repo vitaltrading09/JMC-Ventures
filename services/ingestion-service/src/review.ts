@@ -19,6 +19,7 @@ import { randomBytes } from 'crypto';
 import { requireInternal, tenantSql, forClient, withScope, deliverySql } from './scope';
 import { uploadDir, resolveStoredUploadPath } from './roles';
 import { onAssessmentReportIssued } from './reports/closeout';
+import { store, pdfKey } from './storage';
 
 export type ReviewStatus = 'draft' | 'in_review' | 'published' | 'dismissed';
 const REVIEW_STATUSES: ReviewStatus[] = ['draft', 'in_review', 'published', 'dismissed'];
@@ -229,6 +230,7 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         if (head.toString('latin1') !== '%PDF-') { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: 'Not a PDF file' }); }
         const stored = `report-pdfs/${req.params.id}.pdf`;
         fs.renameSync(req.file.path, path.join(pdfDir, `${req.params.id}.pdf`));
+        await store().putFile('uploads', stored, path.join(pdfDir, `${req.params.id}.pdf`), 'application/pdf');
         const row = (await pool.query(`UPDATE reports SET pdf_path = $2 WHERE id = $1 RETURNING *`, [req.params.id, stored])).rows[0];
         await audit(pool, req.scope, 'report.attach_pdf', 'report', row.id, { pdf_path: cur.pdf_path }, { pdf_path: stored, bytes: req.file.size });
         res.json(row);
@@ -240,11 +242,11 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         const where = [`rp.id = $1`, tenantSql(req.scope, 'p.tenant_id', params)];
         if (!req.scope.isInternal) where.push(`rp.status = 'published'`, deliverySql(req.scope, 'p'));
         const row = (await pool.query(`${reportSelect} WHERE ${where.join(' AND ')}`, params)).rows[0];
-        const file = row?.pdf_path ? resolveStoredUploadPath(row.pdf_path) : null;
-        if (!row || !file || !fs.existsSync(file)) return res.status(404).json({ error: 'No PDF attached to this report' });
+        const body = row?.pdf_path ? await store().stream('uploads', pdfKey(row.pdf_path)) : null;
+        if (!row || !body) return res.status(404).json({ error: 'No PDF attached to this report' });
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="report-${row.id}.pdf"`);
-        fs.createReadStream(file).pipe(res);
+        body.pipe(res);
     }));
 
     for (const action of ['approve', 'publish', 'withdraw'] as ReportAction[]) {

@@ -10,12 +10,7 @@
 (app) {
 	encode zstd gzip
 
-	# The Next.js AI chat route lives under /api too; it belongs to web, not
-	# the gateway. Must come before the /api/* block.
-	handle /api/chat* {
-		reverse_proxy web:3000
-	}
-
+	# Every /api path is the gateway (the consultant is /api/ingestion/assessments/:id/chat).
 	handle_path /api/* {
 		reverse_proxy gateway:8081
 	}

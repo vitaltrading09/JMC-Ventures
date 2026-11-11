@@ -99,9 +99,9 @@ test('close-out, revisions, delivery, retention, sign-in codes', { skip: !url &&
         assert.strictEqual(ds.assessment.period_to, end.toISOString());
         const st = (await q(`SELECT closeout_status, report_status, status, package_path FROM assessments WHERE id = $1`, [a.id]))[0];
         assert.deepStrictEqual([st.closeout_status, st.report_status, st.status], ['done', 'awaiting_review', 'ended']);
-        const manifest = JSON.parse(fs.readFileSync(path.join(st.package_path, 'manifest.json'), 'utf8'));
+        const manifest = JSON.parse(fs.readFileSync(path.join(process.env.EXPORT_DIR, st.package_path, 'manifest.json'), 'utf8'));
         for (const f of manifest.files) {
-            const body = fs.readFileSync(path.join(st.package_path, f.name));
+            const body = fs.readFileSync(path.join(process.env.EXPORT_DIR, st.package_path, f.name));
             assert.strictEqual(require('node:crypto').createHash('sha256').update(body).digest('hex'), f.sha256, f.name);
         }
         const mails = await q(`SELECT to_email, purpose FROM email_outbox WHERE assessment_id = $1 AND purpose = 'delivery_closeout' ORDER BY to_email`, [a.id]);
@@ -130,7 +130,7 @@ test('close-out, revisions, delivery, retention, sign-in codes', { skip: !url &&
 
     await t.test('the package, the dashboard figure and the consultant agree with the dataset', async () => {
         const st = (await q(`SELECT package_path FROM assessments WHERE id = $1`, [a.id]))[0];
-        const lp = fs.readFileSync(path.join(st.package_path, 'load_profile_30min.csv'), 'utf8').split('\n').filter((l) => l && !l.startsWith('#'));
+        const lp = fs.readFileSync(path.join(process.env.EXPORT_DIR, st.package_path, 'load_profile_30min.csv'), 'utf8').split('\n').filter((l) => l && !l.startsWith('#'));
         const head = lp[0].split(',');
         const maxCsv = Math.max(...lp.slice(1).map((l) => Number(l.split(',')[head.indexOf('kva_demand')])));
         assert.ok(Math.abs(maxCsv - ds.points[0].demand.max_kva) < 0.11, `${maxCsv} vs ${ds.points[0].demand.max_kva}`);
