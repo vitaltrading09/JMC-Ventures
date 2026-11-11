@@ -43,6 +43,9 @@ export function renderReportPdf(kind: Kind, ds: any, meta: { revision: number; s
     return new Promise((resolve, reject) => {
         const doc = new PDFDocument({ size: 'A4', margin: M, bufferPages: true, info: {
             Title: `${TITLES[kind]} · ${ds.assessment.reference}`, Author: 'GridIQ', Subject: ds.assessment.site } });
+        // The built-in Helvetica covers WinAnsi only: map the few symbols outside it.
+        const text = doc.text.bind(doc);
+        (doc as any).text = (t: any, ...rest: any[]) => text(typeof t === 'string' ? winAnsi(t) : t, ...rest);
         const chunks: Buffer[] = [];
         doc.on('data', (c) => chunks.push(c));
         doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -191,9 +194,10 @@ function cover(doc: Doc, kind: Kind, ds: any, meta: { revision: number; status: 
     doc.font('Helvetica').fontSize(12).fillColor(C.mute).text(`${a.client} · ${a.site}`);
     doc.moveDown(0.8);
     if (ds.provisional) {
-        doc.rect(M, doc.y, width(doc), 24).fill('#fef3c7');
-        doc.font('Helvetica-Bold').fontSize(9).fillColor(C.amber).text('PROVISIONAL: the assessment is still running. Results cover the elapsed period only and are not final.', M + 8, doc.y - 18, { width: width(doc) - 16 });
-        doc.moveDown(0.8);
+        const by = doc.y;
+        doc.rect(M, by, width(doc), 26).fill('#fef3c7');
+        doc.font('Helvetica-Bold').fontSize(9).fillColor(C.amber).text('PROVISIONAL: the assessment is still running. Results cover the elapsed period only and are not final.', M + 8, by + 8, { width: width(doc) - 16 });
+        doc.y = by + 36;
     }
     kv(doc, [
         ['Assessment', `${a.reference}${a.package ? ` · ${a.package}` : ''}`],
@@ -385,9 +389,18 @@ function footers(doc: Doc, ds: any, kind: Kind, meta: { revision: number }) {
     const range = doc.bufferedPageRange();
     for (let i = range.start; i < range.start + range.count; i++) {
         doc.switchToPage(i);
+        // Writing inside the bottom margin would otherwise start a new page.
+        doc.page.margins.bottom = 0;
         const y = doc.page.height - M + 14;
         doc.font('Helvetica').fontSize(7).fillColor(C.faint)
             .text(`GridIQ · ${ds.assessment.reference} · ${TITLES[kind]} · rev ${meta.revision}${ds.provisional ? ' · PROVISIONAL' : ''}`, M, y, { width: width(doc) - 60, lineBreak: false })
             .text(`page ${i + 1} of ${range.count}`, M + width(doc) - 60, y, { width: 60, align: 'right', lineBreak: false });
     }
+}
+
+/** Characters outside WinAnsi (the standard PDF fonts) replaced by plain equivalents. */
+export function winAnsi(t: string): string {
+    return t.replace(/\u2192/g, '->').replace(/\u2265/g, '>=').replace(/\u2264/g, '<=').replace(/\u2212/g, '-').replace(/\u2248/g, '~')
+        .replace(/[\u2009\u202f]/g, ' ')
+        .replace(/[^\x09\x0a\x0d\x20-\x7e\xa0-\xff\u2013\u2014\u2018\u2019\u201c\u201d\u2022\u2026\u20ac]/g, '?');
 }

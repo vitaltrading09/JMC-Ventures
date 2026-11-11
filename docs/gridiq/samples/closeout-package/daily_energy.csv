@@ -1,0 +1,14 @@
+# GridIQ assessment GQ-A-0004 (8f62a425-86c8-4b98-98a2-2ceb7264b0d3), Demo Corporation · Durban Distribution Ctr
+# period [2026-11-02T19:00:36.240Z, 2026-11-09T19:00:36.240Z) UTC; site time zone Africa/Johannesburg
+# rows are period-ending: period_start <= t < period_end; empty cell = not measured (never zero)
+# import positive; deployment sign and scale corrections applied (corrected = true)
+point_id,point_name,date_sast,max_kw,min_kw,kwh_estimate
+b7a6f33c-5b87-436a-9b78-c0b3269aca29,PV,2026-11-05,36.3,33.7,44.5
+b7a6f33c-5b87-436a-9b78-c0b3269aca29,PV,2026-11-06,180.5,33.5,1839.2
+b7a6f33c-5b87-436a-9b78-c0b3269aca29,PV,2026-11-08,40.1,40.1,0.4
+b3a3ffc8-855a-451d-b738-897b01ad1949,Warehouse Main,2026-11-02,144.7,136.7,280.8
+b3a3ffc8-855a-451d-b738-897b01ad1949,Warehouse Main,2026-11-03,382.1,133.8,5914.6
+b3a3ffc8-855a-451d-b738-897b01ad1949,Warehouse Main,2026-11-04,358.3,131.1,5586.5
+b3a3ffc8-855a-451d-b738-897b01ad1949,Warehouse Main,2026-11-05,341.7,133.6,5466.6
+b3a3ffc8-855a-451d-b738-897b01ad1949,Warehouse Main,2026-11-06,365.9,133.4,4565.3
+b3a3ffc8-855a-451d-b738-897b01ad1949,Warehouse Main,2026-11-08,138.2,138.2,92.1
