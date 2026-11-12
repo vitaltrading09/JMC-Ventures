@@ -49,9 +49,9 @@ export const PHASE = {
 } as const;
 
 export const STATE_STYLE: Record<CategoryState, { box: string; text: string; mark: string }> = {
-    ok: { box: "border-slate-700 bg-slate-900/40", text: "text-emerald-300", mark: "✓" },
-    investigate: { box: "border-amber-500/40 bg-amber-500/5", text: "text-amber-300", mark: "!" },
-    insufficient: { box: "border-dashed border-slate-600 bg-transparent", text: "text-slate-400", mark: "?" },
+    ok: { box: "border-line-strong bg-surface/40", text: "text-ok", mark: "✓" },
+    investigate: { box: "border-amber-500/40 bg-amber-500/5", text: "text-warn", mark: "!" },
+    insufficient: { box: "border-dashed border-line-strong bg-transparent", text: "text-muted", mark: "?" },
 };
 
 /** Which workspace tab shows the evidence for a dataset section. */

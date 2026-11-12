@@ -6,7 +6,7 @@ import { QueryProvider } from "@/components/QueryProvider";
 export default function OpsLayout({ children }: { children: React.ReactNode }) {
     return (
         <QueryProvider>
-            <div className="flex min-h-screen bg-slate-950 text-slate-50">
+            <div data-theme="dark" className="flex min-h-screen bg-slate-950 text-slate-50">
                 <OpsSidebar />
                 <div className="flex-1 ml-60 min-w-0">
                     <main className="p-6 lg:p-8 max-w-[1500px]">{children}</main>

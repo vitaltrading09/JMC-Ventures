@@ -329,6 +329,18 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     figures with captions, small tables kept whole, long ones repeat their header.
   - Ops: "Meter assets" / "Deploy meter" wording, content-sized queues, map explains zero located meters.
   - Capability checklist: `docs/gridiq/CAPABILITY-MATRIX.md` (columns 1–3 unverified until the hardware pilot).
+  - Theme tokens: `tailwind.config.ts` colours `canvas surface surface-2/3 line line-strong ink ink-2/3 muted faint accent
+    ok warn bad` → `rgb(var(--c-*))`, values per `[data-theme]` in `globals.css` (plus `--chart-*`/`--tooltip-*` for
+    Recharts). Portal: `components/ThemeRoot.tsx`, light by default, dark toggle in the sidebar (localStorage only).
+    Ops sets `data-theme="dark"`. New portal UI uses token classes, never `slate-*`/`text-white` (except on saturated buttons).
+  - Portal sidebar is a drawer below 1024 px; skip link; visible focus on themed areas.
+  - Investigation (`src/investigate.ts`, migration `1793840000000_evidence-and-cases`): `GET /points/:id/investigate`
+    (≤ 31 days; 1m ≤ 6 h, 10m ≤ 4 d, else 1h; avg + bucket min/max + events), `GET /points/:id/compare` (before/after
+    10-minute stats, both windows inside the assessment), `evidence_refs` (saved windows; in the dataset as `evidence` and
+    in the overview PDF; removal keeps the row), `finding_cases` (owner, status, next step, due, verification; `verified`
+    needs a comparison result; audited). Writes: staff and client_admin. Web: `components/portal/InvestigateView.tsx`
+    (tab "Events and investigation", synced cursor, brush zoom, before/after, phase/channel toggles), findings as cases
+    with "Verify improvement" in `ProjectTabs.tsx`.
 
 ---
 

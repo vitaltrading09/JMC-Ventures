@@ -27,14 +27,14 @@ export default function PortalOverview() {
                         {projects.data!.filter((p) => p.status !== "archived").map((p) => <ProjectCard key={p.id} p={p} />)}
                     </div>
                 )}
-            <Panel title="Open alerts" actions={<Link href="/portal/alerts" className="text-xs text-blue-300 hover:underline">all alerts</Link>}>
+            <Panel title="Open alerts" actions={<Link href="/portal/alerts" className="text-xs text-accent hover:underline">all alerts</Link>}>
                 {alerts.isLoading ? <Loading /> : open.length === 0 ? <Empty>No open alerts.</Empty> : (
-                    <ul className="divide-y divide-slate-800">
+                    <ul className="divide-y divide-line">
                         {open.map((a) => (
                             <li key={a.id} className="flex items-start gap-3 py-2 text-sm">
                                 <Badge tone={a.severity === "CRITICAL" || a.severity === "HIGH" ? "red" : a.severity === "WARNING" || a.severity === "MEDIUM" ? "amber" : "grey"}>{a.severity}</Badge>
-                                <span className="text-slate-300 flex-1">{a.meter_name}: {a.message}</span>
-                                <span className="text-xs text-slate-500 whitespace-nowrap">{fmtDateTime(a.created_at)}</span>
+                                <span className="text-ink-3 flex-1">{a.meter_name}: {a.message}</span>
+                                <span className="text-xs text-faint whitespace-nowrap">{fmtDateTime(a.created_at)}</span>
                             </li>
                         ))}
                     </ul>

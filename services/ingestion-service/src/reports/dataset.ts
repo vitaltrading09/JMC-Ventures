@@ -229,6 +229,16 @@ export async function buildAssessmentDataset(db: Pool, assessmentId: string, cut
         demand_note: 'Maximum demand is reported per point; non-coincident maxima are never added.',
     } : { basis: 'no top-level incomer is metered: no site total is stated', import_kwh: null, export_kwh: null };
 
+    // Evidence windows saved in the investigation workspace (brief §7B), as of the cutoff.
+    const evidence = (await db.query(`
+        SELECT e.id, e.title, e.note, e.from_at, e.to_at, e.channels, mp.name AS point, e.recommendation_id
+        FROM evidence_refs e JOIN measurement_points mp ON mp.id = e.measurement_point_id
+        WHERE e.assessment_id = $1 AND e.include_in_report AND e.created_at <= $2
+          AND (e.removed_at IS NULL OR e.removed_at > $2)
+        ORDER BY e.from_at`, [assessmentId, cutoff])).rows.map((e) => ({
+            id: e.id, title: e.title, note: e.note, point: e.point, finding_id: e.recommendation_id,
+            from: new Date(e.from_at).toISOString(), to: new Date(e.to_at).toISOString(), channels: e.channels,
+        }));
     const executive = executiveItems(points);
     const limitations: string[] = [
         `Observation period ${r(days, 1)} days (${sast(from)} to ${sast(to)} SAST); results describe this period only. No annual figure is extrapolated.`,
@@ -271,6 +281,7 @@ export async function buildAssessmentDataset(db: Pool, assessmentId: string, cut
         points,
         site_totals,
         executive,
+        evidence,
         limitations,
         feasibility_readiness: {
             supplied: ['30-minute interval load profile (kW, kVA)', 'daily energy', 'billed maximum demand with timestamps', 'power-quality screening results', 'metering topology and observation limits'],
@@ -439,14 +450,18 @@ async function pointSection(db: Pool, pt: any, from: Date, to: Date, days: numbe
     };
 
     const findings = (await db.query(`
-        SELECT r.type, r.title, r.priority, r.problem, r.solution, r.evidence, r.review_status, r.created_at
+        SELECT r.id, r.type, r.title, r.priority, r.problem, r.solution, r.evidence, r.review_status, r.created_at,
+               c.owner AS case_owner, c.status AS case_status, c.next_step AS case_next, c.verification AS case_verification
         FROM recommendations r JOIN deployments d ON d.device_id = r.meter_id
+        LEFT JOIN finding_cases c ON c.recommendation_id = r.id
         WHERE d.measurement_point_id = $1 AND r.status = 'ACTIVE' AND r.review_status <> 'dismissed'
           AND r.created_at >= $2::timestamptz - INTERVAL '1 day' AND r.created_at < $3::timestamptz + INTERVAL '3 hours'
         ORDER BY r.priority, r.created_at`, [id, from, to])).rows.map((f) => ({
             type: f.type, title: f.title, priority: f.priority, review_status: f.review_status,
             observed: f.problem, recommended_verification: f.solution, evidence: f.evidence?.values ?? null,
-            engine: f.evidence?.engine ?? 'ai',
+            engine: f.evidence?.engine ?? 'ai', id: f.id,
+            case: f.case_status ? { owner: f.case_owner, status: f.case_status, next_step: f.case_next,
+                                    verification_result: f.case_verification?.result ?? null } : null,
         }));
 
     return {

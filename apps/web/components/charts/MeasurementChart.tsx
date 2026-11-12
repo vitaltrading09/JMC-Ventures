@@ -108,13 +108,13 @@ export function MeasurementChart({ title, load, onReadings }: {
                 <div className="flex flex-wrap items-center gap-4">
                     {/* Date range */}
                     <div className="flex items-center gap-2">
-                        <Calendar className="w-4 h-4 text-slate-500" />
+                        <Calendar className="w-4 h-4 text-faint" />
                         <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)}
-                            className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white focus:ring-2 focus:ring-blue-500/50 focus:outline-none" />
-                        <span className="text-slate-500 text-sm">to</span>
+                            className="bg-surface border border-line-strong rounded-lg px-3 py-1.5 text-sm text-ink focus:ring-2 focus:ring-blue-500/50 focus:outline-none" />
+                        <span className="text-faint text-sm">to</span>
                         <input type="date" value={toDate} onChange={e => setToDate(e.target.value)}
-                            className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white focus:ring-2 focus:ring-blue-500/50 focus:outline-none" />
-                        <button onClick={fetchReadings} className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
+                            className="bg-surface border border-line-strong rounded-lg px-3 py-1.5 text-sm text-ink focus:ring-2 focus:ring-blue-500/50 focus:outline-none" />
+                        <button onClick={fetchReadings} className="p-1.5 text-muted hover:text-ink hover:bg-surface-2 rounded-lg transition-colors">
                             <RefreshCw className={`w-4 h-4 ${chartLoading ? 'animate-spin' : ''}`} />
                         </button>
                     </div>
@@ -124,7 +124,7 @@ export function MeasurementChart({ title, load, onReadings }: {
                             .map(({ label, days }) => (
                                 <button key={label}
                                     onClick={() => { setFromDate(toDateInput(new Date(Date.now() - days * 86400000))); setToDate(toDateInput(new Date())); }}
-                                    className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white rounded-md transition-colors">
+                                    className="px-2.5 py-1 text-xs bg-surface-2 hover:bg-surface-3 border border-line-strong text-ink-3 hover:text-ink rounded-md transition-colors">
                                     {label}
                                 </button>
                             ))}
@@ -132,12 +132,12 @@ export function MeasurementChart({ title, load, onReadings }: {
                 </div>
 
                 {/* Measurement tabs */}
-                <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-slate-800">
+                <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-line">
                     {MEASUREMENTS.map(m => (
                         <button key={m.key} onClick={() => handleMeasurementChange(m)}
                             style={selectedMeasurement.key === m.key ? { borderColor: m.color + '60', backgroundColor: m.color + '15', color: m.color } : {}}
                             className={`px-3 py-1 text-xs rounded-full border transition-all font-medium
-                                ${selectedMeasurement.key === m.key ? '' : 'border-slate-700 text-slate-400 hover:text-white hover:border-slate-600'}`}>
+                                ${selectedMeasurement.key === m.key ? '' : 'border-line-strong text-muted hover:text-ink hover:border-line-strong'}`}>
                             {m.label}
                         </button>
                     ))}
@@ -145,8 +145,8 @@ export function MeasurementChart({ title, load, onReadings }: {
 
                 {/* Phase toggles — only for Voltage and Current */}
                 {isMultiPhase && (
-                    <div className="flex items-center gap-3 mt-3 pt-3 border-t border-slate-800">
-                        <span className="text-xs text-slate-500 font-medium">Phases:</span>
+                    <div className="flex items-center gap-3 mt-3 pt-3 border-t border-line">
+                        <span className="text-xs text-faint font-medium">Phases:</span>
                         {phaseConfig.labels.map((label, i) => {
                             const phaseKey = ['l1', 'l2', 'l3'][i] as 'l1' | 'l2' | 'l3';
                             const active   = activePhases[phaseKey];
@@ -154,7 +154,7 @@ export function MeasurementChart({ title, load, onReadings }: {
                                 <button key={label}
                                     onClick={() => setActivePhases(p => ({ ...p, [phaseKey]: !p[phaseKey] }))}
                                     className={`px-3 py-1 text-xs font-semibold rounded-full border transition-all ${
-                                        active ? 'text-white border-transparent' : 'bg-transparent text-slate-500 border-slate-700 hover:border-slate-500'
+                                        active ? 'text-ink border-transparent' : 'bg-transparent text-faint border-line-strong hover:border-slate-500'
                                     }`}
                                     style={active ? { backgroundColor: phaseConfig.colors[i], borderColor: phaseConfig.colors[i] } : {}}>
                                     {label}
@@ -175,10 +175,10 @@ export function MeasurementChart({ title, load, onReadings }: {
                         { label: isMultiPhase ? 'L1 Minimum' : 'Minimum', val: statMin },
                     ].map(({ label, val }) => (
                         <Card key={label} className="p-4">
-                            <p className="text-xs text-slate-500 font-medium uppercase tracking-wide">{label}</p>
-                            <p className="text-xl font-bold text-white mt-1">
+                            <p className="text-xs text-faint font-medium uppercase tracking-wide">{label}</p>
+                            <p className="text-xl font-bold text-ink mt-1">
                                 {val != null ? Number(val).toFixed(measurement.key === 'power_factor_total' ? 3 : 1) : '—'}
-                                <span className="text-sm text-slate-400 ml-1">{measurement.unit}</span>
+                                <span className="text-sm text-muted ml-1">{measurement.unit}</span>
                             </p>
                         </Card>
                     ))}
@@ -189,21 +189,21 @@ export function MeasurementChart({ title, load, onReadings }: {
             <Card className="p-5">
                 <div className="flex items-center justify-between mb-4">
                     <div>
-                        <h3 className="font-semibold text-white">
+                        <h3 className="font-semibold text-ink">
                             {measurement.label}
-                            {isMultiPhase && <span className="text-slate-400 font-normal text-sm ml-2">— 3-phase</span>}
+                            {isMultiPhase && <span className="text-muted font-normal text-sm ml-2">— 3-phase</span>}
                             {' '}— {title}
                         </h3>
-                        <p className="text-xs text-slate-500 mt-0.5">
+                        <p className="text-xs text-faint mt-0.5">
                             {fromDate} to {toDate} · {readings.length} data points
                             {bucket ? ` · ${bucket} averages from ${source}` : ''} · times SAST
                         </p>
                     </div>
-                    {chartLoading && <Loader2 className="w-4 h-4 animate-spin text-blue-400" />}
+                    {chartLoading && <Loader2 className="w-4 h-4 animate-spin text-accent" />}
                 </div>
 
                 {readings.length === 0 ? (
-                    <div className="h-64 flex flex-col items-center justify-center text-slate-500 gap-3">
+                    <div className="h-64 flex flex-col items-center justify-center text-faint gap-3">
                         <BarChart2 className="w-10 h-10 text-slate-700" />
                         <p className="text-sm">No data in this date range.</p>
                     </div>
@@ -211,7 +211,7 @@ export function MeasurementChart({ title, load, onReadings }: {
                     <div className="h-72 md:h-96">
                         <ResponsiveContainer width="100%" height="100%">
                             <LineChart data={readings} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" vertical={false} />
                                 <XAxis dataKey="_time" stroke="#475569" fontSize={10} tickLine={false}
                                     tick={{ fill: '#64748b' }}
                                     interval={Math.max(0, Math.floor(readings.length / 8))} />

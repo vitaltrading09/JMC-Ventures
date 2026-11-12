@@ -20,9 +20,10 @@ import { AssessmentBanner, usePortalAssessments } from "@/components/portal/Asse
 import { SiteHeader } from "@/components/portal/SiteHeader";
 import { SummaryTab } from "@/components/portal/SummaryTab";
 import { PowerQualityView } from "@/components/portal/PowerQualityView";
+import { InvestigateView, type Window } from "@/components/portal/InvestigateView";
 
 const TABS = [
-    ["summary", "Summary"], ["energy", "Energy and demand"], ["pq", "Power quality"], ["findings", "Findings and actions"],
+    ["summary", "Summary"], ["energy", "Energy and demand"], ["pq", "Power quality"], ["investigate", "Events and investigation"], ["findings", "Findings and actions"],
     ["reports", "Reports and data"], ["site", "Site details"],
 ] as const;
 type Tab = (typeof TABS)[number][0];
@@ -40,25 +41,28 @@ export default function PortalProjectPage() {
     const asked = useSearchParams().get("tab") ?? "";
     const initial: Tab = (TABS.some(([k]) => k === asked) ? asked : ALIAS[asked]) as Tab ?? "summary";
     const [tab, setTab] = useState<Tab>(initial ?? "summary");
+    const [investWin, setInvestWin] = useState<Window | null>(null);
+    const findings = useQuery({ queryKey: ["findings", id], enabled: !!live, queryFn: () => apiGet<any[]>(`/ingestion/sites/${id}/recommendations`) });
+    const inspect = (w: Window) => { setInvestWin(w); setTab("investigate"); };
 
     if (q.isLoading || mine.isLoading) return <Loading />;
     if (q.error || !q.data) return <ErrorBox error={q.error ?? "Not found"} />;
     const p = q.data;
     const telemetry = p.telemetry_visible;
-    const tabs = TABS.filter(([k]) => telemetry || k === "reports");
+    const tabs = TABS.filter(([k]) => (telemetry || k === "reports") && (k !== "investigate" || !!live));
     const current: Tab = tabs.some(([k]) => k === tab) ? tab : tabs[0][0];
     const s = summary.data;
     const effectivePoint = pointId ?? s?.context.point?.id ?? null;
 
     return (
         <div className="space-y-5">
-            <Link href="/portal/projects" className="inline-flex items-center text-sm text-slate-400 hover:text-white"><ArrowLeft className="h-4 w-4 mr-1" />Sites</Link>
+            <Link href="/portal/projects" className="inline-flex items-center text-sm text-muted hover:text-ink"><ArrowLeft className="h-4 w-4 mr-1" />Sites</Link>
             <PageHeader title={p.name} subtitle={[p.end_client_name, p.address].filter(Boolean).join(" · ")} />
             {live ? <SiteHeader a={live} summary={s} pointId={effectivePoint} onPoint={setPointId} /> : <AssessmentBanner projectId={p.id} />}
-            <nav aria-label="Site views" className="flex flex-wrap gap-1 border-b border-slate-800" role="tablist">
+            <nav aria-label="Site views" className="flex gap-1 border-b border-line overflow-x-auto" role="tablist">
                 {tabs.map(([k, label]) => (
                     <button key={k} role="tab" aria-selected={current === k} onClick={() => setTab(k)}
-                        className={`px-3 py-2 text-[15px] border-b-2 -mb-px focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${current === k ? "border-blue-500 text-white" : "border-transparent text-slate-400 hover:text-white"}`}>{label}</button>
+                        className={`px-3 py-2 text-[15px] whitespace-nowrap border-b-2 -mb-px focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${current === k ? "border-blue-500 text-ink" : "border-transparent text-muted hover:text-ink"}`}>{label}</button>
                 ))}
             </nav>
             {current === "summary" && (live
@@ -68,7 +72,11 @@ export default function PortalProjectPage() {
             {current === "pq" && (live
                 ? summary.isLoading ? <Loading label="Assessing" /> : s ? <PowerQualityView detail={s.point_detail} period={{ from: s.context.period_from, to: s.context.period_to }} /> : <ErrorBox error={summary.error} />
                 : <ErrorBox error="Power quality is shown during a live assessment." />)}
-            {current === "findings" && <FindingsTab project={p} />}
+            {current === "investigate" && live && effectivePoint && (
+                <InvestigateView assessment={live} pointId={effectivePoint} points={p.points} role={role} initial={investWin}
+                    findings={(findings.data ?? []).map((f) => ({ id: f.id, title: f.title }))} />
+            )}
+            {current === "findings" && <FindingsTab project={p} assessmentId={live?.id ?? null} role={role} onInspect={live ? inspect : undefined} />}
             {current === "reports" && (
                 <div className="space-y-6">
                     <ReportsTab project={p} role={role} />

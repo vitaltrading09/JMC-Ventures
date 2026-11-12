@@ -68,6 +68,7 @@ function routes() {
     scan('assessments/routes.ts', 'r');
     scan('reports/closeout.ts', 'r');
     scan('consultant.ts', 'r');
+    scan('investigate.ts', 'r0');
     // The public API declares its routes as objects: { method: 'get', path: '/v1/...' }.
     const v1 = fs.readFileSync(path.join(ROOT, 'src', 'v1', 'routes.ts'), 'utf8');
     for (const m of v1.matchAll(/method: '(get|post)', path: '([^']+)'/g)) out.push([m[1].toUpperCase(), m[2]]);
@@ -149,6 +150,8 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
             x.grant = (await q(`INSERT INTO assessment_grants (assessment_id, user_id, email) VALUES ($1, $2, $3) RETURNING id`,
                 [x.assessment, uid, `${role}.${x.mark}@test.local`.toLowerCase()]))[0].id;
         }
+        x.evidence = (await q(`INSERT INTO evidence_refs (assessment_id, measurement_point_id, from_at, to_at, title) VALUES ($1, $2, NOW() - INTERVAL '1 day', NOW() - INTERVAL '23 hours', $3) RETURNING id`,
+            [x.assessment, x.point, `${x.mark}-evidence`]))[0].id;
         x.legacyToken = jwt.sign({ userId: null, tenantId: x.tenant, role: 'admin' }, SECRET); // a pre-Phase-7 token
         return x;
     };
@@ -177,6 +180,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         sites: x.site, meters: x.meter, alerts: x.alert, shares: x.share, recommendations: x.rec, leads: x.lead,
         projects: x.site, points: x.point, devices: x.meter, deployments: x.deployment, reports: x.report,
         clients: x.tenant, 'broker-access': crypto.randomUUID(), exports: x.export,
+        evidence: x.evidence,
         assessments: x.assessment, grants: x.grant, 'assessment-packages': crypto.randomUUID(),
     });
     const fill = (p, x) => {
@@ -186,7 +190,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
     const ROUTES = routes().filter(([, p]) => !['/health', '/health/deep', '/public/report/:token'].includes(p));
     assert.ok(ROUTES.length > 60, `only ${ROUTES.length} routes found`);
 
-    const bSecrets = [B.mark, B.tenant, B.site, B.meter, B.alert, B.share, B.rec, B.draft, B.lead, B.report, B.unpublished, B.deployment, B.export, B.assessment];
+    const bSecrets = [B.mark, B.tenant, B.site, B.meter, B.alert, B.share, B.rec, B.draft, B.lead, B.report, B.unpublished, B.deployment, B.export, B.assessment, B.evidence];
     const leaks = (text) => bSecrets.filter((s) => text.includes(s));
 
     await t.test('tenant A, aimed at tenant B, gets nothing of B from any route', async () => {
@@ -227,6 +231,42 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         assert.strictEqual(fs.readFileSync(bPdf, 'utf8'), `${B.mark}-original-pdf`);
         assert.strictEqual((await q(`SELECT count(*)::int AS n FROM devices WHERE site_id = $1`, [B.site]))[0].n, 1);
         assert.strictEqual((await q(`SELECT count(*)::int AS n FROM deployments d JOIN measurement_points p ON p.id = d.measurement_point_id WHERE p.project_id = $1`, [B.site]))[0].n, 1);
+    });
+
+    await t.test('investigation: evidence windows and finding cases follow the grant and the role', async () => {
+        assert.strictEqual((await q(`SELECT removed_at FROM evidence_refs WHERE id = $1`, [B.evidence]))[0].removed_at, null);
+        assert.strictEqual((await q(`SELECT count(*)::int AS n FROM finding_cases WHERE recommendation_id = $1`, [B.rec]))[0].n, 0);
+        const from = iso(now - 3 * 3_600_000), to = iso(now - 2 * 3_600_000);
+        const body = { point_id: A.point, from, to, title: 'Afternoon peak', channels: ['kw', 'thd_v'] };
+        assert.strictEqual((await call(A.viewerToken, 'POST', `/assessments/${A.assessment}/evidence`, body)).status, 403); // read-only
+        assert.strictEqual((await call(A.adminToken, 'POST', `/assessments/${A.assessment}/evidence`, { ...body, point_id: B.point })).status, 400);
+        assert.strictEqual((await call(A.adminToken, 'POST', `/assessments/${A.assessment}/evidence`, { ...body, from: iso(now - 5 * 86_400_000) })).status, 400); // before the start
+        const made = await call(A.adminToken, 'POST', `/assessments/${A.assessment}/evidence`, body);
+        assert.strictEqual(made.status, 201);
+        const list = JSON.parse((await call(A.viewerToken, 'GET', `/assessments/${A.assessment}/evidence`)).text);
+        assert.ok(list.some((e) => e.title === 'Afternoon peak'));
+        assert.deepStrictEqual(leaks(JSON.stringify(list)), []);
+        // Investigation window: clamped to the assessment.
+        const inv = await call(A.adminToken, 'GET', `/points/${A.point}/investigate?from=${iso(now - 10 * 86_400_000)}&to=${iso(now)}`);
+        assert.strictEqual(inv.status, 200);
+        assert.ok(new Date(JSON.parse(inv.text).from) >= new Date(now - 2 * 86_400_000 - 3_600_000));
+        // Cases: client_admin may track; verified needs a comparison result.
+        assert.strictEqual((await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'bogus' })).status, 400);
+        assert.strictEqual((await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'verified' })).status, 400);
+        const c = await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { owner: 'Facilities', status: 'investigating', next_step: 'Check the HVAC schedule' });
+        assert.strictEqual(c.status, 200);
+        assert.strictEqual((await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'verified', verification: { result: 'improved', note: 'after the schedule change' } })).status, 200);
+        assert.strictEqual(JSON.parse((await call(A.adminToken, 'GET', `/assessments/${A.assessment}/cases`)).text)[0].owner, 'Facilities');
+        assert.strictEqual((await call(A.viewerToken, 'PATCH', `/recommendations/${A.rec}/case`, { owner: 'x' })).status, 403);
+        const audit = await q(`SELECT count(*)::int AS n FROM audit_log WHERE entity_type = 'recommendation' AND entity_id = $1 AND action = 'finding_case.update'`, [A.rec]);
+        assert.strictEqual(audit[0].n, 2);
+        // Removing evidence keeps the row for the record.
+        const id = JSON.parse(made.text).id;
+        assert.strictEqual((await call(A.adminToken, 'POST', `/evidence/${id}/remove`)).status, 200);
+        assert.ok((await q(`SELECT removed_at FROM evidence_refs WHERE id = $1`, [id]))[0].removed_at);
+        // Before/after windows must lie inside the assessment.
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/compare?a_from=${iso(now - 40 * 3_600_000)}&a_to=${iso(now - 30 * 3_600_000)}&b_from=${iso(now - 10 * 3_600_000)}&b_to=${iso(now)}`)).status, 200);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/compare?a_from=${iso(now - 40 * 86_400_000)}&a_to=${iso(now - 39 * 86_400_000)}&b_from=${iso(now - 10 * 3_600_000)}&b_to=${iso(now)}`)).status, 400);
     });
 
     await t.test('the SLD upload refuses another tenant\'s site before writing the file', async () => {

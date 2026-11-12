@@ -22,37 +22,37 @@ export function SiteHeader({ a, summary, pointId, onPoint }: {
     const pct = Math.round(elapsedFraction(a) * 100);
     const fresh = c?.last_data_at ? Date.now() - new Date(c.last_data_at).getTime() : null;
     return (
-        <section aria-label="Assessment context" className="rounded-xl border border-slate-800 bg-slate-900/60">
+        <section aria-label="Assessment context" className="rounded-xl border border-line bg-surface/60">
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 text-[13px]">
                 <div>
-                    <p className="text-slate-500 text-xs">Assessment</p>
-                    <p className="text-slate-100 font-medium tabular-nums">{a.reference}{c?.provisional !== false && <span className="ml-2 rounded bg-blue-500/15 px-1.5 py-0.5 text-[11px] font-normal text-blue-200">Provisional</span>}</p>
+                    <p className="text-faint text-xs">Assessment</p>
+                    <p className="text-ink font-medium tabular-nums">{a.reference}{c?.provisional !== false && <span className="ml-2 rounded bg-blue-500/15 px-1.5 py-0.5 text-[11px] font-normal text-accent">Provisional</span>}</p>
                 </div>
                 <div>
-                    <p className="text-slate-500 text-xs">Measurement point</p>
+                    <p className="text-faint text-xs">Measurement point</p>
                     {c && c.points.length > 1 ? (
                         <select aria-label="Measurement point" className={`${inputClass} !py-1 !text-[13px] max-w-[220px]`} value={pointId ?? c.point?.id ?? ""} onChange={(e) => onPoint(e.target.value)}>
                             {c.points.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                         </select>
-                    ) : <p className="text-slate-100">{c?.point?.name ?? "–"}</p>}
+                    ) : <p className="text-ink">{c?.point?.name ?? "–"}</p>}
                 </div>
                 <div>
-                    <p className="text-slate-500 text-xs">Observed window ({TZ_LABEL})</p>
-                    <p className="text-slate-100 tabular-nums">{c ? `${fmtDateTime(c.period_from)} → ${fmtDateTime(c.period_to)}` : "…"}
-                        {c && <span className="text-slate-400"> · {c.observed_days < 1 ? `${Math.round(c.observed_days * 24)} h` : `${c.observed_days.toFixed(1)} days`}</span>}</p>
+                    <p className="text-faint text-xs">Observed window ({TZ_LABEL})</p>
+                    <p className="text-ink tabular-nums">{c ? `${fmtDateTime(c.period_from)} → ${fmtDateTime(c.period_to)}` : "…"}
+                        {c && <span className="text-muted"> · {c.observed_days < 1 ? `${Math.round(c.observed_days * 24)} h` : `${c.observed_days.toFixed(1)} days`}</span>}</p>
                 </div>
                 <div>
-                    <p className="text-slate-500 text-xs">Data</p>
-                    <p className="text-slate-100 tabular-nums">
+                    <p className="text-faint text-xs">Data</p>
+                    <p className="text-ink tabular-nums">
                         {cov == null ? "–" : `${Math.round(cov * 100)} % complete`}
-                        <span className={fresh !== null && fresh > 30 * 60_000 ? " text-amber-300" : " text-slate-400"}> · {c?.last_data_at ? `latest hour ${fmtAgo(c.last_data_at)}` : "no data yet"}</span>
+                        <span className={fresh !== null && fresh > 30 * 60_000 ? " text-warn" : " text-muted"}> · {c?.last_data_at ? `latest hour ${fmtAgo(c.last_data_at)}` : "no data yet"}</span>
                     </p>
                 </div>
                 <div className="flex items-center gap-2 ml-auto">
-                    <span className="inline-flex items-center gap-1 text-slate-300 tabular-nums" title={`${pct} % of the assessment elapsed`}>
-                        <Clock className="h-4 w-4 text-slate-500" aria-hidden />{a.remaining} left
+                    <span className="inline-flex items-center gap-1 text-ink-3 tabular-nums" title={`${pct} % of the assessment elapsed`}>
+                        <Clock className="h-4 w-4 text-faint" aria-hidden />{a.remaining} left
                     </span>
-                    <a className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-2.5 py-1.5 text-slate-200 hover:bg-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
+                    <a className="inline-flex items-center gap-1 rounded-lg border border-line-strong px-2.5 py-1.5 text-ink-2 hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
                         href={apiUrl(`/ingestion/assessments/${a.id}/preview.pdf?kind=overview`)} target="_blank" rel="noreferrer">
                         <FileText className="h-4 w-4" aria-hidden />Report preview
                     </a>
@@ -62,9 +62,9 @@ export function SiteHeader({ a, summary, pointId, onPoint }: {
                     </button>
                 </div>
             </div>
-            <div className="h-1 bg-slate-800" aria-hidden><div className="h-full bg-emerald-500/70" style={{ width: `${pct}%` }} /></div>
-            <details className="px-4 py-2 text-xs text-slate-400">
-                <summary className="cursor-pointer text-slate-400 hover:text-slate-200">Assessment details</summary>
+            <div className="h-1 bg-surface-2" aria-hidden><div className="h-full bg-emerald-500/70" style={{ width: `${pct}%` }} /></div>
+            <details className="px-4 py-2 text-xs text-muted">
+                <summary className="cursor-pointer text-muted hover:text-ink-2">Assessment details</summary>
                 <p className="mt-2">{a.package_name ?? `${a.duration_days}-day assessment`}: {fmtDateTime(a.start_at)} → {fmtDateTime(a.effective_end_at)} {TZ_LABEL}.
                     Live data, history, exports and the consultant end exactly at the end time. The final reports and data package follow;
                     the data is kept until {a.retention_until ? fmtDate(a.retention_until) : `${a.retention_months} months after the end`}, then deleted.</p>

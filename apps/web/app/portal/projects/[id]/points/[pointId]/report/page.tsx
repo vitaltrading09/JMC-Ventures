@@ -119,7 +119,7 @@ export default function MeteringReportPage() {
 
     return (
         <div className="space-y-5 mr-report">
-            <Link data-noprint="true" href={`/portal/projects/${id}/points/${pointId}`} className="inline-flex items-center text-sm text-slate-400 hover:text-white">
+            <Link data-noprint="true" href={`/portal/projects/${id}/points/${pointId}`} className="inline-flex items-center text-sm text-slate-500 hover:text-slate-900">
                 <ArrowLeft className="h-4 w-4 mr-1" />Meter readings
             </Link>
             <PageHeader title={r ? `Metering report · ${r.point.name}` : "Metering report"}

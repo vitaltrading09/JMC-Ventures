@@ -10,7 +10,7 @@ import { Loader2 } from "lucide-react";
 const SldEditor = dynamic(() => import("./SldEditor"), {
     ssr: false,
     loading: () => (
-        <div className="flex items-center justify-center h-[40vh] text-slate-500">
+        <div className="flex items-center justify-center h-[40vh] text-faint">
             <Loader2 className="h-6 w-6 animate-spin mr-2" />
             Loading the single-line diagram…
         </div>

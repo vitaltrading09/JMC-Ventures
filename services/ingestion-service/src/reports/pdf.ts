@@ -366,6 +366,20 @@ function overview(doc: Doc, ds: any) {
     else table(doc, ['#', 'Action', 'Who investigates', 'Urgency', 'Confidence'],
         acts.map((e: any, i: number) => [String(i + 1), e.text, e.who, e.severity === 'act' ? 'within a month' : 'next maintenance', e.confidence]), [0.05, 0.55, 0.16, 0.13, 0.11]);
 
+    const cases = ds.points.flatMap((x: any) => (x.findings ?? []).filter((g: any) => g.case).map((g: any) => ({ ...g, point: x.name })));
+    if (cases.length) {
+        h2(doc, 'Follow-up status of findings');
+        table(doc, ['Finding', 'Owner', 'Status', 'Next step', 'Verification'],
+            cases.map((g: any) => [`${g.title} (${g.point})`, g.case.owner ?? '–', String(g.case.status).replace(/_/g, ' '), g.case.next_step ?? '–', g.case.verification_result ? String(g.case.verification_result).replace(/_/g, ' ') : 'not yet verified']),
+            [0.3, 0.14, 0.14, 0.26, 0.16]);
+    }
+    if ((ds.evidence ?? []).length) {
+        h2(doc, 'Evidence references');
+        table(doc, ['Reference', 'Point', 'Window (SAST)', 'Note'],
+            ds.evidence.map((e: any, i: number) => [`E${i + 1}. ${e.title}`, e.point, `${fmtT(e.from)} → ${fmtT(e.to)}`, e.note ?? '–']), [0.3, 0.16, 0.28, 0.26]);
+        note(doc, 'Windows saved in the GridIQ investigation workspace; the same windows can be opened there while the assessment data is retained.');
+    }
+
     h1(doc, '7. Feasibility-data readiness');
     p(doc, `Supplied: ${ds.feasibility_readiness.supplied.join('; ')}.`);
     if (ds.feasibility_readiness.missing.length) p(doc, `Missing inputs: ${ds.feasibility_readiness.missing.join('; ')}.`);

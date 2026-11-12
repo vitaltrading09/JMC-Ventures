@@ -99,44 +99,44 @@ export function ChatWidget() {
 
     return (
         <aside aria-label="GridIQ consultant"
-            className="fixed z-50 inset-0 lg:inset-auto lg:top-0 lg:right-0 lg:h-screen lg:w-[400px] bg-slate-900 border-l border-slate-700/60 flex flex-col print:hidden">
-            <div className="px-4 py-3 border-b border-slate-800 flex items-start gap-2.5">
+            className="fixed z-50 inset-0 lg:inset-auto lg:top-0 lg:right-0 lg:h-screen lg:w-[400px] bg-surface border-l border-line-strong/60 flex flex-col print:hidden">
+            <div className="px-4 py-3 border-b border-line flex items-start gap-2.5">
                 <div className="flex-1 min-w-0">
-                    <h2 className="font-semibold text-white text-sm">GridIQ consultant</h2>
+                    <h2 className="font-semibold text-ink text-sm">GridIQ consultant</h2>
                     {!onScreen && live.length > 1 ? (
-                        <select aria-label="Assessment" className="mt-1 bg-slate-800 rounded px-1.5 py-0.5 text-xs text-slate-200" value={current?.id ?? ""} onChange={(e) => setSel(e.target.value)}>
+                        <select aria-label="Assessment" className="mt-1 bg-surface-2 rounded px-1.5 py-0.5 text-xs text-ink-2" value={current?.id ?? ""} onChange={(e) => setSel(e.target.value)}>
                             {live.map((a) => <option key={a.id} value={a.id}>{a.project_name} · {a.reference}</option>)}
                         </select>
                     ) : current ? (
                         <p className="mt-1 inline-flex flex-wrap gap-1 text-[11px]">
-                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-200">{current.project_name}</span>
-                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300 tabular-nums">{current.reference}</span>
-                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-400">{fmtDateTime(current.start_at)} → now</span>
+                            <span className="rounded bg-surface-2 px-1.5 py-0.5 text-ink-2">{current.project_name}</span>
+                            <span className="rounded bg-surface-2 px-1.5 py-0.5 text-ink-3 tabular-nums">{current.reference}</span>
+                            <span className="rounded bg-surface-2 px-1.5 py-0.5 text-muted">{fmtDateTime(current.start_at)} → now</span>
                         </p>
                     ) : null}
                 </div>
-                <button onClick={() => setOpen(false)} aria-label="Close the consultant" className="text-slate-400 hover:text-white p-1"><X className="w-4 h-4" /></button>
+                <button onClick={() => setOpen(false)} aria-label="Close the consultant" className="text-muted hover:text-ink p-1"><X className="w-4 h-4" /></button>
             </div>
             {!current ? (
-                <div className="flex-1 p-6 text-sm text-slate-300 flex gap-3"><Lock className="w-5 h-5 text-slate-500 shrink-0" aria-hidden />
+                <div className="flex-1 p-6 text-sm text-ink-3 flex gap-3"><Lock className="w-5 h-5 text-faint shrink-0" aria-hidden />
                     {onScreen ? "This site has no live assessment, so the consultant is not available here." : "The consultant answers questions about an assessment while it is running. You have no live assessment right now."}</div>
             ) : (
                 <>
                     <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm" aria-live="polite">
                         {msgs.length === 0 && (
                             <div className="space-y-2">
-                                <p className="text-slate-400">Questions about this site&apos;s measurements. Answers state the period and data they use, and separate what was measured from possible explanations. Advisory only: never work on live equipment yourself.</p>
-                                {SUGGESTIONS.map((s) => <button key={s} onClick={() => send(s)} className="block text-left w-full text-blue-300 hover:text-blue-200 text-xs border border-slate-700 rounded-lg px-3 py-2">{s}</button>)}
+                                <p className="text-muted">Questions about this site&apos;s measurements. Answers state the period and data they use, and separate what was measured from possible explanations. Advisory only: never work on live equipment yourself.</p>
+                                {SUGGESTIONS.map((s) => <button key={s} onClick={() => send(s)} className="block text-left w-full text-accent hover:text-accent text-xs border border-line-strong rounded-lg px-3 py-2">{s}</button>)}
                             </div>
                         )}
                         {msgs.map((m, i) => m.role === "user" ? (
                             <div key={i} className="text-right"><div className="inline-block max-w-[90%] rounded-xl px-3 py-2 bg-blue-600 text-white text-left whitespace-pre-wrap">{m.content}</div></div>
                         ) : (
                             <div key={i}>
-                                {m.content && <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">{m.provider === "none" ? "Measured-data summary" : m.provider ? "Consultant answer (AI, from the measured data)" : "Answer"}</p>}
-                                <div className="rounded-xl px-3 py-2 bg-slate-800 text-slate-100 whitespace-pre-wrap">{m.content || <span className="text-slate-500">Working…</span>}</div>
+                                {m.content && <p className="text-[11px] uppercase tracking-wide text-faint mb-1">{m.provider === "none" ? "Measured-data summary" : m.provider ? "Consultant answer (AI, from the measured data)" : "Answer"}</p>}
+                                <div className="rounded-xl px-3 py-2 bg-surface-2 text-ink whitespace-pre-wrap">{m.content || <span className="text-faint">Working…</span>}</div>
                                 {(m.basis || (m.evidence?.length ?? 0) > 0) && (
-                                    <details className="mt-1 text-[11px] text-slate-500">
+                                    <details className="mt-1 text-[11px] text-faint">
                                         <summary className="cursor-pointer">Evidence and basis</summary>
                                         {m.basis && <p className="mt-1">{m.basis}</p>}
                                         {!!m.evidence?.length && <p className="mt-1">Sections: {m.evidence.map((e) => EVIDENCE_LABEL[e] ?? e).join(", ")}</p>}
@@ -146,10 +146,10 @@ export function ChatWidget() {
                         ))}
                         <div ref={end} />
                     </div>
-                    <form onSubmit={(e) => { e.preventDefault(); send(input); }} className="p-3 border-t border-slate-800 flex gap-2">
+                    <form onSubmit={(e) => { e.preventDefault(); send(input); }} className="p-3 border-t border-line flex gap-2">
                         <label htmlFor="consultant-input" className="sr-only">Question</label>
                         <input id="consultant-input" value={input} onChange={(e) => setInput(e.target.value)} placeholder={`Ask about ${current.project_name}…`} disabled={busy}
-                            className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                            className="flex-1 bg-canvas border border-line-strong rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-blue-500" />
                         <button disabled={busy || !input.trim()} aria-label="Send" className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg px-3"><Send className="w-4 h-4" /></button>
                     </form>
                 </>

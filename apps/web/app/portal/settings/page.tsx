@@ -41,7 +41,7 @@ function Branding({ editable }: { editable: boolean }) {
                     <Field label="Name"><input disabled={!editable} className={inputClass} value={f.brand_name} onChange={(e) => setF({ ...f, brand_name: e.target.value })} /></Field>
                     <Field label="Logo URL"><input disabled={!editable} className={inputClass} value={f.brand_logo_url} onChange={(e) => setF({ ...f, brand_logo_url: e.target.value })} /></Field>
                     <div className="md:col-span-2"><Field label="Report footer"><input disabled={!editable} className={inputClass} value={f.brand_footer} onChange={(e) => setF({ ...f, brand_footer: e.target.value })} /></Field></div>
-                    {editable && <div className="md:col-span-2 flex items-center gap-2"><Button type="submit" disabled={save.isPending}>Save</Button>{save.isSuccess && <span className="text-sm text-emerald-300">Saved</span>}</div>}
+                    {editable && <div className="md:col-span-2 flex items-center gap-2"><Button type="submit" disabled={save.isPending}>Save</Button>{save.isSuccess && <span className="text-sm text-ok">Saved</span>}</div>}
                     <div className="md:col-span-2"><ErrorBox error={save.error} /></div>
                 </form>
             )}
@@ -82,7 +82,7 @@ function Users({ editable }: { editable: boolean }) {
                     ))}
                 </Table>
             )}
-            <form className="grid md:grid-cols-4 gap-3 items-end mt-4 pt-4 border-t border-slate-800" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
+            <form className="grid md:grid-cols-4 gap-3 items-end mt-4 pt-4 border-t border-line" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
                 <Field label="Email"><input type="email" className={inputClass} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} required /></Field>
                 <Field label="Temporary password" hint="Share it with them privately"><input type="password" autoComplete="new-password" className={inputClass} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} required minLength={8} /></Field>
                 <Field label="Role">

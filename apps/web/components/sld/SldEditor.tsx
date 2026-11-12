@@ -296,7 +296,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
     const availableMeters = points.filter(p => !placedMeterIds.has(p.id));
 
     if (loading) return (
-        <div className="flex items-center justify-center h-[60vh] text-slate-500">
+        <div className="flex items-center justify-center h-[60vh] text-faint">
             <Loader2 className="h-6 w-6 animate-spin mr-2" /> Loading…
         </div>
     );
@@ -304,7 +304,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
     if (points.length === 0) return (
         <Card className="p-12 text-center">
             <MapPin className="w-10 h-10 text-slate-700 mx-auto mb-3" />
-            <p className="text-slate-400">No measurement points yet.</p>
+            <p className="text-muted">No measurement points yet.</p>
         </Card>
     );
 
@@ -312,7 +312,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
         <div className="space-y-4 animate-in fade-in duration-500">
             {/* Header */}
             <div className="flex items-center justify-between gap-3 flex-wrap">
-                <p className="text-slate-400 text-sm">
+                <p className="text-muted text-sm">
                     Measurement points pinned on the single-line diagram, with live 1-minute values and open alerts.
                 </p>
                 {editable && <div className="flex items-center gap-2 flex-wrap">
@@ -320,8 +320,8 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
                         onClick={() => setEditMode(m => !m)}
                         className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition ${
                             editMode
-                                ? "bg-blue-600/30 border-blue-500/40 text-blue-300"
-                                : "bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200"
+                                ? "bg-blue-600/30 border-blue-500/40 text-accent"
+                                : "bg-surface-2 hover:bg-surface-3 border-line-strong text-ink-2"
                         }`}
                     >
                         {editMode ? <Eye className="w-4 h-4" /> : <Edit className="w-4 h-4" />}
@@ -334,7 +334,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
             {editable && editMode && (
                 <Card className="p-3 border-blue-500/20 bg-blue-950/30">
                     <div className="flex items-center gap-3 flex-wrap">
-                        <span className="text-xs font-semibold uppercase tracking-wider text-blue-300">Edit toolbar</span>
+                        <span className="text-xs font-semibold uppercase tracking-wider text-accent">Edit toolbar</span>
 
                         {/* Add meter */}
                         <div className="flex items-center gap-2">
@@ -342,7 +342,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
                                 value=""
                                 onChange={e => { if (e.target.value) handleAddMeter(e.target.value); e.target.value = ""; }}
                                 disabled={availableMeters.length === 0}
-                                className="bg-slate-900 border border-slate-700 text-slate-200 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-40"
+                                className="bg-surface border border-line-strong text-ink-2 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/50 disabled:opacity-40"
                             >
                                 <option value="">
                                     {availableMeters.length === 0 ? "All points placed" : "+ Add point…"}
@@ -370,7 +370,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
                                 <button
                                     onClick={() => fileInputRef.current?.click()}
                                     disabled={uploadingPdf}
-                                    className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm rounded-lg border border-slate-700 disabled:opacity-50"
+                                    className="flex items-center gap-2 px-3 py-1.5 bg-surface-2 hover:bg-surface-3 text-ink-2 text-sm rounded-lg border border-line-strong disabled:opacity-50"
                                 >
                                     {uploadingPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
                                     Upload client SLD PDF
@@ -379,7 +379,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
                         ) : (
                             <button
                                 onClick={handleDeletePdf}
-                                className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-red-900/50 text-slate-200 hover:text-red-300 text-sm rounded-lg border border-slate-700"
+                                className="flex items-center gap-2 px-3 py-1.5 bg-surface-2 hover:bg-red-900/50 text-ink-2 hover:text-bad text-sm rounded-lg border border-line-strong"
                             >
                                 <X className="w-4 h-4" /> Remove PDF backdrop
                             </button>
@@ -388,7 +388,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
                         {/* Remove selected */}
                         <button
                             onClick={handleRemoveSelected}
-                            className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 hover:bg-red-900/50 text-slate-200 hover:text-red-300 text-sm rounded-lg border border-slate-700"
+                            className="flex items-center gap-2 px-3 py-1.5 bg-surface-2 hover:bg-red-900/50 text-ink-2 hover:text-bad text-sm rounded-lg border border-line-strong"
                         >
                             <Trash2 className="w-4 h-4" /> Remove selected
                         </button>
@@ -405,7 +405,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
                             {dirty ? "Save layout" : "No changes"}
                         </button>
                     </div>
-                    <p className="text-[11px] text-slate-500 mt-2">
+                    <p className="text-[11px] text-faint mt-2">
                         Drop points from the dropdown, drag to align with your PDF, click to select then Remove.
                         Click <strong>Save layout</strong> to persist. Pan/zoom with the canvas controls (bottom-left).
                     </p>
@@ -413,7 +413,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
             )}
 
             {/* Canvas — PDF backdrop layer + React Flow on top */}
-            <div className="relative h-[78vh] rounded-xl border border-slate-800 bg-slate-950/60 overflow-hidden">
+            <div className="relative h-[78vh] rounded-xl border border-line bg-canvas/60 overflow-hidden">
                 <ReactFlow
                     nodes={liveNodes}
                     edges={[]}
@@ -430,14 +430,14 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
                     panOnDrag
                     selectionOnDrag={false}
                 >
-                    <Background gap={32} size={1.5} color="#1e293b" />
-                    <Controls position="bottom-left" showInteractive={false} className="!bg-slate-900 !border-slate-700" />
+                    <Background gap={32} size={1.5} color="var(--chart-grid)" />
+                    <Controls position="bottom-left" showInteractive={false} className="!bg-surface !border-line-strong" />
                     <MiniMap
                         position="bottom-right"
                         pannable zoomable
                         nodeColor={(n) => (n.data as any)?.alertSeverity ? "#f59e0b" : "#3b82f6"}
                         maskColor="rgba(2, 6, 23, 0.7)"
-                        className="!bg-slate-900 !border-slate-700"
+                        className="!bg-surface !border-line-strong"
                     />
 
                 </ReactFlow>
@@ -445,7 +445,7 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
                 {/* Empty-state hint */}
                 {!pdfUrl && nodes.length === 0 && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                        <div className="text-center text-slate-500 max-w-md">
+                        <div className="text-center text-faint max-w-md">
                             <FileText className="w-10 h-10 mx-auto mb-3 opacity-40" />
                             <p className="text-sm">
                                 {editMode
@@ -458,10 +458,10 @@ function Inner({ projectId, editable }: { projectId: string; editable: boolean }
             </div>
 
             {/* Legend */}
-            <div className="flex items-center gap-5 text-xs text-slate-500 flex-wrap pt-1">
+            <div className="flex items-center gap-5 text-xs text-faint flex-wrap pt-1">
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-full bg-emerald-400" /> Live</span>
                 <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-full bg-slate-600" /> Stale / no data</span>
-                <span className="flex items-center gap-1.5"><AlertTriangle className="w-3 h-3 text-amber-400" /> Active alert</span>
+                <span className="flex items-center gap-1.5"><AlertTriangle className="w-3 h-3 text-warn" /> Active alert</span>
                 <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded ring-2 ring-red-500/80" /> Critical</span>
                 <span>•</span>
                 <span>Updates every 12s</span>

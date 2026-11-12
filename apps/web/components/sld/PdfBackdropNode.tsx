@@ -28,8 +28,8 @@ function PdfBackdropImpl({ data }: { data: PdfBackdropNodeData }) {
         >
             <Document
                 file={data.pdfUrl}
-                loading={<div className="text-slate-500 text-xs p-4">Loading PDF…</div>}
-                error={<div className="text-red-400 text-xs p-4">Failed to render PDF</div>}
+                loading={<div className="text-faint text-xs p-4">Loading PDF…</div>}
+                error={<div className="text-bad text-xs p-4">Failed to render PDF</div>}
             >
                 <Page
                     pageNumber={1}

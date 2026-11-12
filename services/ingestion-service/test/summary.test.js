@@ -108,3 +108,24 @@ test('summary: the requested point is used, else the top-level incomer', () => {
     assert.strictEqual(S.buildSummary(d).context.point.id, 'p1');
     assert.strictEqual(S.buildSummary(d, 'sub').context.point.id, 'sub');
 });
+
+const { viewFor, windowStats } = require('../dist/investigate.js');
+
+test('investigation windows pick a resolution that keeps 150-700 buckets', () => {
+    assert.strictEqual(viewFor(2 * 3_600_000).view, 'point_readings_1m');
+    assert.strictEqual(viewFor(2 * 86_400_000).view, 'point_readings_10m');
+    assert.strictEqual(viewFor(14 * 86_400_000).view, 'point_readings_1h');
+});
+
+test('before/after statistics: loaded PF only, interruptions excluded from minimum voltage', () => {
+    const rows = [
+        { power_active_total_avg: 100, power_active_total_max: 120, power_factor_total_avg: 0.9, voltage_a_min: 225, thd_voltage_a_avg: 4, current_unbalance_avg: 5 },
+        { power_active_total_avg: 0, power_active_total_max: 0, power_factor_total_avg: 0.2, voltage_a_min: 0, thd_voltage_a_avg: 6, current_unbalance_avg: 7 },
+    ];
+    const s = windowStats(rows);
+    assert.strictEqual(s.values, 2);
+    assert.strictEqual(s.pf_loaded_avg, 0.9);
+    assert.strictEqual(s.v_min, 225);
+    assert.strictEqual(s.kw_max, 120);
+    assert.strictEqual(s.thd_v_p95.B, null);
+});

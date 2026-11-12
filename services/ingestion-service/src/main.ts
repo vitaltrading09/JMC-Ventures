@@ -32,6 +32,7 @@ import { assessmentsRouter, expireAssessments } from './assessments/routes';
 import { deliverablesRouter, runCloseouts, notifyNearingEnd } from './reports/closeout';
 import { sendDueEmails } from './notify/email';
 import { consultantRouter } from './consultant';
+import { investigateRouter } from './investigate';
 import { runRetention } from './assessments/retention';
 import { v1Router } from './v1/routes';
 import { runExports, expireExports } from './v1/exports-job';
@@ -466,6 +467,7 @@ app.use(assessmentsRouter(pool, authenticateToken));
 app.use(deliverablesRouter(pool, authenticateToken));
 // The assessment consultant (src/consultant.ts): scoped retrieval, budgets, provider adapters.
 app.use(consultantRouter(pool, authenticateToken));
+app.use(investigateRouter(pool, authenticateToken));
 
 // Deep health for an external uptime monitor (src/health.ts). Token header,
 // no JWT: the monitor is not a user. Disabled unless HEALTH_TOKEN is set.

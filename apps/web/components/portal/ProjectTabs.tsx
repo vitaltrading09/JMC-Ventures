@@ -8,7 +8,7 @@ import { usePortalAssessments } from "@/components/portal/AssessmentBanner";
 import type { Assessment } from "@/lib/assessments";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { BarChart, Bar, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, CartesianGrid } from "recharts";
 import { ChevronRight } from "lucide-react";
 import { apiGet, apiSend, apiUrl, fmtAgo, fmtDate, fmtDateTime, TZ_LABEL } from "@/lib/api";
@@ -16,7 +16,6 @@ import { num, zar } from "@/lib/format";
 import { ROLE_LABEL } from "@/lib/ops";
 import { PortalProjectDetail, PortalPoint, pointTree, defaultPoint, canEdit, askConsultant, isDraftFinding, findingSource } from "@/lib/portal";
 import { BalanceView, Balance } from "@/components/fleet/BalanceView";
-import HealthCheckReport from "@/components/report/HealthCheckReport";
 import { SldView } from "@/components/sld/SldView";
 import { Panel, Loading, ErrorBox, Empty, Badge, Button, Field, inputClass, Table, Stat } from "@/components/ops/ui";
 
@@ -108,22 +107,22 @@ function PointList({ project }: { project: PortalProjectDetail }) {
     const rows = pointTree(project.points);
     if (rows.length === 0) return <Empty>No measurement points yet.</Empty>;
     return (
-        <ul className="divide-y divide-slate-800">
+        <ul className="divide-y divide-line">
             {rows.map(({ point: p, depth }) => (
                 <li key={p.id}>
-                    <Link href={`/portal/projects/${project.id}/points/${p.id}`} className="flex items-center gap-4 py-2.5 hover:bg-slate-900/60 rounded-lg px-2">
+                    <Link href={`/portal/projects/${project.id}/points/${p.id}`} className="flex items-center gap-4 py-2.5 hover:bg-surface/60 rounded-lg px-2">
                         <span style={{ paddingLeft: depth * 24 }} className="flex-1 min-w-0">
-                            <span className="text-sm text-slate-100">{depth > 0 && <span className="text-slate-600 mr-1">└</span>}{p.name}</span>
-                            <span className="text-xs text-slate-500 ml-2">{ROLE_LABEL[p.role] ?? p.role}</span>
+                            <span className="text-sm text-ink">{depth > 0 && <span className="text-faint mr-1">└</span>}{p.name}</span>
+                            <span className="text-xs text-faint ml-2">{ROLE_LABEL[p.role] ?? p.role}</span>
                         </span>
                         {p.metered ? (
                             p.live ? (
-                                <span className="text-sm text-slate-300 tabular-nums">
+                                <span className="text-sm text-ink-3 tabular-nums">
                                     {p.live.kw != null ? `${num(p.live.kw, 1)} kW` : "–"} · PF {p.live.pf != null ? num(p.live.pf, 2) : "–"} · {p.live.v != null ? `${num(p.live.v, 0)} V` : "–"}
                                 </span>
                             ) : <Badge tone="amber">no recent reading</Badge>
                         ) : <Badge>not metered</Badge>}
-                        <ChevronRight className="h-4 w-4 text-slate-600" />
+                        <ChevronRight className="h-4 w-4 text-faint" />
                     </Link>
                 </li>
             ))}
@@ -187,11 +186,11 @@ export function LoadProfileTab({ project, since, pointId: forced }: { project: P
                     </div>
                     <div className="overflow-x-auto">
                         <table className="text-[11px] border-separate border-spacing-0.5">
-                            <thead><tr><th />{Array.from({ length: 24 }, (_, h) => <th key={h} className="text-slate-500 font-normal w-8">{h}</th>)}</tr></thead>
+                            <thead><tr><th />{Array.from({ length: 24 }, (_, h) => <th key={h} className="text-faint font-normal w-8">{h}</th>)}</tr></thead>
                             <tbody>
                                 {WEEKDAYS.map((d, i) => (
                                     <tr key={d}>
-                                        <td className="text-slate-400 pr-2">{d}</td>
+                                        <td className="text-muted pr-2">{d}</td>
                                         {Array.from({ length: 24 }, (_, h) => {
                                             const c = cell(i + 1, h);
                                             const a = c ? 0.12 + 0.88 * (c.kw / max) : 0;
@@ -203,7 +202,7 @@ export function LoadProfileTab({ project, since, pointId: forced }: { project: P
                             </tbody>
                         </table>
                     </div>
-                    <p className="text-xs text-slate-500">Darker = higher average kW. Columns are the hour starting at that time.</p>
+                    <p className="text-xs text-faint">Darker = higher average kW. Columns are the hour starting at that time.</p>
                 </div>
             )}
         </Panel>
@@ -237,10 +236,10 @@ export function DemandTab({ project, since, pointId: forced }: { project: Portal
                         <div className="h-64">
                             <ResponsiveContainer width="100%" height="100%">
                                 <BarChart data={d.daily_max} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
-                                    <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
-                                    <XAxis dataKey="date" stroke="#64748b" fontSize={11} tickFormatter={(x) => x.slice(5)} />
-                                    <YAxis stroke="#64748b" fontSize={11} unit=" kVA" width={70} />
-                                    <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155" }}
+                                    <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 3" vertical={false} />
+                                    <XAxis dataKey="date" stroke="var(--chart-axis)" fontSize={11} tickFormatter={(x) => x.slice(5)} />
+                                    <YAxis stroke="var(--chart-axis)" fontSize={11} unit=" kVA" width={70} />
+                                    <Tooltip contentStyle={{ background: "var(--tooltip-bg)", color: "var(--tooltip-ink)", border: "1px solid var(--tooltip-border)" }}
                                         formatter={(v: any) => [`${num(v, 1)} kVA`, "daily maximum"]} />
                                     {d.contracted_mdi_kva && <ReferenceLine y={d.contracted_mdi_kva} stroke="#ef4444" strokeDasharray="4 4" label={{ value: "contracted MDI", fill: "#ef4444", fontSize: 10, position: "insideTopRight" }} />}
                                     <Bar dataKey="kva">
@@ -266,32 +265,19 @@ export function DemandTab({ project, since, pointId: forced }: { project: Portal
     );
 }
 
-// ── Power quality ───────────────────────────────────────────────────────────
-export function PowerQualityTab({ project }: { project: PortalProjectDetail }) {
-    const [pointId, setPointId] = usePoint(project);
-    const [days, setDays] = useState(7);
-    const q = useQuery({ queryKey: ["pq", pointId, days], enabled: !!pointId, queryFn: () => apiGet<any>(`/ingestion/points/${pointId}/power-quality?days=${days}`) });
-    const brand = useQuery({ queryKey: ["branding"], queryFn: () => apiGet<any>("/ingestion/branding") });
-    return (
-        <div className="space-y-4">
-            <Panel title="Power quality" subtitle={q.data ? `${q.data.basis}${q.data.days < q.data.requested_days ? ` (the box has been here ${q.data.days} day${q.data.days === 1 ? "" : "s"})` : ""}` : undefined}
-                actions={<div className="flex gap-2">
-                    <PointPicker points={project.points} value={pointId} onChange={setPointId} />
-                    <select className={`${inputClass} w-32`} value={days} onChange={(e) => setDays(Number(e.target.value))}>
-                        {[7, 30, 90].map((x) => <option key={x} value={x}>{x} days</option>)}
-                    </select>
-                </div>}>
-                {!pointId ? <Empty>No metered point.</Empty> : q.isLoading ? <Loading label="Assessing" /> : q.error ? <ErrorBox error={q.error} />
-                    : !q.data.report ? <Empty>No assessment: the point has no box installed.</Empty> : null}
-            </Panel>
-            {q.data?.report && <HealthCheckReport report={q.data.report} brand={brand.data ?? null} forecast={null} summary={null} />}
-        </div>
-    );
-}
+// ── Findings and actions: each finding is a small investigation case (brief §7C) ──
+const CASE_STATUS: Record<string, string> = {
+    open: "Open", investigating: "Investigating", action_planned: "Action planned", action_done: "Action done",
+    verified: "Verified", not_needed: "No action needed",
+};
+const DAY_MS = 86_400_000;
 
-// ── Findings (published; drafts too when the platform shares them, labelled) ──
-export function FindingsTab({ project }: { project: PortalProjectDetail }) {
+export function FindingsTab({ project, assessmentId, role, onInspect }: {
+    project: PortalProjectDetail; assessmentId?: string | null; role?: string | null;
+    onInspect?: (w: { from: string; to: string }) => void;
+}) {
     const q = useQuery({ queryKey: ["findings", project.id], queryFn: () => apiGet<any[]>(`/ingestion/sites/${project.id}/recommendations`) });
+    const cases = useQuery({ queryKey: ["cases", assessmentId], enabled: !!assessmentId, queryFn: () => apiGet<any[]>(`/ingestion/assessments/${assessmentId}/cases`) });
     // A link to #finding-<id> (overview tiles): scroll to it once the findings have loaded.
     useEffect(() => {
         if (!q.data || typeof window === "undefined" || !window.location.hash.startsWith("#finding-")) return;
@@ -300,39 +286,143 @@ export function FindingsTab({ project }: { project: PortalProjectDetail }) {
     const [asked, setAsked] = useState<Record<string, string>>({});
     const notify = useMutation({
         mutationFn: (id: string) => apiSend("POST", `/ingestion/recommendations/${id}/notify`, {}),
-        onSuccess: (_d, id) => setAsked((a) => ({ ...a, [id]: "Grid-IQ will be in touch." })),
-        onError: (e: any, id) => setAsked((a) => ({ ...a, [id]: e?.status === 409 ? "Already with Grid-IQ." : String(e?.message ?? e) })),
+        onSuccess: (_d, id) => setAsked((a) => ({ ...a, [id]: "GridIQ will be in touch." })),
+        onError: (e: any, id) => setAsked((a) => ({ ...a, [id]: e?.status === 409 ? "Already with GridIQ." : String(e?.message ?? e) })),
     });
     if (q.isLoading) return <Loading />;
     if (q.error) return <ErrorBox error={q.error} />;
-    if ((q.data ?? []).length === 0) return <Panel><Empty>No findings for this project yet.</Empty></Panel>;
+    if ((q.data ?? []).length === 0) return <Panel><Empty>No findings for this site yet. A site without findings is a result too: see the Summary for what was measured.</Empty></Panel>;
+    const byId = new Map((cases.data ?? []).map((c) => [c.recommendation_id, c]));
     return (
         <div className="space-y-4">
-            {q.data!.map((f) => (
-                <div key={f.id} id={`finding-${f.id}`} className="scroll-mt-24"><Panel>
-                    <div className="flex items-start justify-between gap-4">
-                        <div>
-                            <div className="flex items-center gap-2 flex-wrap mb-1">
-                                {isDraftFinding(f.review_status) && <Badge tone="blue">Draft · not yet reviewed by Grid-IQ</Badge>}
-                                <span className="text-xs text-slate-400">{findingSource(f.type)}</span>
-                            </div>
-                            <p className="text-xs text-slate-500">{f.meter_name ? `${f.meter_name} · ` : ""}{f.confidence} confidence{f.reviewed_at ? ` · reviewed ${fmtDate(f.reviewed_at)}` : ""}</p>
-                            <h3 className="text-base font-semibold text-white mt-1">{f.title}</h3>
+            {q.data!.map((f) => {
+                const c = byId.get(f.id);
+                const w = f.evidence?.from ? { from: f.evidence.from, to: f.evidence.to } : null;
+                return (
+                    <article key={f.id} id={`finding-${f.id}`} className="scroll-mt-24 rounded-xl border border-line bg-surface/50 p-5" aria-labelledby={`ft-${f.id}`}>
+                        <div className="flex flex-wrap items-center gap-2 mb-1 text-xs">
+                            <Badge tone={f.priority === 1 ? "red" : f.priority === 2 ? "amber" : "grey"}>{f.priority === 1 ? "Material concern" : f.priority === 2 ? "Investigate" : "Note"}</Badge>
+                            <span className="text-muted">{f.confidence ?? "–"} confidence</span>
+                            <span className="text-muted">· {findingSource(f.type)}</span>
+                            {isDraftFinding(f.review_status) ? <Badge tone="blue">Draft · not yet reviewed by GridIQ</Badge> : f.reviewed_at && <span className="text-muted">· reviewed {fmtDate(f.reviewed_at)}</span>}
+                            <span className="ml-auto"><Badge tone={c?.status === "verified" ? "green" : c ? "blue" : "grey"}>{CASE_STATUS[c?.status ?? "open"]}</Badge></span>
                         </div>
-                        {Number(f.estimated_monthly_saving_zar) > 0 && <p className="text-sm text-emerald-300 whitespace-nowrap">{zar(f.estimated_monthly_saving_zar)}/month</p>}
-                    </div>
-                    <div className="grid md:grid-cols-2 gap-4 mt-3 text-sm">
-                        <div><p className="text-xs uppercase text-slate-500 mb-1">What we found</p><p className="text-slate-300 whitespace-pre-line">{f.problem}</p></div>
-                        <div><p className="text-xs uppercase text-slate-500 mb-1">What we recommend</p><p className="text-slate-300 whitespace-pre-line">{f.solution}</p></div>
-                    </div>
-                    {f.evidence?.from && <p className="text-xs text-slate-500 mt-3">Based on {fmtDateTime(f.evidence.from)} – {fmtDateTime(f.evidence.to)} {TZ_LABEL}{f.standard_reference ? ` · ${f.standard_reference}` : ""}</p>}
-                    <div className="flex items-center gap-3 mt-3">
-                        <Button variant="secondary" disabled={notify.isPending || !!asked[f.id]} onClick={() => notify.mutate(f.id)}>Ask Grid-IQ to follow up</Button>
-                        <Button variant="secondary" onClick={() => askConsultant(`Explain this finding for ${project.name} and what we should do first: "${f.title}". ${f.problem ?? ""}`)}>Ask the AI consultant</Button>
-                        {asked[f.id] && <span className="text-sm text-slate-400">{asked[f.id]}</span>}
-                    </div>
-                </Panel></div>
-            ))}
+                        <h3 id={`ft-${f.id}`} className="text-base font-semibold text-ink">{f.title}</h3>
+                        {f.meter_name && <p className="text-xs text-faint">{f.meter_name}</p>}
+                        <ol className="grid md:grid-cols-3 gap-4 mt-3 text-sm">
+                            <li><p className="text-xs uppercase tracking-wide text-faint mb-1">1. Observed</p><p className="text-ink-3 whitespace-pre-line">{f.problem}</p>
+                                {w && <p className="text-xs text-faint mt-1">{fmtDateTime(w.from)} – {fmtDateTime(w.to)} {TZ_LABEL}{f.standard_reference ? ` · ${f.standard_reference}` : ""}</p>}</li>
+                            <li><p className="text-xs uppercase tracking-wide text-faint mb-1">2. Next verification and action</p><p className="text-ink-3 whitespace-pre-line">{f.solution}</p>
+                                {Number(f.estimated_monthly_saving_zar) > 0 && <p className="text-xs text-muted mt-1">Indicative {zar(f.estimated_monthly_saving_zar)}/month from the declared demand tariff; confirm against the bill before relying on it.</p>}</li>
+                            <li><p className="text-xs uppercase tracking-wide text-faint mb-1">3. Follow-up</p>
+                                {c ? (
+                                    <dl className="text-ink-3 space-y-0.5">
+                                        <div><dt className="inline text-faint">Owner: </dt><dd className="inline">{c.owner ?? "not assigned"}</dd></div>
+                                        {c.next_step && <div><dt className="inline text-faint">Next: </dt><dd className="inline">{c.next_step}</dd></div>}
+                                        {c.due_on && <div><dt className="inline text-faint">Due: </dt><dd className="inline">{fmtDate(c.due_on)}</dd></div>}
+                                        {c.verification?.result && <div><dt className="inline text-faint">Verification: </dt><dd className="inline">{String(c.verification.result).replace(/_/g, " ")}{c.verification.note ? `: ${c.verification.note}` : ""}</dd></div>}
+                                        {c.evidence_count > 0 && <div className="text-faint">{c.evidence_count} saved evidence window(s)</div>}
+                                    </dl>
+                                ) : <p className="text-faint">Not tracked yet.</p>}
+                            </li>
+                        </ol>
+                        <div className="flex flex-wrap items-center gap-2 mt-4">
+                            {onInspect && <Button variant="secondary" onClick={() => onInspect(w ?? { from: new Date(Date.now() - DAY_MS).toISOString(), to: new Date().toISOString() })}>Inspect evidence</Button>}
+                            <Button variant="secondary" onClick={() => askConsultant(`Explain this finding for ${project.name} and what we should verify first: "${f.title}". ${f.problem ?? ""}`)}>Ask the consultant</Button>
+                            <Button variant="secondary" disabled={notify.isPending || !!asked[f.id]} onClick={() => notify.mutate(f.id)}>Ask GridIQ to follow up</Button>
+                            {asked[f.id] && <span className="text-sm text-muted">{asked[f.id]}</span>}
+                        </div>
+                        {assessmentId && canEdit(role ?? null) && <CaseEditor f={f} c={c} assessmentId={assessmentId} project={project} />}
+                    </article>
+                );
+            })}
+        </div>
+    );
+}
+
+function CaseEditor({ f, c, assessmentId, project }: { f: any; c: any; assessmentId: string; project: PortalProjectDetail }) {
+    const qc = useQueryClient();
+    const [open, setOpen] = useState<"" | "case" | "verify">("");
+    const [form, setForm] = useState({ owner: c?.owner ?? "", status: c?.status ?? "open", next_step: c?.next_step ?? "", due_on: c?.due_on?.slice(0, 10) ?? "" });
+    const save = useMutation({
+        mutationFn: (body: any) => apiSend("PATCH", `/ingestion/recommendations/${f.id}/case`, body),
+        onSuccess: () => { qc.invalidateQueries({ queryKey: ["cases", assessmentId] }); setOpen(""); },
+    });
+    return (
+        <div className="mt-3 border-t border-line pt-3">
+            <div className="flex gap-3 text-sm">
+                <button type="button" className="text-accent hover:underline" aria-expanded={open === "case"} onClick={() => setOpen(open === "case" ? "" : "case")}>Update follow-up</button>
+                <button type="button" className="text-accent hover:underline" aria-expanded={open === "verify"} onClick={() => setOpen(open === "verify" ? "" : "verify")}>Verify improvement</button>
+            </div>
+            {open === "case" && (
+                <form className="mt-3 grid md:grid-cols-5 gap-3 items-end" onSubmit={(e) => { e.preventDefault(); save.mutate({ owner: form.owner || null, status: form.status, next_step: form.next_step || null, due_on: form.due_on || null }); }}>
+                    <Field label="Owner"><input className={inputClass} value={form.owner} onChange={(e) => setForm({ ...form, owner: e.target.value })} placeholder="e.g. Facilities manager" /></Field>
+                    <Field label="Status">
+                        <select className={inputClass} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+                            {Object.entries(CASE_STATUS).filter(([k]) => k !== "verified").map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                        </select>
+                    </Field>
+                    <Field label="Next step"><input className={inputClass} value={form.next_step} onChange={(e) => setForm({ ...form, next_step: e.target.value })} /></Field>
+                    <Field label="Due"><input type="date" className={inputClass} value={form.due_on} onChange={(e) => setForm({ ...form, due_on: e.target.value })} /></Field>
+                    <Button type="submit" disabled={save.isPending}>Save</Button>
+                    <div className="md:col-span-5"><ErrorBox error={save.error} /></div>
+                </form>
+            )}
+            {open === "verify" && <VerifyPanel f={f} project={project} onSave={(v) => save.mutate({ status: "verified", verification: v })} saving={save.isPending} error={save.error} />}
+        </div>
+    );
+}
+
+/** Before/after on matched windows of the same point (brief §7C "Verify improvement"). */
+function VerifyPanel({ f, project, onSave, saving, error }: { f: any; project: PortalProjectDetail; onSave: (v: any) => void; saving: boolean; error: unknown }) {
+    const point = project.points.find((p) => p.device_id === f.meter_id) ?? defaultPoint(project.points);
+    const now = Date.now();
+    const len = f.evidence?.from ? Math.max(3_600_000, new Date(f.evidence.to).getTime() - new Date(f.evidence.from).getTime()) : 2 * DAY_MS;
+    const toLocal = (ms: number) => new Date(ms + 2 * 3_600_000).toISOString().slice(0, 16);
+    const fromLocal = (v: string) => new Date(new Date(`${v}:00Z`).getTime() - 2 * 3_600_000).toISOString();
+    const [w, setW] = useState({
+        a_from: toLocal(f.evidence?.from ? new Date(f.evidence.from).getTime() : now - 2 * len), a_to: toLocal(f.evidence?.to ? new Date(f.evidence.to).getTime() : now - len),
+        b_from: toLocal(now - len), b_to: toLocal(now),
+    });
+    const [result, setResult] = useState("improved");
+    const [note, setNote] = useState("");
+    const q = useQuery({
+        queryKey: ["compare", point?.id, w], enabled: !!point,
+        queryFn: () => apiGet<any>(`/ingestion/points/${point!.id}/compare?a_from=${fromLocal(w.a_from)}&a_to=${fromLocal(w.a_to)}&b_from=${fromLocal(w.b_from)}&b_to=${fromLocal(w.b_to)}`),
+    });
+    const row = (label: string, k: (x: any) => any, d = 1) => (
+        <tr><td className="py-1 pr-4 text-muted">{label}</td><td className="pr-4">{q.data ? num(k(q.data.before), d) : "…"}</td><td>{q.data ? num(k(q.data.after), d) : "…"}</td></tr>
+    );
+    return (
+        <div className="mt-3 space-y-3">
+            <div className="grid md:grid-cols-4 gap-3">
+                {(["a_from", "a_to", "b_from", "b_to"] as const).map((k) => (
+                    <Field key={k} label={`${k.startsWith("a") ? "Before" : "After"} ${k.endsWith("from") ? "from" : "to"} (${TZ_LABEL})`}>
+                        <input type="datetime-local" className={inputClass} value={w[k]} onChange={(e) => e.target.value && setW({ ...w, [k]: e.target.value })} />
+                    </Field>
+                ))}
+            </div>
+            {q.error ? <ErrorBox error={q.error} /> : (
+                <table className="text-sm tabular-nums">
+                    <thead><tr className="text-left text-faint"><th className="pr-4 font-normal">At {point?.name}</th><th className="pr-4 font-normal">Before ({q.data?.before.values ?? "…"} values)</th><th className="font-normal">After ({q.data?.after.values ?? "…"} values)</th></tr></thead>
+                    <tbody>
+                        {row("Average kW", (x) => x.kw_avg)}{row("kW 95th percentile", (x) => x.kw_p95)}{row("Highest kW", (x) => x.kw_max)}
+                        {row("Loaded PF", (x) => x.pf_loaded_avg, 3)}{row("THD-V P95, phase A (%)", (x) => x.thd_v_p95.A, 2)}
+                        {row("Lowest voltage (V)", (x) => x.v_min)}{row("Current unbalance P95 (%)", (x) => x.current_unbalance_p95)}
+                    </tbody>
+                </table>
+            )}
+            {q.data && <p className="text-xs text-faint">{q.data.basis}{q.data.comparable ? "" : " The two windows differ in length: compare with care."}</p>}
+            <form className="grid md:grid-cols-4 gap-3 items-end" onSubmit={(e) => { e.preventDefault(); onSave({ before: { from: fromLocal(w.a_from), to: fromLocal(w.a_to) }, after: { from: fromLocal(w.b_from), to: fromLocal(w.b_to) }, result, note: note || null }); }}>
+                <Field label="Result">
+                    <select className={inputClass} value={result} onChange={(e) => setResult(e.target.value)}>
+                        <option value="improved">Improved</option><option value="no_change">No change</option><option value="worse">Worse</option><option value="inconclusive">Inconclusive (conditions differed)</option>
+                    </select>
+                </Field>
+                <Field label="What changed on site"><input className={inputClass} value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. HVAC schedule changed on 5 Nov" /></Field>
+                <Button type="submit" disabled={saving || !q.data}>Record verification</Button>
+                <div className="md:col-span-4"><ErrorBox error={error} /></div>
+            </form>
         </div>
     );
 }
@@ -348,15 +438,15 @@ export function ReportsTab({ project, role }: { project: PortalProjectDetail; ro
         <AssessmentDeliverables projectId={project.id} />
         <Panel title="Reports" subtitle="Reports GridIQ has reviewed and issued. A share link shows the report to someone without an account while the assessment is live or in its delivery period.">
             {(q.data ?? []).length === 0 ? <Empty>No published report yet.</Empty> : (
-                <ul className="divide-y divide-slate-800">
+                <ul className="divide-y divide-line">
                     {q.data!.map((r) => (
                         <li key={r.id} className="py-3">
                             <div className="flex items-center gap-4">
                                 <div className="flex-1">
-                                    <p className="text-sm text-white">{r.title ?? "Report"}</p>
-                                    <p className="text-xs text-slate-500">{fmtDate(r.period_start)} – {fmtDate(new Date(new Date(r.period_end).getTime() - 1))} · published {fmtDate(r.published_at)}</p>
+                                    <p className="text-sm text-ink">{r.title ?? "Report"}</p>
+                                    <p className="text-xs text-faint">{fmtDate(r.period_start)} – {fmtDate(new Date(new Date(r.period_end).getTime() - 1))} · published {fmtDate(r.published_at)}</p>
                                 </div>
-                                {r.pdf_path && <a className="text-sm text-blue-300 hover:underline" href={apiUrl(`/ingestion/reports/${r.id}/pdf`)} target="_blank" rel="noreferrer">PDF</a>}
+                                {r.pdf_path && <a className="text-sm text-accent hover:underline" href={apiUrl(`/ingestion/reports/${r.id}/pdf`)} target="_blank" rel="noreferrer">PDF</a>}
                                 {canEdit(role) && <Button variant="secondary" onClick={() => setSharing(sharing === r.id ? null : r.id)}>Share link</Button>}
                             </div>
                             {sharing === r.id && <ShareForm project={project} reportId={r.id} />}
@@ -388,18 +478,18 @@ function Deliverables({ a }: { a: Assessment }) {
         <Panel title={`${a.reference} deliverables`} subtitle={a.live ? "Live assessment: the provisional preview covers the elapsed period only and is not final." : `Final files, available until ${fmtDate(a.delivery_until)}.`}>
             {a.live && (
                 <p className="text-sm mb-3">
-                    <a className="text-blue-300 hover:underline" href={apiUrl(`/ingestion/assessments/${a.id}/preview.pdf?kind=overview`)} target="_blank" rel="noreferrer">Provisional overview (PDF)</a>
+                    <a className="text-accent hover:underline" href={apiUrl(`/ingestion/assessments/${a.id}/preview.pdf?kind=overview`)} target="_blank" rel="noreferrer">Provisional overview (PDF)</a>
                     {" · "}
-                    <a className="text-blue-300 hover:underline" href={apiUrl(`/ingestion/assessments/${a.id}/preview.pdf?kind=power_quality`)} target="_blank" rel="noreferrer">Provisional power quality (PDF)</a>
+                    <a className="text-accent hover:underline" href={apiUrl(`/ingestion/assessments/${a.id}/preview.pdf?kind=power_quality`)} target="_blank" rel="noreferrer">Provisional power quality (PDF)</a>
                 </p>
             )}
             {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : (q.data?.files ?? []).length === 0
                 ? <Empty>{a.live ? "The final reports and data package are produced when the assessment ends." : "Being prepared."}</Empty> : (
                     <ul className="text-sm space-y-1">{q.data!.files.map((f) => (
-                        <li key={f.name}><a className="text-blue-300 hover:underline" href={`${origin}${f.url}`}>{f.name}</a> <span className="text-xs text-slate-500">{f.title}</span></li>
+                        <li key={f.name}><a className="text-accent hover:underline" href={`${origin}${f.url}`}>{f.name}</a> <span className="text-xs text-faint">{f.title}</span></li>
                     ))}</ul>
                 )}
-            {(q.data?.pending_review ?? []).length > 0 && <p className="text-xs text-slate-500 mt-2">In engineering review: {q.data!.pending_review.join(", ")}.</p>}
+            {(q.data?.pending_review ?? []).length > 0 && <p className="text-xs text-faint mt-2">In engineering review: {q.data!.pending_review.join(", ")}.</p>}
         </Panel>
     );
 }
@@ -419,9 +509,9 @@ function ShareForm({ project, reportId }: { project: PortalProjectDetail; report
         const link = `${window.location.origin}${share.data.path}`;
         return (
             <div className="mt-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm">
-                <p className="text-emerald-300">Link created. Copy it now: it is shown only once.</p>
+                <p className="text-ok">Link created. Copy it now: it is shown only once.</p>
                 <input readOnly className={`${inputClass} mt-2 font-mono text-xs`} value={link} onFocus={(e) => e.target.select()} />
-                <p className="text-xs text-slate-500 mt-1">Expires {fmtDate(share.data.expires_at)}.</p>
+                <p className="text-xs text-faint mt-1">Expires {fmtDate(share.data.expires_at)}.</p>
             </div>
         );
     }
