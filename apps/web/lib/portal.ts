@@ -20,8 +20,10 @@ export interface PortalTiles {
 }
 
 /** Open the AI consultant chat (components/dashboard/ChatWidget.tsx) with a question. */
-export function askConsultant(text: string) {
-    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("gridiq:ask", { detail: text }));
+export interface AskWindow { point_id: string; from: string; to: string }
+/** Optionally with a window: the consultant then answers from that window's own measurements. */
+export function askConsultant(text: string, win?: AskWindow) {
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("gridiq:ask", { detail: win ? { text, window: win } : text }));
 }
 
 /** A finding the client sees before GridIQ has reviewed it. */

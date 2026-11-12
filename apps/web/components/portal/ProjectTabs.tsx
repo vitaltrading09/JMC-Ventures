@@ -374,7 +374,7 @@ export function CaseEditor({ f, c, assessmentId, project }: { f: any; c: any; as
 }
 
 /** Before/after on matched windows of the same point (brief §7C "Verify improvement"). */
-function VerifyPanel({ f, project, onSave, saving, error }: { f: any; project: PortalProjectDetail; onSave: (v: any) => void; saving: boolean; error: unknown }) {
+export function VerifyPanel({ f, project, onSave, saving, error }: { f: any; project: PortalProjectDetail; onSave: (v: any) => void; saving: boolean; error: unknown }) {
     const point = project.points.find((p) => p.device_id === f.meter_id) ?? defaultPoint(project.points);
     const now = Date.now();
     const len = f.evidence?.from ? Math.max(3_600_000, new Date(f.evidence.to).getTime() - new Date(f.evidence.from).getTime()) : 2 * DAY_MS;

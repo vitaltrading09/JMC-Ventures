@@ -270,6 +270,17 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/compare?a_from=${iso(now - 40 * 86_400_000)}&a_to=${iso(now - 39 * 86_400_000)}&b_from=${iso(now - 10 * 3_600_000)}&b_to=${iso(now)}`)).status, 400);
     });
 
+    await t.test('the consultant explains a window of the caller\'s own assessment only', async () => {
+        const w = { point_id: A.point, from: iso(now - 3 * 3_600_000), to: iso(now) };
+        const ok = await call(A.adminToken, 'POST', `/assessments/${A.assessment}/chat`, { message: 'Explain this window', window: w });
+        assert.strictEqual(ok.status, 200, ok.text);
+        const body = JSON.parse(ok.text);
+        assert.match(body.answer, /### In short/);
+        assert.ok(body.evidence.includes('window'));
+        assert.strictEqual((await call(A.adminToken, 'POST', `/assessments/${A.assessment}/chat`, { message: 'x', window: { ...w, point_id: B.point } })).status, 400);
+        assert.strictEqual((await call(A.adminToken, 'POST', `/assessments/${B.assessment}/chat`, { message: 'x', window: { ...w, point_id: B.point } })).status, 403);
+    });
+
     await t.test('provisional share links and booking requests', async () => {
         assert.strictEqual((await call(A.viewerToken, 'POST', `/assessments/${A.assessment}/preview-shares`, {})).status, 403);
         const made = await call(A.adminToken, 'POST', `/assessments/${A.assessment}/preview-shares`, { kind: 'overview', label: 'for the board' });

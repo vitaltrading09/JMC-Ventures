@@ -219,7 +219,7 @@ export function InvestigateView({ assessment, pointId, points, role, initial, fi
                     </details>
                 )}
                 <div className="mt-4 flex flex-wrap gap-2">
-                    <Button variant="secondary" onClick={() => askConsultant(`Explain what happened at ${points.find((p) => p.id === pointId)?.name ?? "this point"} between ${fmtDateTime(win.from)} and ${fmtDateTime(win.to)} ${TZ_LABEL}: power, voltage, PF and distortion together.`)}>Explain this window</Button>
+                    <Button variant="secondary" onClick={() => askConsultant(`Explain what happened at ${points.find((p) => p.id === pointId)?.name ?? "this point"} between ${fmtDateTime(win.from)} and ${fmtDateTime(win.to)} ${TZ_LABEL}.`, { point_id: pointId, from: win.from, to: win.to })}>Explain this window</Button>
                 </div>
             </Panel>
 

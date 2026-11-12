@@ -12,6 +12,7 @@ import { usePathname } from "next/navigation";
 import { MessageSquare, X, Send, Lock } from "lucide-react";
 import { apiGet, apiSend, fmtDateTime, TZ_LABEL } from "@/lib/api";
 import { usePortalAssessments } from "@/components/portal/AssessmentBanner";
+import type { AskWindow } from "@/lib/portal";
 
 interface Msg { role: "user" | "assistant"; content: string; provider?: string | null; basis?: string; evidence?: string[] }
 
@@ -24,7 +25,7 @@ const SUGGESTIONS = [
 const EVIDENCE_LABEL: Record<string, string> = {
     demand: "Demand", energy: "Energy", coverage: "Data coverage", executive: "Summary", patterns: "Operating pattern",
     "power_quality.thd_v": "Voltage THD", "power_quality.pf": "Power factor", "power_quality.voltage": "Voltage",
-    feasibility_readiness: "Feasibility handover",
+    feasibility_readiness: "Feasibility handover", window: "The selected window",
 };
 
 export function ChatWidget() {
@@ -32,7 +33,7 @@ export function ChatWidget() {
     const [input, setInput] = useState("");
     const [busy, setBusy] = useState(false);
     const [msgs, setMsgs] = useState<Msg[]>([]);
-    const [pending, setPending] = useState<string | null>(null);
+    const [pending, setPending] = useState<{ text: string; window?: AskWindow } | null>(null);
     const [sel, setSel] = useState<string | null>(null);
     const end = useRef<HTMLDivElement>(null);
     const bound = useRef<string | null>(null);   // the assessment answers may be shown for
@@ -57,7 +58,11 @@ export function ChatWidget() {
     }, [open, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
-        const onAsk = (e: Event) => { const q = (e as CustomEvent<string>).detail; setOpen(true); if (q) setPending(q); };
+        const onAsk = (e: Event) => {
+            const d = (e as CustomEvent<string | { text: string; window?: AskWindow }>).detail;
+            setOpen(true);
+            if (typeof d === "string" ? d : d?.text) setPending(typeof d === "string" ? { text: d } : d);
+        };
         window.addEventListener("gridiq:ask", onAsk);
         return () => window.removeEventListener("gridiq:ask", onAsk);
     }, []);
@@ -67,9 +72,9 @@ export function ChatWidget() {
         return () => { delete document.documentElement.dataset.consultant; };
     }, [open]);
     useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [msgs]);
-    useEffect(() => { if (open && pending && current && !busy) { const q = pending; setPending(null); send(q); } }, [open, pending, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    useEffect(() => { if (open && pending && current && !busy) { const q = pending; setPending(null); send(q.text, q.window); } }, [open, pending, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const send = async (text: string) => {
+    const send = async (text: string, win?: AskWindow) => {
         if (!text.trim() || !current) return;
         const id = current.id;
         setInput("");
@@ -77,7 +82,7 @@ export function ChatWidget() {
         setBusy(true);
         try {
             const r = await apiSend<{ answer: string; provider: string; basis: { period_from: string; period_to: string; provisional: boolean; coverage: { point: string; fraction: number | null }[] }; evidence: string[] }>(
-                "POST", `/ingestion/assessments/${id}/chat`, { message: text });
+                "POST", `/ingestion/assessments/${id}/chat`, win ? { message: text, window: win } : { message: text });
             if (bound.current !== id) return;   // the user moved to another site meanwhile
             const cov = r.basis.coverage.map((c) => `${c.point} ${c.fraction === null ? "–" : Math.round(c.fraction * 100) + " %"}`).join(", ");
             const basis = `${fmtDateTime(r.basis.period_from)} → ${fmtDateTime(r.basis.period_to)} ${TZ_LABEL}${r.basis.provisional ? " · provisional" : ""} · data ${cov}`;

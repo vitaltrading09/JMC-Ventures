@@ -16,6 +16,7 @@ import { siteHref } from "@/lib/siteNav";
 import type { Assessment } from "@/lib/assessments";
 import { CaseEditor } from "@/components/portal/ProjectTabs";
 import { InvestigateView } from "@/components/portal/InvestigateView";
+import { NextStep } from "@/components/portal/NextStep";
 import { Empty } from "@/components/ops/ui";
 
 export function FindingDetail({ f, c, project, live, role, findings }: {
@@ -53,6 +54,7 @@ export function FindingDetail({ f, c, project, live, role, findings }: {
             </header>
 
             <Track status={c?.status ?? "open"} />
+            <NextStep f={f} c={c} assessmentId={live?.id ?? null} project={project} role={role} />
 
             <div className="grid gap-4 lg:grid-cols-3">
                 <Step n={1} title="What we measured">

@@ -150,3 +150,29 @@ test('load-duration curve: highest first, thinned, ends kept', () => {
     assert.ok(c.every((x, i) => i === 0 || x.kva <= c[i - 1].kva));
     assert.deepStrictEqual(loadDuration([], 10), []);
 });
+
+const C = require('../dist/consultant.js');
+
+test('window answer: distortion that follows the load is attributed to on-site equipment, as a hypothesis', () => {
+    const rows = Array.from({ length: 72 }, (_, i) => {
+        const load = i >= 24 && i < 60 ? 500 : 100;
+        return { bucket: new Date(Date.parse('2026-11-06T06:00:00Z') + i * 600_000).toISOString(), power_active_total_avg: load, power_active_total_max: load + 20,
+            power_factor_total_avg: 0.95, voltage_a_avg: 230, voltage_a_min: 228, thd_voltage_a_avg: load > 200 ? 9.1 : 3.0, thd_voltage_b_avg: load > 200 ? 8.8 : 2.9, current_unbalance_avg: 4 };
+    });
+    const f = C.windowFacts(rows);
+    assert.strictEqual(f.values, 72);
+    assert.strictEqual(f.kw_max, 520);
+    assert.ok(f.corr_kw_thd > 0.9);
+    const w = { from: new Date('2026-11-06T06:00:00Z'), to: new Date('2026-11-06T18:00:00Z'), point: 'HVAC Feed' };
+    const a = C.windowAnswer(f, w, 72, true).answer;
+    for (const h of ['### In short', '### What the data shows', '### What it means', '### What you can expect to find on site', '### Basis']) assert.ok(a.includes(h), h);
+    assert.match(a, /distortion went above 8 %/);
+    assert.match(a, /rose and fell with the site load/);
+    assert.match(a, /08:00 to 2026-11-06 20:00 SAST/);
+    assert.doesNotMatch(a, /capacitor bank that is off/);   // no power-factor advice when PF is fine
+});
+
+test('window answer: an empty window says so', () => {
+    const a = C.windowAnswer(C.windowFacts([]), { from: new Date('2026-11-06T06:00:00Z'), to: new Date('2026-11-06T07:00:00Z'), point: 'X' }, 6, false).answer;
+    assert.match(a, /No measurements were received/);
+});
