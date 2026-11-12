@@ -25,10 +25,41 @@ export function AssessmentBanner({ projectId }: { projectId?: string }) {
             </div>
         ) : null;
     }
+    if (!projectId) return <Compact list={mine} />;
     return (
         <div className="space-y-3">
-            {mine.map((a) => <One key={a.id} a={a} showSite={!projectId} />)}
+            {mine.map((a) => <One key={a.id} a={a} showSite={false} />)}
         </div>
+    );
+}
+
+/** Overview: one compact row per assessment; the long access/retention text lives on the site page. */
+function Compact({ list }: { list: Assessment[] }) {
+    const order = (a: Assessment) => (a.live ? 0 : a.effective_status === "ended" ? 2 : 1);
+    const rows = [...list].sort((a, b) => order(a) - order(b) || (a.remaining_ms ?? 0) - (b.remaining_ms ?? 0));
+    return (
+        <section aria-label="Your assessments" className="rounded-xl border border-line bg-surface/50">
+            <h2 className="px-4 pt-3 text-sm font-semibold text-ink">Your assessments</h2>
+            <ul className="divide-y divide-line">
+                {rows.map((a) => {
+                    const pct = Math.round(elapsedFraction(a) * 100);
+                    return (
+                        <li key={a.id} className="px-4 py-2.5 grid grid-cols-1 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1.6fr)_minmax(0,1fr)] gap-x-4 gap-y-1 items-center text-sm">
+                            <a href={`/portal/projects/${a.project_id}`} className="text-ink font-medium hover:underline truncate">{a.project_name} <span className="text-faint font-normal tabular-nums">· {a.reference}</span></a>
+                            <span className="text-muted tabular-nums text-[13px]">{a.start_at ? `${fmtDateTime(a.start_at)} → ${fmtDateTime(a.effective_end_at)} ${TZ_LABEL}` : `${a.duration_days}-day assessment, not started`}</span>
+                            {a.live ? (
+                                <span className="flex items-center gap-2">
+                                    <span className="h-1.5 flex-1 rounded-full bg-surface-3 overflow-hidden" title={`${pct} % elapsed`}><span className="block h-full bg-emerald-500/80" style={{ width: `${pct}%` }} /></span>
+                                    <span className="text-ink-3 tabular-nums whitespace-nowrap">{a.remaining} left</span>
+                                </span>
+                            ) : a.effective_status === "ended" ? (
+                                <span className="text-muted inline-flex items-center gap-1"><Lock className="h-3.5 w-3.5" aria-hidden />Ended{a.delivery_open && a.delivery_until ? ` · reports until ${fmtDate(a.delivery_until)}` : ""}</span>
+                            ) : <span className="text-muted">Starts when the meter is commissioned</span>}
+                        </li>
+                    );
+                })}
+            </ul>
+        </section>
     );
 }
 

@@ -13,25 +13,37 @@ import { PHASE } from "@/lib/summary";
 import { Panel, Empty, Table, Badge } from "@/components/ops/ui";
 
 const SAST = 2 * 3_600_000;
-const tick = (iso: string) => { const d = new Date(new Date(iso).getTime() + SAST); return `${d.getUTCDate()}/${d.getUTCMonth() + 1} ${String(d.getUTCHours()).padStart(2, "0")}h`; };
+const tick = (ms: number) => { const d = new Date(ms + SAST); return `${d.getUTCDate()}/${d.getUTCMonth() + 1} ${String(d.getUTCHours()).padStart(2, "0")}h`; };
 
 export function PowerQualityView({ detail, period }: { detail: any; period: { from: string; to: string } }) {
     if (!detail) return <Panel><Empty>No measurement point in this assessment.</Empty></Panel>;
     const pq = detail.power_quality, hs = detail.hourly_series;
     const range = `${fmtDateTime(period.from)} – ${fmtDateTime(period.to)} ${TZ_LABEL}`;
-    const data = (hs?.t ?? []).map((t: string, i: number) => ({ t, va: hs.v_a[i], vb: hs.v_b[i], vc: hs.v_c[i], ta: hs.thd_v_a[i], tb: hs.thd_v_b[i], tc: hs.thd_v_c[i] }));
+    // A row for every hour of the observed window: hours without data stay empty,
+    // so the chart shows the gap instead of joining the points either side of it.
+    const data = (() => {
+        const H = 3_600_000;
+        const byHour = new Map<number, any>();
+        (hs?.t ?? []).forEach((t: string, i: number) => byHour.set(new Date(t).getTime(), { va: hs.v_a[i], vb: hs.v_b[i], vc: hs.v_c[i], ta: hs.thd_v_a[i], tb: hs.thd_v_b[i], tc: hs.thd_v_c[i] }));
+        const start = Math.floor(new Date(period.from).getTime() / H) * H, end = new Date(period.to).getTime();
+        const out: any[] = [];
+        for (let ms = start; ms < end && out.length < 24 * 95; ms += H) out.push({ ms, t: new Date(ms).toISOString(), ...(byHour.get(ms) ?? {}) });
+        return out;
+    })();
+    const missing = data.filter((d: any) => d.va == null && d.ta == null).length;
     const nominal = pq?.nominal_v ?? 230;
     const has = (k: string) => data.some((d: any) => d[k] !== null && d[k] !== undefined);
     const lines = (keys: [string, keyof typeof PHASE][]) => keys.filter(([k]) => has(k)).map(([k, ph]) => (
         <Line key={k} dataKey={k} name={PHASE[ph].label} stroke={PHASE[ph].color} strokeDasharray={PHASE[ph].dash} dot={false} strokeWidth={1.6} isAnimationActive={false} connectNulls={false} />
     ));
-    const axis = <XAxis dataKey="t" stroke="var(--chart-axis)" fontSize={11} tickFormatter={tick} minTickGap={40} />;
-    const tip = <Tooltip contentStyle={{ background: "var(--tooltip-bg)", color: "var(--tooltip-ink)", border: "1px solid var(--tooltip-border)", fontSize: 12 }} labelFormatter={(t) => `${fmtDateTime(t)} ${TZ_LABEL} (hour average)`} />;
+    const axis = <XAxis dataKey="ms" type="number" scale="time" domain={["dataMin", "dataMax"]} stroke="var(--chart-axis)" fontSize={11} tickFormatter={tick} minTickGap={40} />;
+    const tip = <Tooltip contentStyle={{ background: "var(--tooltip-bg)", color: "var(--tooltip-ink)", border: "1px solid var(--tooltip-border)", fontSize: 12 }} labelFormatter={(ms) => `${fmtDateTime(new Date(Number(ms)))} ${TZ_LABEL} (hour average)`} />;
 
     return (
         <div className="space-y-6">
             <Panel title="Screening basis" subtitle={range}>
                 <p className="text-sm text-ink-3">{pq.verdict.type === "formal" ? "Formal assessment basis met: " : "Screening only: "}{pq.verdict.reason}</p>
+                {missing > 0 && <p className="text-sm text-warn mt-1">{missing} of {data.length} hours in this window have no measurements; they show as gaps in the charts.</p>}
                 <p className="text-xs text-faint mt-1">Statistics below use 10-minute values; the charts show hourly averages for readability, so short peaks are lower in the charts than in the tables.</p>
             </Panel>
 

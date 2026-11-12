@@ -89,6 +89,8 @@ export function ChatWidget() {
     };
 
     if (!open) {
+        // A site page has the Consultant button in its header: no floating button over the content.
+        if (onScreen) return null;
         return (
             <button onClick={() => setOpen(true)} aria-label="Open the GridIQ consultant"
                 className="fixed bottom-6 right-6 z-40 h-12 rounded-full bg-blue-600 px-4 text-white shadow-lg hover:bg-blue-500 flex items-center gap-2 print:hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-300">

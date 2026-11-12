@@ -13,7 +13,7 @@ export default function PortalLayout({ children }: { children: React.ReactNode }
                 <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded focus:bg-surface focus:px-3 focus:py-2">Skip to content</a>
                 <PortalSidebar />
                 <div className="flex-1 lg:ml-60 min-w-0 pt-12 lg:pt-0 consultant-shift">
-                    <main id="main" className="px-4 py-5 sm:p-6 lg:p-8 max-w-[1500px] text-[15px]">{children}</main>
+                    <main id="main" className="px-4 py-5 sm:p-6 lg:p-8 pb-24 sm:pb-24 lg:pb-24 max-w-[1500px] text-[15px]">{children}</main>
                 </div>
                 {/* The consultant, bound to the site on screen (docked drawer). */}
                 <ChatWidget />

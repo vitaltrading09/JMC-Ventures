@@ -57,3 +57,7 @@ body {
   html[data-consultant="open"] .consultant-shift { margin-right: 400px; }
 }
 .consultant-shift { transition: margin-right 150ms ease; }
+
+/* Horizontally scrollable tab rows without the platform scrollbar arrows. */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

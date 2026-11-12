@@ -272,7 +272,7 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         const iv = await pool.query(`
             SELECT bucket, kva_demand, kw_demand, minutes FROM point_readings_30m
             WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3
-              AND (minutes >= 24 OR ($4 > 60 AND n * $4 >= 0.8 * 1800))
+              AND (minutes >= 24 OR ($4::float8 > 60 AND n * $4::float8 >= 0.8 * 1800))
             ORDER BY bucket`, [p.id, w.from, w.to, spacing]);
         const rows = iv.rows.map((x) => ({ bucket: x.bucket, kva: num(x.kva_demand), kw: num(x.kw_demand) }));
         const top = [...rows].filter((x) => x.kva !== null).sort((a, b) => b.kva! - a.kva!).slice(0, 5);

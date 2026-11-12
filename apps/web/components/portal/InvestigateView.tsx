@@ -21,6 +21,17 @@ const H = 3_600_000, D = 24 * H;
 const SAST = 2 * H;
 export interface Window { from: string; to: string }
 
+/** Inserts an empty row where buckets are missing, so lines break at gaps instead of bridging them. */
+function withGaps(rows: any[], widthMs: number) {
+    const out: any[] = [];
+    rows.forEach((r, i) => {
+        if (i > 0 && new Date(r.t).getTime() - new Date(rows[i - 1].t).getTime() > 1.5 * widthMs)
+            out.push({ gap: true, t: new Date(new Date(rows[i - 1].t).getTime() + widthMs).toISOString(), ms: new Date(rows[i - 1].t).getTime() + widthMs });
+        out.push(r);
+    });
+    return out;
+}
+
 const toLocal = (iso: string) => new Date(new Date(iso).getTime() + SAST).toISOString().slice(0, 16);
 const fromLocal = (v: string) => new Date(new Date(`${v}:00Z`).getTime() - SAST).toISOString();
 const tick = (ms: number, span: number) => {
@@ -54,7 +65,7 @@ export function InvestigateView({ assessment, pointId, points, role, initial, fi
         queryFn: () => apiGet<any>(`/ingestion/points/${pointId}/investigate?from=${encodeURIComponent(win.from)}&to=${encodeURIComponent(win.to)}`),
     });
     const evidence = useQuery({ queryKey: ["evidence", assessment.id], queryFn: () => apiGet<any[]>(`/ingestion/assessments/${assessment.id}/evidence`) });
-    const rows = useMemo(() => (q.data?.rows ?? []).map((x: any) => ({
+    const rows = useMemo(() => withGaps((q.data?.rows ?? []), (q.data?.bucket_seconds ?? 60) * 1000).map((x: any) => x.gap ? x : ({
         ...x, ms: new Date(x.t).getTime(),
         kw_band: x.kw_min != null && x.kw_max != null ? [x.kw_min, x.kw_max] : null,
         va_band: x.va_min != null ? [x.va_min, x.va_max] : null, vb_band: x.vb_min != null ? [x.vb_min, x.vb_max] : null, vc_band: x.vc_min != null ? [x.vc_min, x.vc_max] : null,

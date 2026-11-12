@@ -59,7 +59,7 @@ export default function PortalProjectPage() {
             <Link href="/portal/projects" className="inline-flex items-center text-sm text-muted hover:text-ink"><ArrowLeft className="h-4 w-4 mr-1" />Sites</Link>
             <PageHeader title={p.name} subtitle={[p.end_client_name, p.address].filter(Boolean).join(" · ")} />
             {live ? <SiteHeader a={live} summary={s} pointId={effectivePoint} onPoint={setPointId} /> : <AssessmentBanner projectId={p.id} />}
-            <nav aria-label="Site views" className="flex gap-1 border-b border-line overflow-x-auto" role="tablist">
+            <nav aria-label="Site views" className="flex gap-1 border-b border-line overflow-x-auto no-scrollbar" role="tablist">
                 {tabs.map(([k, label]) => (
                     <button key={k} role="tab" aria-selected={current === k} onClick={() => setTab(k)}
                         className={`px-3 py-2 text-[15px] whitespace-nowrap border-b-2 -mb-px focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${current === k ? "border-blue-500 text-ink" : "border-transparent text-muted hover:text-ink"}`}>{label}</button>

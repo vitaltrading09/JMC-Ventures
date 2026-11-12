@@ -195,14 +195,14 @@ export function LoadProfileTab({ project, since, pointId: forced }: { project: P
                                             const c = cell(i + 1, h);
                                             const a = c ? 0.12 + 0.88 * (c.kw / max) : 0;
                                             return <td key={h} title={c ? `${d} ${h}:00 – ${num(c.kw, 1)} kW (${c.hours} h)` : "no data"}
-                                                className="w-8 h-6 rounded" style={{ background: c ? `rgba(59,130,246,${a})` : "#0f172a" }} />;
+                                                className="w-8 h-6 rounded" style={{ background: c ? `rgba(59,130,246,${a})` : "rgb(var(--c-surface-2))", outline: c ? undefined : "1px dashed rgb(var(--c-line-strong))", outlineOffset: -1 }} />;
                                         })}
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
                     </div>
-                    <p className="text-xs text-faint">Darker = higher average kW. Columns are the hour starting at that time.</p>
+                    <p className="text-xs text-faint">Darker blue = higher average kW; dashed grey = no data in that hour. Columns are the hour starting at that time.</p>
                 </div>
             )}
         </Panel>
