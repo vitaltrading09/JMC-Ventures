@@ -78,7 +78,7 @@ function PQRows({ pq }: { pq: any }) {
     return (
         <section className="rounded-2xl bg-surface p-6 shadow-sm ring-1 ring-line">
             <p className="text-xs font-semibold uppercase tracking-wider text-faint">Supply and installation health</p>
-            <h3 className="mt-1 text-lg font-semibold text-ink">{flagged === 0 ? "Everything measured so far is within the screening limits." : `${flagged} of ${rows.length} measures need a closer look.`}</h3>
+            <h3 className="mt-1 text-lg font-semibold text-ink">{flagged === 0 ? "Everything measured so far is within the screening limits." : `${flagged} of ${rows.length} measures ${flagged === 1 ? "needs" : "need"} a closer look.`}</h3>
             <ul className="mt-5 divide-y divide-line">
                 {rows.map((r) => (
                     <li key={r.name} className="grid gap-x-6 gap-y-2 py-4 md:grid-cols-[180px_minmax(0,1fr)_minmax(0,1.1fr)] items-center">
@@ -180,12 +180,12 @@ function PQDetail({ detail, period, pointId }: { detail: any; period: { from: st
                 )}
             </div>
 
-            <div className="grid xl:grid-cols-2 gap-6">
+            <div className="grid 2xl:grid-cols-2 gap-6">
                 <Panel title="Voltage statistics" subtitle="10-minute values">
                     {pq.voltage.length === 0 ? <Empty>Not measured.</Empty> : (
-                        <Table head={["Phase", "Min", "P5", "P95", "Max", "Outside ±10 %"]}>
+                        <Table head={["Phase", "Min (V)", "P5 (V)", "P95 (V)", "Max (V)", "Outside ±10 %"]}>
                             {pq.voltage.map((v: any) => (
-                                <tr key={v.phase} className="tabular-nums"><td className="py-1.5 pr-4">{v.phase}</td><td className="pr-4">{v.min} V</td><td className="pr-4">{v.p05} V</td><td className="pr-4">{v.p95} V</td><td className="pr-4">{v.max} V</td><td>{v.outside_pct} %</td></tr>
+                                <tr key={v.phase} className="tabular-nums"><td className="py-1.5 pr-4">{v.phase}</td><td className="pr-4">{v.min}</td><td className="pr-4">{v.p05}</td><td className="pr-4">{v.p95}</td><td className="pr-4">{v.max}</td><td>{v.outside_pct} %</td></tr>
                             ))}
                         </Table>
                     )}

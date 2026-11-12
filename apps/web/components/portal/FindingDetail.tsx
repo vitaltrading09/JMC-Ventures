@@ -14,7 +14,6 @@ import { canEdit } from "@/lib/portal";
 import { kindOf, severityOf, CASE_STATUS } from "@/lib/findings";
 import { siteHref } from "@/lib/siteNav";
 import type { Assessment } from "@/lib/assessments";
-import { CaseEditor } from "@/components/portal/ProjectTabs";
 import { InvestigateView } from "@/components/portal/InvestigateView";
 import { NextStep } from "@/components/portal/NextStep";
 import { Empty } from "@/components/ops/ui";
@@ -43,7 +42,7 @@ export function FindingDetail({ f, c, project, live, role, findings }: {
                     <h2 className="text-2xl font-semibold text-ink leading-tight">{f.title}</h2>
                     <p className="mt-1 text-sm">
                         <span className={`font-medium ${sev.text}`}>{sev.label}</span>
-                        <span className="text-muted"> · {f.confidence ?? "–"} confidence · {findingSource(f.type)}</span>
+                        <span className="text-muted"> · {String(f.confidence ?? "–").toLowerCase()} confidence · {findingSource(f.type)}</span>
                         {isDraftFinding(f.review_status) ? <span className="text-muted"> · not yet reviewed by GridIQ</span> : f.reviewed_at ? <span className="text-muted"> · reviewed {fmtDate(f.reviewed_at)}</span> : null}
                     </p>
                 </div>
@@ -83,7 +82,6 @@ export function FindingDetail({ f, c, project, live, role, findings }: {
                         {c.verification?.result && <div className="sm:col-span-2"><dt className="inline text-faint">Verification: </dt><dd className="inline">{String(c.verification.result).replace(/_/g, " ")}{c.verification.note ? `: ${c.verification.note}` : ""}</dd></div>}
                     </dl>
                 ) : <p className="mt-2 text-[15px] text-muted">Not tracked yet. Assign an owner and a next step so it gets done, then verify the result with a before/after comparison.</p>}
-                {live && canEdit(role) && <CaseEditor f={f} c={c} assessmentId={live.id} project={project} />}
             </section>
 
             <section aria-labelledby="evidence-h">

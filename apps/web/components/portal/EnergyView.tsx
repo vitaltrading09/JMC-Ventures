@@ -32,10 +32,26 @@ export function EnergyView({ project, s, since, pointId }: { project: PortalProj
     const pd = s.point_detail;
     const d = demand.data;
     const mdi: number | null = d?.contracted_mdi_kva ?? null;
-    const daily: any[] = pd?.daily ?? [];
+    const hoursByDay = useMemo(() => {
+        const m = new Map<string, number>();
+        for (const t of pd?.hourly_series?.t ?? []) { const k = sastDate(t); m.set(k, (m.get(k) ?? 0) + 1); }
+        return m;
+    }, [pd]);
+    // Every SAST day of the window, so days without data show as gaps instead of disappearing.
+    const dayList = useMemo(() => {
+        const out: string[] = [];
+        const from = since ? sastDate(since) : (pd?.daily?.[0]?.date ?? null);
+        if (!from) return out;
+        for (let d = new Date(`${from}T12:00:00Z`); d.toISOString().slice(0, 10) <= sastDate(new Date().toISOString()); d = new Date(d.getTime() + DAY)) out.push(d.toISOString().slice(0, 10));
+        return out;
+    }, [since, pd]);
+    const byDate = new Map<string, any>((pd?.daily ?? []).map((x: any) => [x.date, x]));
+    const daily: any[] = dayList.map((date) => ({ date, ...(byDate.get(date) ?? {}), hours: hoursByDay.get(date) ?? 0 }));
+    const full = daily.filter((x) => x.hours >= 20 && x.kwh_estimate != null);
+    const partial = daily.filter((x) => x.kwh_estimate != null && x.hours < 20).length;
 
-    const weekdayAvg = avg(daily.filter((x) => !isWeekend(x.date)).map((x) => x.kwh_estimate));
-    const weekendAvg = avg(daily.filter((x) => isWeekend(x.date)).map((x) => x.kwh_estimate));
+    const weekdayAvg = avg(full.filter((x) => !isWeekend(x.date)).map((x) => x.kwh_estimate));
+    const weekendAvg = avg(full.filter((x) => isWeekend(x.date)).map((x) => x.kwh_estimate));
     const half = d?.duration_curve?.find((p: any) => p.pct >= 50)?.kva ?? null;
 
     return (
@@ -51,14 +67,14 @@ export function EnergyView({ project, s, since, pointId }: { project: PortalProj
                     method={<><p>{d.basis}.</p><p>{actual(d)}. Billing demand is the 30-minute average; short spikes inside an interval are averaged out.</p></>}>
                     <div className="h-56">
                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={d.daily_max} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
+                            <BarChart data={dayList.map((date) => d.daily_max.find((x: any) => x.date === date) ?? { date, kva: null })} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
                                 <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
                                 <XAxis dataKey="date" stroke="var(--chart-axis)" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(x) => `${weekday(x)} ${x.slice(8)}`} />
                                 <YAxis stroke="var(--chart-axis)" fontSize={12} tickLine={false} axisLine={false} width={48} />
                                 <Tooltip contentStyle={tip} formatter={(v: any) => [`${num(v, 1)} kVA`, "Highest 30 minutes"]} labelFormatter={(x) => `${weekday(String(x))} ${x}`} />
-                                {mdi && <ReferenceLine y={mdi} stroke={WARN} strokeDasharray="5 4" label={{ value: `Contracted ${num(mdi)} kVA`, position: "insideTopRight", fill: WARN, fontSize: 12 }} />}
+                                {mdi && <ReferenceLine y={mdi} stroke={WARN} strokeDasharray="5 4" ifOverflow="extendDomain" label={{ value: `Contracted ${num(mdi)} kVA`, position: "insideTopRight", fill: WARN, fontSize: 12 }} />}
                                 <Bar dataKey="kva" radius={[4, 4, 0, 0]}>
-                                    {d.daily_max.map((x: any) => <Cell key={x.date} fill={x.kva === d.max_kva ? ACCENT : mdi && x.kva > mdi ? WARN : CONTEXT} />)}
+                                    {dayList.map((date) => { const x = d.daily_max.find((y: any) => y.date === date); return <Cell key={date} fill={x?.kva === d.max_kva ? ACCENT : mdi && (x?.kva ?? 0) > mdi ? WARN : CONTEXT} />; })}
                                 </Bar>
                             </BarChart>
                         </ResponsiveContainer>
@@ -89,7 +105,7 @@ export function EnergyView({ project, s, since, pointId }: { project: PortalProj
                     method={<p>Load-duration curve: every measured 30-minute interval, sorted from highest to lowest. The horizontal axis is the share of the measured time.</p>}>
                     <div className="h-56">
                         <ResponsiveContainer width="100%" height="100%">
-                            <AreaChart data={d.duration_curve} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
+                            <AreaChart data={d.duration_curve} margin={{ top: 18, right: 24, left: 0, bottom: 0 }}>
                                 <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
                                 <XAxis dataKey="pct" type="number" domain={[0, 100]} stroke="var(--chart-axis)" fontSize={12} tickLine={false} axisLine={false} unit=" %" ticks={[0, 25, 50, 75, 100]} />
                                 <YAxis stroke="var(--chart-axis)" fontSize={12} tickLine={false} axisLine={false} width={48} />
@@ -102,13 +118,15 @@ export function EnergyView({ project, s, since, pointId }: { project: PortalProj
                 </InsightCard>
             )}
 
-            {daily.length > 0 && (
+            {full.length + partial > 0 && (
                 <InsightCard eyebrow="Daily energy"
                     headline={weekdayAvg != null && weekendAvg != null
                         ? <>A weekday uses about <b>{num(weekdayAvg, 0)} kWh</b>, a weekend day about <b>{num(weekendAvg, 0)} kWh</b>.</>
-                        : <>The site uses about <b>{num(avg(daily.map((x) => x.kwh_estimate)), 0)} kWh</b> a day.</>}
+                        : weekdayAvg != null ? <>A complete weekday uses about <b>{num(weekdayAvg, 0)} kWh</b>; no complete weekend day has been measured yet.</>
+                        : weekendAvg != null ? <>A complete weekend day uses about <b>{num(weekendAvg, 0)} kWh</b>; no complete weekday has been measured yet.</>
+                        : <>No complete day has been measured yet; partial days are shown lighter.</>}
                     takeaway={weekdayAvg && weekendAvg ? (weekendAvg / weekdayAvg > 0.7 ? "Weekends use almost as much as weekdays: worth checking what keeps running when the site is quiet." : "Weekends drop well below weekdays, as expected for a site that closes or slows down.") : undefined}
-                    method={<p>Daily energy from hourly average power (SAST days). The total for the assessment comes from the meter's kWh register; partial days at the start and today are included as measured.</p>}>
+                    method={<p>Daily energy from hourly average power (SAST days). Averages use complete days only (at least 20 hours of data); partial days are shown lighter. The assessment total comes from the meter's kWh register.</p>}>
                     <div className="h-48">
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={daily} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -117,12 +135,12 @@ export function EnergyView({ project, s, since, pointId }: { project: PortalProj
                                 <YAxis stroke="var(--chart-axis)" fontSize={12} tickLine={false} axisLine={false} width={56} />
                                 <Tooltip contentStyle={tip} formatter={(v: any) => [`${num(v, 0)} kWh`, "Energy"]} labelFormatter={(x) => `${weekday(String(x))} ${x}`} />
                                 <Bar dataKey="kwh_estimate" radius={[4, 4, 0, 0]}>
-                                    {daily.map((x) => <Cell key={x.date} fill={isWeekend(x.date) ? CONTEXT : ACCENT} />)}
+                                    {daily.map((x) => <Cell key={x.date} fill={isWeekend(x.date) ? CONTEXT : ACCENT} fillOpacity={x.hours >= 20 ? 1 : 0.35} />)}
                                 </Bar>
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
-                    <p className="mt-2 text-xs text-faint"><span className="inline-block h-2 w-3 rounded-sm mr-1 align-middle" style={{ background: ACCENT }} />weekday <span className="inline-block h-2 w-3 rounded-sm ml-3 mr-1 align-middle" style={{ background: CONTEXT }} />weekend</p>
+                    <p className="mt-2 text-xs text-faint"><span className="inline-block h-2 w-3 rounded-sm mr-1 align-middle" style={{ background: ACCENT }} />weekday <span className="inline-block h-2 w-3 rounded-sm ml-3 mr-1 align-middle" style={{ background: CONTEXT }} />weekend <span className="inline-block h-2 w-3 rounded-sm ml-3 mr-1 align-middle opacity-35" style={{ background: ACCENT }} />partial day (left out of the averages){partial ? ` · ${partial} partial` : ""}</p>
                 </InsightCard>
             )}
 

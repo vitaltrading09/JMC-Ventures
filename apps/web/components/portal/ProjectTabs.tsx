@@ -137,9 +137,11 @@ export function LayoutTab({ project }: { project: PortalProjectDetail }) {
             <Panel title="Measurement points" subtitle="The incomer at the top, sub-loads and sources under it, with live 1-minute values">
                 <PointList project={project} />
             </Panel>
-            <Panel title="Single-line diagram">
-                <SldView projectId={project.id} />
-            </Panel>
+            {/* Folded: many sites have no diagram drawn yet, and an empty canvas takes a screen. */}
+            <details className="rounded-2xl bg-surface p-6 shadow-sm ring-1 ring-line">
+                <summary className="cursor-pointer text-[15px] font-semibold text-ink">Single-line diagram</summary>
+                <div className="mt-4"><SldView projectId={project.id} /></div>
+            </details>
         </div>
     );
 }
@@ -428,7 +430,7 @@ export function VerifyPanel({ f, project, onSave, saving, error }: { f: any; pro
 }
 
 // ── Reports (published) and share links ─────────────────────────────────────
-export function ReportsTab({ project, role }: { project: PortalProjectDetail; role: string | null }) {
+export function ReportsTab({ project, role, hideEmpty }: { project: PortalProjectDetail; role: string | null; hideEmpty?: boolean }) {
     const q = useQuery({ queryKey: ["reports", project.id], queryFn: () => apiGet<any[]>(`/ingestion/reports?project_id=${project.id}`) });
     const [sharing, setSharing] = useState<string | null>(null);
     if (q.isLoading) return <Loading />;
@@ -436,7 +438,7 @@ export function ReportsTab({ project, role }: { project: PortalProjectDetail; ro
     return (
         <div className="space-y-5">
         <AssessmentDeliverables projectId={project.id} />
-        <Panel title="Reports" subtitle="Reports GridIQ has reviewed and issued. A share link shows the report to someone without an account while the assessment is live or in its delivery period.">
+        {!(hideEmpty && (q.data ?? []).length === 0) && <Panel title="Reports" subtitle="Reports GridIQ has reviewed and issued. A share link shows the report to someone without an account while the assessment is live or in its delivery period.">
             {(q.data ?? []).length === 0 ? <Empty>No published report yet.</Empty> : (
                 <ul className="divide-y divide-line">
                     {q.data!.map((r) => (
@@ -454,7 +456,7 @@ export function ReportsTab({ project, role }: { project: PortalProjectDetail; ro
                     ))}
                 </ul>
             )}
-        </Panel>
+        </Panel>}
         </div>
     );
 }
@@ -474,15 +476,10 @@ function AssessmentDeliverables({ projectId }: { projectId: string }) {
 function Deliverables({ a }: { a: Assessment }) {
     const q = useQuery({ queryKey: ["deliverables", a.id], queryFn: () => apiGet<{ files: { name: string; title: string; url: string; sha256: string | null }[]; pending_review: string[] }>(`/ingestion/assessments/${a.id}/deliverables`) });
     const origin = (() => { const b = process.env.NEXT_PUBLIC_API_URL ?? ""; return b.startsWith("/") ? "" : new URL(b).origin; })();
+    // While the assessment runs, the provisional report card above covers it; show this only for final files.
+    if (a.live && !(q.data?.files ?? []).length && !(q.data?.pending_review ?? []).length) return null;
     return (
         <Panel title={`${a.reference} deliverables`} subtitle={a.live ? "Live assessment: the provisional preview covers the elapsed period only and is not final." : `Final files, available until ${fmtDate(a.delivery_until)}.`}>
-            {a.live && (
-                <p className="text-sm mb-3">
-                    <a className="text-accent hover:underline" href={apiUrl(`/ingestion/assessments/${a.id}/preview.pdf?kind=overview`)} target="_blank" rel="noreferrer">Provisional overview (PDF)</a>
-                    {" · "}
-                    <a className="text-accent hover:underline" href={apiUrl(`/ingestion/assessments/${a.id}/preview.pdf?kind=power_quality`)} target="_blank" rel="noreferrer">Provisional power quality (PDF)</a>
-                </p>
-            )}
             {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : (q.data?.files ?? []).length === 0
                 ? <Empty>{a.live ? "The final reports and data package are produced when the assessment ends." : "Being prepared."}</Empty> : (
                     <ul className="text-sm space-y-1">{q.data!.files.map((f) => (

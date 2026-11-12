@@ -31,7 +31,7 @@ export function SiteDetails({ project, s }: { project: PortalProjectDetail; s: S
                             <div><dt className="text-sm text-faint">Measuring since</dt><dd className="text-ink-2 tabular-nums">{dep ? `${fmtDateTime(dep.installed_at)} ${TZ_LABEL}` : "–"}</dd></div>
                             <div><dt className="text-sm text-faint">Nominal voltage</dt><dd className="text-ink-2 tabular-nums">{pd.nominal_voltage_v ? `${num(pd.nominal_voltage_v)} V phase–neutral` : "–"}</dd></div>
                             <div><dt className="text-sm text-faint">Current transformers</dt><dd className="text-ink-2 tabular-nums">{pd.ct_primary_a ? `${num(pd.ct_primary_a)} A primary` : "–"}</dd></div>
-                            <div><dt className="text-sm text-faint">Readings</dt><dd className="text-ink-2 tabular-nums">every {pd.coverage?.median_spacing_s != null ? `${num(pd.coverage.median_spacing_s, 0)} s` : "–"}</dd></div>
+                            <div><dt className="text-sm text-faint">Readings</dt><dd className="text-ink-2 tabular-nums">{cadenceText(pd.coverage)}</dd></div>
                             <div><dt className="text-sm text-faint">Contracted demand</dt><dd className="text-ink-2 tabular-nums">{pd.demand?.contracted_mdi_kva ? `${num(pd.demand.contracted_mdi_kva)} kVA` : "not recorded"}</dd></div>
                         </dl>
                     </div>
@@ -55,6 +55,15 @@ export function SiteDetails({ project, s }: { project: PortalProjectDetail; s: S
             <LayoutTab project={project} />
         </div>
     );
+}
+
+const BAND: Record<number, string> = { 1: "every second", 10: "every few seconds", 60: "every minute", 300: "every 5 minutes", 900: "every 15 minutes" };
+/** How often the meter reports; mixed intervals are both named. */
+function cadenceText(cov: any) {
+    const c = (cov?.cadences ?? []).filter((x: any) => (x.share ?? 0) >= 0.05);
+    if (c.length > 1) return `${BAND[c[0].approx_interval_s] ?? "varies"}, at times ${BAND[c[1].approx_interval_s] ?? "other"}`;
+    if (c.length === 1) return BAND[c[0].approx_interval_s] ?? `every ${c[0].approx_interval_s} s`;
+    return cov?.median_spacing_s != null ? `every ${Math.round(cov.median_spacing_s)} s` : "–";
 }
 
 /** Hours with data per SAST day of the assessment so far. */

@@ -35,7 +35,7 @@ export function ReportsView({ project, a, ended, s, role }: { project: PortalPro
                     </div>
                 </section>
             )}
-            <ReportsTab project={project} role={role} />
+            <ReportsTab project={project} role={role} hideEmpty={!!a} />
             <BookingCard project={project} from={a ?? ended} />
         </div>
     );

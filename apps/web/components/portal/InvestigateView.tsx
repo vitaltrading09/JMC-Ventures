@@ -268,8 +268,8 @@ function EvidencePanel({ assessmentId, pointId, win, role, list, findings, onOpe
                         </select>
                     </Field>
                     <div className="flex items-center gap-3">
-                        <label className="inline-flex items-center gap-1.5 text-sm text-ink-3"><input type="checkbox" checked={report} onChange={(e) => setReport(e.target.checked)} />Include in report</label>
-                        <Button type="submit" disabled={!title.trim() || save.isPending}>Save this window</Button>
+                        <label className="inline-flex items-center gap-1.5 text-sm text-ink-3 whitespace-nowrap"><input type="checkbox" checked={report} onChange={(e) => setReport(e.target.checked)} />In report</label>
+                        <Button type="submit" disabled={!title.trim() || save.isPending} className="whitespace-nowrap">Save this window</Button>
                     </div>
                     <div className="md:col-span-4"><ErrorBox error={save.error} /></div>
                 </form>

@@ -136,8 +136,12 @@ export function DataExplorer({ assessment, pointId, pointName }: { assessment: A
                     <label className="text-sm text-muted">Jump to a time<input type="datetime-local" step={withSec ? 1 : 60} className={`${inputClass} mt-1 w-56`} value={jump} min={toLocal(win.from)} max={toLocal(win.to)} onChange={(e) => setJump(e.target.value)} /></label>
                     {jump && <button type="button" className="pb-2 text-sm text-muted hover:text-ink" onClick={() => setJump("")}>Clear</button>}
                 </div>
-                <fieldset>
-                    <legend className="text-sm text-muted mb-2">Channels ({channels.length} of 8)</legend>
+                <details>
+                    <summary className="cursor-pointer select-none text-sm text-muted">
+                        Channels: <span className="text-ink-2">{channels.map((k) => BY.get(k)!.label).join(", ")}</span> <span className="text-accent">· change</span>
+                    </summary>
+                <fieldset className="mt-3">
+                    <legend className="sr-only">Channels ({channels.length} of 8)</legend>
                     <div className="space-y-2">
                         {GROUPS.map((g) => (
                             <div key={g} className="flex flex-wrap items-center gap-1.5">
@@ -157,6 +161,7 @@ export function DataExplorer({ assessment, pointId, pointName }: { assessment: A
                     </div>
                     <p className="mt-2 text-xs text-faint">Channels in italics are kept as individual readings only, so they show at "Every reading" (windows of up to 6 hours).</p>
                 </fieldset>
+                </details>
             </section>
 
             <section className="rounded-2xl bg-surface p-5 shadow-sm ring-1 ring-line">
@@ -185,14 +190,14 @@ export function DataExplorer({ assessment, pointId, pointName }: { assessment: A
                             {units.map((u) => (
                                 <div key={u}>
                                     <p className="text-xs text-faint mb-1">{u}</p>
-                                    <div className="h-56">
+                                    <div className="h-72">
                                         <ResponsiveContainer width="100%" height="100%">
                                             <ComposedChart data={rows} syncId="explore" margin={{ top: 4, right: 12, left: 0, bottom: 0 }}
                                                 onMouseMove={(e: any) => { if (e?.activeTooltipIndex != null) setHover(e.activeTooltipIndex); }} onMouseLeave={() => setHover(null)}>
                                                 <CartesianGrid stroke="var(--chart-grid)" vertical={false} />
                                                 <XAxis dataKey="ms" type="number" scale="time" domain={[win.from, win.to]} allowDataOverflow stroke="var(--chart-axis)" fontSize={11}
                                                     tickFormatter={(ms) => (win.to - win.from > D ? `${day(ms)} ${clock(ms, false)}` : clock(ms, withSec && win.to - win.from < 10 * 60_000))} minTickGap={50} />
-                                                <YAxis stroke="var(--chart-axis)" fontSize={11} width={56} domain={["auto", "auto"]} tickFormatter={(v) => num(v, u === "PF" ? 2 : 1)} />
+                                                <YAxis stroke="var(--chart-axis)" fontSize={11} width={56} domain={["auto", "auto"]} tickFormatter={(v) => num(v, u === "PF" ? 2 : Math.abs(v) >= 100 ? 0 : 1)} />
                                                 <Tooltip content={() => null} cursor={{ stroke: "var(--chart-axis)" }} />
                                                 {jumpMs != null && <ReferenceLine x={jumpMs} stroke="#a855f7" strokeDasharray="3 3" />}
                                                 {channels.filter((k) => BY.get(k)!.unit === u).map((k) => band && rows.some((r) => r[`${k}_band`]) ? (

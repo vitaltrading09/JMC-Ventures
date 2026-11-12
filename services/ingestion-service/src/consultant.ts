@@ -121,7 +121,7 @@ export function deterministicAnswer(ds: any, q: string): { answer: string; evide
         `### In short\n${short.join(' ')}`,
         `### What the data shows\n${shows.map((l) => `- ${l}`).join('\n')}`,
         `### What it means\n${Array.from(new Set(means)).map((l) => `- ${l}`).join('\n')}`,
-        `### What you can expect to find on site\n${Array.from(new Set(expect)).map((l) => `- ${l}`).join('\n')}`,
+        `### What you can expect to find on site\n${(expect.length ? Array.from(new Set(expect)) : ['Nothing on site needs checking for this question: the measurements are within the screening levels.']).map((l) => `- ${l}`).join('\n')}`,
         `### Basis\n${period}${ds.provisional ? ', provisional' : ''}. Data received: ${cov}.${lowCov ? ' Parts of the period are missing, so treat the figures as indicative.' : ''} These are possible causes to verify on site, not conclusions.`,
     ];
     return { answer: parts.join('\n\n'), evidence: Array.from(new Set(ev)) };
@@ -142,7 +142,7 @@ const TOPICS: { match: RegExp; evidence: string; observed: (p: any) => string | 
         means: (p) => (p.power_quality?.pf?.avg_loaded ?? 1) < 0.85
             ? ['More current flows for the same work, so the kVA the utility measures (and may bill as demand) is higher than necessary.', 'Cables and transformers carry the extra current; it is not a supply-quality fault.']
             : ['No action is needed for power factor at the moment.'],
-        expect: () => ['Induction motors (compressors, pumps, fans, conveyors) running lightly loaded: power factor drops when they idle.',
+        expect: (p) => (p.power_quality?.pf?.avg_loaded ?? 0) >= 0.85 ? [] : ['Induction motors (compressors, pumps, fans, conveyors) running lightly loaded: power factor drops when they idle.',
             'An existing capacitor bank that is off, undersized, or has failed steps or fuses: check its controller and the step indications.',
             'If power factor is low only at light load, it is idling equipment; if it is low at full load, compensation is missing.',
             'Before any capacitor is added, check distortion: capacitors without detuning reactors can amplify harmonics.'],
@@ -158,7 +158,7 @@ const TOPICS: { match: RegExp; evidence: string; observed: (p: any) => string | 
             'Distortion means the voltage is no longer a clean sine wave. High levels can add heating in motors and transformers and upset sensitive electronics.',
             p.power_quality?.harmonic_orders?.available ? 'The individual harmonic orders are available to narrow down the source.' : 'Only the total (THD) was recorded, so the source cannot be pinned down from this data alone.',
         ],
-        expect: () => ['Variable-speed drives, UPS systems, LED lighting, rectifiers and chargers: the usual sources of distortion on a commercial or industrial site.',
+        expect: (p) => Math.max(0, ...(p.power_quality?.thd_v ?? []).map((x: any) => x.p95 ?? 0)) <= 5 ? [] : ['Variable-speed drives, UPS systems, LED lighting, rectifiers and chargers: the usual sources of distortion on a commercial or industrial site.',
             'If distortion follows the working hours, the source is most likely on site; if it is there at night and weekends too, it is more likely from the network.',
             'Capacitor banks without detuning reactors: they can amplify one harmonic order.',
             'A short survey with individual harmonic orders (3, 5, 7, 11, 13) per phase identifies the source.'],
@@ -172,7 +172,7 @@ const TOPICS: { match: RegExp; evidence: string; observed: (p: any) => string | 
             'The utility bills the highest 30-minute average, so one short coincidence of loads can set the month\'s demand charge.',
             ...((p.demand?.utilisation ?? 0) > 1 ? ['Going above the contracted limit normally attracts extra charges.'] : []),
         ],
-        expect: () => ['Several large loads starting together, typically at shift start: compressors, chillers, ovens, pumps.',
+        expect: (p) => (p.demand?.utilisation ?? 1) < 0.75 ? ['In Energy and demand, the five highest half-hours each open the charts at that moment if you want to see what drives the peak.'] : ['Several large loads starting together, typically at shift start: compressors, chillers, ovens, pumps.',
             'Equipment on timers that all switch at the same time.',
             'In Energy and demand, the five highest half-hours each open the charts at that moment: see what was running.'],
     },

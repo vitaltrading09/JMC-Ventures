@@ -13,7 +13,7 @@ import { askConsultant } from "@/lib/portal";
 import { Summary, STATE_STYLE, tabForEvidence } from "@/lib/summary";
 import { Panel, Empty } from "@/components/ops/ui";
 import { FindingTiles } from "@/components/portal/FindingTiles";
-import { Sparkline } from "@/components/portal/Insight";
+import { Sparkline, InsightCard } from "@/components/portal/Insight";
 import { Journey } from "@/components/portal/Journey";
 import type { Assessment } from "@/lib/assessments";
 
@@ -62,7 +62,7 @@ export function SummaryTab({ s, onTab, projectId, findings, cases, assessment }:
                     <p className="text-xs font-semibold uppercase tracking-wider text-faint" id="glance">Your site at a glance</p>
                     <h2 className="mt-2 text-[22px] leading-snug font-semibold text-ink">{headline}</h2>
                     {rest.length > 0 && <ul className="mt-3 space-y-1.5 text-[15px] text-ink-3">{rest.map((g, i) => <li key={i}>{g}</li>)}</ul>}
-                    <ul className="mt-5 grid gap-2 sm:grid-cols-2" aria-label="Assessment by area">
+                    <ul className="mt-5 grid gap-2 xl:grid-cols-2" aria-label="Assessment by area">
                         {s.categories.map((c) => {
                             const st = STATE_STYLE[c.state];
                             return (
@@ -137,8 +137,8 @@ function Fingerprint({ s }: { s: Summary }) {
         return `Weekday median ranges from ${num(min.weekday!, 0)} kW at ${min.hour}:00 to ${num(max.weekday!, 0)} kW at ${max.hour}:00.`;
     })();
     return (
-        <Panel title="Operating fingerprint"
-            subtitle={`Typical day, hourly average kW, ${TZ_LABEL}. Weekdays: ${wk.days} day(s)${wk.band ? ", median with P10–P90 band" : " (too few days for a band)"}; weekend: ${we?.days ?? 0} day(s).${oh ? ` Operating hours ${oh.declared ? "declared" : "assumed"} ${oh.from}:00–${oh.to}:00.` : ""}`}>
+        <InsightCard eyebrow="Your typical day" headline={summaryText || "How the site uses power through a typical day."}
+            method={<p>Hourly average kW, {TZ_LABEL}. Weekdays: {wk.days} day(s){wk.band ? ", median with the P10–P90 band" : " (too few days for a band)"}; weekend: {we?.days ?? 0} day(s).{oh ? ` Working hours ${oh.declared ? "declared" : "assumed"} ${oh.from}:00–${oh.to}:00 (shaded).` : ""}</p>}>
             <div className="h-72" role="img" aria-label={`Operating fingerprint chart. ${summaryText}`}>
                 <ResponsiveContainer width="100%" height="100%">
                     <ComposedChart data={data} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
@@ -157,6 +157,6 @@ function Fingerprint({ s }: { s: Summary }) {
                 </ResponsiveContainer>
             </div>
             <p className="mt-2 text-xs text-faint">{summaryText} Shaded: operating hours. Gaps are hours without data, never zero.</p>
-        </Panel>
+        </InsightCard>
     );
 }

@@ -9,7 +9,7 @@
 // Client admins and GridIQ staff move a finding on; everyone else sees who owns it.
 // Every change goes through PATCH /recommendations/:id/case (audited).
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, CheckCircle2 } from "lucide-react";
 import { apiSend, fmtDate } from "@/lib/api";
@@ -35,6 +35,8 @@ export function NextStep({ f, c, assessmentId, project, role }: { f: any; c: any
     const qc = useQueryClient();
     const status = c?.status ?? "open";
     const [form, setForm] = useState({ owner: c?.owner ?? "", next_step: c?.next_step ?? firstSentence(f.solution), due_on: c?.due_on?.slice(0, 10) ?? "" });
+    // Each step asks its own question: the action is not the first check again.
+    useEffect(() => { if (status === "investigating") setForm((x) => ({ ...x, next_step: "" })); }, [status]);
     const [closing, setClosing] = useState(false);
     const [reason, setReason] = useState("");
     const save = useMutation({
