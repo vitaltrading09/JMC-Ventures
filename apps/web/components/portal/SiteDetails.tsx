@@ -44,7 +44,7 @@ export function SiteDetails({ project, s }: { project: PortalProjectDetail; s: S
                                     className="flex aspect-square flex-col items-center justify-center rounded-lg text-[11px]"
                                     style={{ background: d.hours >= 23 ? "rgba(16,185,129,.25)" : d.hours > 0 ? `rgba(245,158,11,${0.12 + 0.3 * (d.hours / 24)})` : "rgb(var(--c-surface-2))" }}>
                                     <span className="text-ink-2 font-medium">{d.day.slice(8)}</span>
-                                    <span className="text-faint">{d.hours}h</span>
+                                    <span className="text-ink-3">{d.hours}h</span>
                                 </li>
                             ))}
                         </ul>

@@ -180,7 +180,7 @@ function PQDetail({ detail, period, pointId }: { detail: any; period: { from: st
                 )}
             </div>
 
-            <div className="grid 2xl:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 2xl:grid-cols-2 gap-6 [&>*]:min-w-0">
                 <Panel title="Voltage statistics" subtitle="10-minute values">
                     {pq.voltage.length === 0 ? <Empty>Not measured.</Empty> : (
                         <Table head={["Phase", "Min (V)", "P5 (V)", "P95 (V)", "Max (V)", "Outside ±10 %"]}>

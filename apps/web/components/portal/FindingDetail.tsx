@@ -34,7 +34,7 @@ export function FindingDetail({ f, c, project, live, role, findings }: {
     );
     return (
         <div className="space-y-6">
-            <Link href={siteHref(project.id, "findings")} className="inline-flex items-center gap-1 text-sm text-muted hover:text-ink"><ArrowLeft className="h-4 w-4" />All findings</Link>
+            <Link href={siteHref(project.id, "findings")} className="inline-flex items-center gap-1 py-1 text-sm text-muted hover:text-ink"><ArrowLeft className="h-4 w-4" />All findings</Link>
 
             <header className="flex flex-wrap items-start gap-4">
                 <span className="rounded-xl bg-surface-2 p-3"><k.icon className="h-6 w-6 text-ink-3" aria-hidden /></span>
@@ -113,11 +113,11 @@ function Track({ status }: { status: string }) {
     const steps = ["Found", "Investigating", "Action", "Verified"];
     const at = status === "verified" ? 3 : status === "action_planned" || status === "action_done" ? 2 : status === "investigating" ? 1 : 0;
     return (
-        <ol className="flex items-center gap-2" aria-label="Progress of this finding">
+        <ol className="flex items-center gap-2 min-w-0" aria-label="Progress of this finding">
             {steps.map((label, i) => (
-                <li key={label} className="flex flex-1 items-center gap-2" aria-current={i === at ? "step" : undefined}>
+                <li key={label} className="flex flex-1 items-center gap-2 min-w-0" aria-current={i === at ? "step" : undefined} title={label}>
                     <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${i <= at ? "bg-blue-600 text-white" : "bg-surface-3 text-muted"}`}>{i + 1}</span>
-                    <span className={`text-sm ${i === at ? "font-semibold text-ink" : i < at ? "text-ink-3" : "text-faint"}`}>{label}</span>
+                    <span className={`text-sm ${i === at ? "font-semibold text-ink" : `hidden sm:inline ${i < at ? "text-ink-3" : "text-faint"}`}`}>{label}</span>
                     {i < steps.length - 1 && <span className={`h-0.5 flex-1 rounded ${i < at ? "bg-blue-600" : "bg-surface-3"}`} />}
                 </li>
             ))}

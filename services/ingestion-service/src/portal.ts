@@ -74,43 +74,82 @@ async function livePoints(db: Queryable, pointIds: string[]) {
 }
 
 /** The tiles on the projects list: current incomer kW, today's kWh, coverage, open alerts. */
+// Tiles are the same for everyone who may see the site (apart from the drafts flag) and the
+// page polls them every 15 s, while the values behind them change once a minute. So: fresh
+// for 10 s, then served at once for up to 90 s while one rebuild runs in the background.
+const tileCache = new Map<string, { at: number; v: any }>();
+const tileBuilding = new Map<string, Promise<any>>();
+export const TILE_FRESH_MS = 10_000, TILE_STALE_MS = 90_000;
 async function projectTiles(db: Queryable, projectId: string, seesDrafts: boolean) {
+    const key = `${projectId}:${seesDrafts ? 1 : 0}`;
+    const hit = tileCache.get(key);
+    const age = hit ? Date.now() - hit.at : Infinity;
+    if (hit && age < TILE_FRESH_MS) return hit.v;
+    let building = tileBuilding.get(key);
+    if (!building) {
+        building = buildProjectTiles(db, projectId, seesDrafts)
+            .then((v) => { tileCache.set(key, { at: Date.now(), v }); return v; })
+            .finally(() => tileBuilding.delete(key));
+        tileBuilding.set(key, building);
+    }
+    if (hit && age < TILE_STALE_MS) { building.catch((e) => console.error('[tiles] background rebuild failed:', e?.message ?? e)); return hit.v; }
+    return building;
+}
+
+async function buildProjectTiles(db: Queryable, projectId: string, seesDrafts: boolean) {
     const pts = await db.query(`
         SELECT mp.id, mp.name, mp.role, mp.parent_point_id, d.device_id, d.installed_at
         FROM measurement_points mp
         LEFT JOIN deployments d ON d.measurement_point_id = mp.id AND d.removed_at IS NULL
         WHERE mp.project_id = $1 AND mp.archived_at IS NULL`, [projectId]);
     const incomers = pts.rows.filter((p) => p.role === 'incomer' && !p.parent_point_id).map((p) => p.id);
-    const live = await livePoints(db, incomers);
+    // Every query below is independent: start them together, await each where it is used.
+    const deployed = pts.rows.filter((p) => p.device_id);
+    const devIds = deployed.map((p) => p.device_id);
+    const allLiveP = livePoints(db, Array.from(new Set([...incomers, ...deployed.map((p) => p.id)])));
+    const energyP = Promise.all(incomers.map((id) => loadPointEnergy(db, id, sastMidnight(), new Date())));
+    const covP = deployed.length ? db.query(`
+        SELECT AVG(COALESCE(device_coverage(d, GREATEST(NOW() - INTERVAL '24 hours', i)), 0)) AS c
+        FROM unnest($1::uuid[], $2::timestamptz[]) AS x(d, i)`,
+        [devIds, deployed.map((p) => p.installed_at)]) : null;
+    const alertsP = deployed.length ? db.query(`
+        SELECT count(*)::int AS n FROM alerts
+        WHERE meter_id = ANY($1) AND NOT is_read AND created_at >= NOW() - INTERVAL '7 days'`, [devIds]) : null;
+    const lastSeenP = devIds.length ? db.query(`
+        SELECT d AS device_id,
+               (SELECT max(time) FROM meter_readings WHERE meter_id = d AND time > NOW() - INTERVAL '1 day') AS at
+        FROM unnest($1::uuid[]) AS d`, [devIds]) : null;
+    const topAlertsP = devIds.length ? db.query(`
+        SELECT id, severity, type, message, created_at, meter_id FROM alerts
+        WHERE meter_id = ANY($1) AND NOT is_read AND created_at >= NOW() - INTERVAL '7 days'
+        ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'WARNING' THEN 2 WHEN 'MEDIUM' THEN 2 ELSE 3 END,
+                 created_at DESC
+        LIMIT 3`, [devIds]) : null;
+    const findingsP = db.query(`
+        SELECT id, type, priority, title, review_status, estimated_monthly_saving_zar AS saving_zar, meter_id
+        FROM recommendations
+        WHERE site_id = $1 AND status = 'ACTIVE'
+          AND ${seesDrafts ? "review_status <> 'dismissed'" : "review_status = 'published'"}
+        ORDER BY priority, created_at DESC LIMIT 3`, [projectId]);
+    for (const x of [allLiveP, energyP, covP, alertsP, lastSeenP, topAlertsP, findingsP]) x?.catch(() => { /* reported by the await below */ });
+    const live = await allLiveP;
     const kw = incomers.length && incomers.every((id) => live.has(id))
         ? incomers.reduce((a, id) => a + (live.get(id).kw ?? 0), 0) : null;
     let todayKwh: number | null = null;
     if (incomers.length) {
-        const from = sastMidnight();
         let total = 0, any = false;
-        for (const e of await Promise.all(incomers.map((id) => loadPointEnergy(db, id, from, new Date())))) {
+        for (const e of await energyP) {
             if (e.coverage > 0) { any = true; total += e.importKwh; }
         }
         todayKwh = any ? Math.round(total * 10) / 10 : null;
     }
-    const deployed = pts.rows.filter((p) => p.device_id);
-    const cov = deployed.length ? (await db.query(`
-        SELECT AVG(COALESCE(device_coverage(d, GREATEST(NOW() - INTERVAL '24 hours', i)), 0)) AS c
-        FROM unnest($1::uuid[], $2::timestamptz[]) AS x(d, i)`,
-        [deployed.map((p) => p.device_id), deployed.map((p) => p.installed_at)])).rows[0].c : null;
-    const alerts = deployed.length ? (await db.query(`
-        SELECT count(*)::int AS n FROM alerts
-        WHERE meter_id = ANY($1) AND NOT is_read AND created_at >= NOW() - INTERVAL '7 days'`,
-        [deployed.map((p) => p.device_id)])).rows[0].n : 0;
+    const cov = covP ? (await covP).rows[0].c : null;
+    const alerts = alertsP ? (await alertsP).rows[0].n : 0;
     // The tile's detail (2026-11): every metered point with its live state, and the top
     // open alerts and findings, so a client sees at once what each meter is doing.
-    const devIds = deployed.map((p) => p.device_id);
     const pointOf = new Map<string, string>(deployed.map((p) => [p.device_id, p.id]));
-    const allLive = await livePoints(db, deployed.map((p) => p.id));
-    const lastSeen = new Map<string, Date | null>(devIds.length ? (await db.query(`
-        SELECT d AS device_id,
-               (SELECT max(time) FROM meter_readings WHERE meter_id = d AND time > NOW() - INTERVAL '1 day') AS at
-        FROM unnest($1::uuid[]) AS d`, [devIds])).rows.map((x) => [x.device_id, x.at]) : []);
+    const allLive = live;
+    const lastSeen = new Map<string, Date | null>(lastSeenP ? (await lastSeenP).rows.map((x) => [x.device_id, x.at]) : []);
     const meters = deployed.map((p) => {
         const at = lastSeen.get(p.device_id) ?? null;
         const age = at ? Math.max(0, (Date.now() - new Date(at).getTime()) / 1000) : null;
@@ -123,21 +162,11 @@ async function projectTiles(db: Queryable, projectId: string, seesDrafts: boolea
             kw: lv?.kw ?? null, v: lv?.v ?? null, pf: lv?.pf ?? null,
         };
     });
-    const topAlerts = devIds.length ? (await db.query(`
-        SELECT id, severity, type, message, created_at, meter_id FROM alerts
-        WHERE meter_id = ANY($1) AND NOT is_read AND created_at >= NOW() - INTERVAL '7 days'
-        ORDER BY CASE severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 WHEN 'WARNING' THEN 2 WHEN 'MEDIUM' THEN 2 ELSE 3 END,
-                 created_at DESC
-        LIMIT 3`, [devIds])).rows.map((a) => ({
+    const topAlerts = topAlertsP ? (await topAlertsP).rows.map((a) => ({
             id: a.id, severity: a.severity, type: a.type, message: a.message, created_at: a.created_at,
             point_id: pointOf.get(a.meter_id) ?? null,
         })) : [];
-    const findings = (await db.query(`
-        SELECT id, type, priority, title, review_status, estimated_monthly_saving_zar AS saving_zar, meter_id
-        FROM recommendations
-        WHERE site_id = $1 AND status = 'ACTIVE'
-          AND ${seesDrafts ? "review_status <> 'dismissed'" : "review_status = 'published'"}
-        ORDER BY priority, created_at DESC LIMIT 3`, [projectId])).rows.map((f) => ({
+    const findings = (await findingsP).rows.map((f) => ({
             id: f.id, type: f.type, priority: f.priority, title: f.title, review_status: f.review_status,
             saving_zar: num(f.saving_zar), point_id: f.meter_id ? pointOf.get(f.meter_id) ?? null : null,
         }));

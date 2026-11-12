@@ -89,7 +89,7 @@ export function EnergyView({ project, s, since, pointId }: { project: PortalProj
                                         <span className="w-44 text-ink-2 tabular-nums">{weekday(sastDate(x.bucket))} {fmtDateTime(x.bucket)}</span>
                                         <span className="font-semibold text-ink tabular-nums">{num(x.kva, 0)} kVA</span>
                                         {mdi && <span className="text-sm text-muted tabular-nums">{Math.round((x.kva / mdi) * 100)} %</span>}
-                                        <a className="ml-auto text-sm text-accent hover:underline" href={siteHref(project.id, "investigate", { from: new Date(t - 3 * H).toISOString(), to: new Date(t + 3 * H).toISOString() })}>See what happened →</a>
+                                        <a className="ml-auto py-1 text-sm text-accent hover:underline" href={siteHref(project.id, "investigate", { from: new Date(t - 3 * H).toISOString(), to: new Date(t + 3 * H).toISOString() })}>See what happened →</a>
                                     </li>
                                 );
                             })}

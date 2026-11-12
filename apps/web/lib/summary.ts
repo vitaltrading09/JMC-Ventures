@@ -44,7 +44,7 @@ export function useSummary(assessmentId: string | null | undefined, pointId?: st
 /** Stable phase styling across charts, legends, tooltips and PDFs: colour AND dash pattern. */
 export const PHASE = {
     A: { color: "#e11d48", dash: undefined as string | undefined, label: "Phase A (L1)" },
-    B: { color: "#d97706", dash: "6 3", label: "Phase B (L2)" },
+    B: { color: "#b45309", dash: "6 3", label: "Phase B (L2)" },
     C: { color: "#2563eb", dash: "2 3", label: "Phase C (L3)" },
 } as const;
 

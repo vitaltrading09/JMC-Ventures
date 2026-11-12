@@ -62,14 +62,28 @@ Rules:
 - Keep it concise: at most about 180 words. No tables.`;
 
 const dsCache = new Map<string, { at: number; ds: any }>();
+const dsBuilding = new Map<string, Promise<any>>();
+const DS_STALE_MS = 30 * 60_000;
+/**
+ * The assessment dataset, cached. Fresh within maxAgeMs; older than that (up to 30 min) it is
+ * returned at once and rebuilt in the background, so a page never waits for a rebuild twice.
+ * One build per assessment at a time.
+ */
 async function datasetFor(pool: Pool, a: any, maxAgeMs = 10 * 60_000) {
     const key = a.id;
     const hit = dsCache.get(key);
-    if (hit && Date.now() - hit.at < maxAgeMs) return hit.ds;
-    const end = Math.min(new Date(a.end_at).getTime(), a.closed_at ? new Date(a.closed_at).getTime() : Infinity, Date.now());
-    const ds = await buildAssessmentDataset(pool, a.id, new Date(end), { provisional: Date.now() < new Date(a.end_at).getTime() });
-    dsCache.set(key, { at: Date.now(), ds });
-    return ds;
+    const age = hit ? Date.now() - hit.at : Infinity;
+    if (hit && age < maxAgeMs) return hit.ds;
+    let building = dsBuilding.get(key);
+    if (!building) {
+        const end = Math.min(new Date(a.end_at).getTime(), a.closed_at ? new Date(a.closed_at).getTime() : Infinity, Date.now());
+        building = buildAssessmentDataset(pool, a.id, new Date(end), { provisional: Date.now() < new Date(a.end_at).getTime() })
+            .then((ds) => { dsCache.set(key, { at: Date.now(), ds }); return ds; })
+            .finally(() => dsBuilding.delete(key));
+        dsBuilding.set(key, building);
+    }
+    if (hit && age < DS_STALE_MS) { building.catch((e) => console.error('[dataset] background rebuild failed:', e?.message ?? e)); return hit.ds; }
+    return building;
 }
 
 /** The dataset without the bulky series, for the model context. */

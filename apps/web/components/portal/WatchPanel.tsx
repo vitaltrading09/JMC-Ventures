@@ -23,7 +23,7 @@ export interface Watch {
 }
 
 const VERDICT: Record<string, { label: string; cls: string }> = {
-    persists: { label: "Still happening", cls: "bg-amber-500/15 text-warn" },
+    persists: { label: "Still happening", cls: "bg-amber-500/10 text-warn" },
     intermittent: { label: "Happens at times", cls: "bg-amber-500/10 text-warn" },
     not_seen: { label: "Not seen during the watch", cls: "bg-emerald-500/15 text-ok" },
     insufficient: { label: "Not enough data", cls: "bg-surface-3 text-muted" },

@@ -105,7 +105,7 @@ export function SummaryTab({ s, onTab, projectId, findings, cases, assessment }:
             <section aria-labelledby="findings-h" className="scroll-mt-20">
                 <div className="flex items-baseline justify-between mb-3">
                     <h2 id="findings-h" className="text-xl font-semibold text-ink">What we found</h2>
-                    <button type="button" className="inline-flex items-center gap-1 text-sm text-accent hover:underline" onClick={() => askConsultant("What are the most important findings for this site so far, and what should we check first?")}>
+                    <button type="button" className="inline-flex items-center gap-1 py-1 text-sm text-accent hover:underline" onClick={() => askConsultant("What are the most important findings for this site so far, and what should we check first?")}>
                         Ask the consultant<ArrowRight className="h-3.5 w-3.5" aria-hidden />
                     </button>
                 </div>
@@ -149,7 +149,7 @@ function Fingerprint({ s }: { s: Summary }) {
                         <Tooltip contentStyle={{ background: "var(--tooltip-bg)", color: "var(--tooltip-ink)", border: "1px solid var(--tooltip-border)", fontSize: 12 }}
                             labelFormatter={(h) => `${String(h).padStart(2, "0")}:00–${String(Number(h) + 1).padStart(2, "0")}:00 ${TZ_LABEL}`}
                             formatter={(v: any, name: string) => [Array.isArray(v) ? `${num(v[0], 1)}–${num(v[1], 1)} kW` : `${num(v, 1)} kW`, name]} />
-                        <Legend wrapperStyle={{ fontSize: 12 }} />
+                        <Legend wrapperStyle={{ fontSize: 12 }} formatter={(v) => <span className="text-ink-3">{v}</span>} />
                         {wk.band && <Area dataKey="band" name="Weekday P10–P90" stroke="none" fill="#3b82f6" fillOpacity={0.18} isAnimationActive={false} />}
                         <Line dataKey="weekday" name="Weekday median" stroke="#60a5fa" strokeWidth={2} dot={false} isAnimationActive={false} connectNulls={false} />
                         {we && we.days > 0 && <Line dataKey="weekend" name="Weekend median" stroke="#a3a3a3" strokeDasharray="6 4" strokeWidth={2} dot={false} isAnimationActive={false} />}

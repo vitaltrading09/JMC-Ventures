@@ -56,7 +56,7 @@ export function NextStep({ f, c, assessmentId, project, role, suggested }: { f: 
         );
     }
     const closeLink = !closing && (
-        <button type="button" className="text-sm text-muted hover:text-ink" onClick={() => setClosing(true)}>No action needed…</button>
+        <button type="button" className="py-1 text-sm text-muted hover:text-ink" onClick={() => setClosing(true)}>No action needed…</button>
     );
     const closeForm = closing && (
         <form className="mt-4 flex flex-wrap items-end gap-2 border-t border-line pt-4" onSubmit={(e) => { e.preventDefault(); save.mutate({ status: "not_needed", next_step: reason || "Closed: no action needed" }); }}>

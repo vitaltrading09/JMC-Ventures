@@ -54,9 +54,9 @@ function ProvisionalCard({ a, s, role, project }: { a: Assessment; s: Summary | 
                 <p className="mt-1 text-[11px] text-slate-500">{project.name}</p>
                 <span className="mt-3 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-800">PROVISIONAL</span>
                 <dl className="mt-4 space-y-1.5 text-[10px]">
-                    <div><dt className="text-slate-400">Assessment</dt><dd className="font-semibold">{a.reference}</dd></div>
-                    <div><dt className="text-slate-400">Measured so far</dt><dd className="font-semibold">{days < 1 ? `${Math.round(days * 24)} hours` : `${days.toFixed(1)} days`}</dd></div>
-                    <div><dt className="text-slate-400">Final report</dt><dd className="font-semibold">after {fmtDate(a.effective_end_at)}</dd></div>
+                    <div><dt className="text-slate-600">Assessment</dt><dd className="font-semibold">{a.reference}</dd></div>
+                    <div><dt className="text-slate-600">Measured so far</dt><dd className="font-semibold">{days < 1 ? `${Math.round(days * 24)} hours` : `${days.toFixed(1)} days`}</dd></div>
+                    <div><dt className="text-slate-600">Final report</dt><dd className="font-semibold">after {fmtDate(a.effective_end_at)}</dd></div>
                 </dl>
                 <div className="absolute bottom-4 left-5 right-5 space-y-1">{[0, 1, 2].map((i) => <div key={i} className="h-1 rounded bg-slate-100" />)}</div>
             </div>
@@ -112,7 +112,7 @@ function ShareLinks({ a }: { a: Assessment }) {
                         <li key={x.id} className="flex flex-wrap items-center gap-3 text-ink-3">
                             <span>{x.label ?? "Link"}</span>
                             <span className="text-faint">made {fmtDate(x.created_at)} · opened {x.opened_count}× · until {fmtDate(x.expires_at)}</span>
-                            <button type="button" className="text-faint hover:text-bad" onClick={() => revoke.mutate(x.id)}>Stop this link</button>
+                            <button type="button" className="py-1 text-muted hover:text-bad" onClick={() => revoke.mutate(x.id)}>Stop this link</button>
                         </li>
                     ))}
                 </ul>
