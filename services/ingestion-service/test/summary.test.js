@@ -176,3 +176,16 @@ test('window answer: an empty window says so', () => {
     const a = C.windowAnswer(C.windowFacts([]), { from: new Date('2026-11-06T06:00:00Z'), to: new Date('2026-11-06T07:00:00Z'), point: 'X' }, 6, false).answer;
     assert.match(a, /No measurements were received/);
 });
+
+test('data explorer: automatic resolution and channel catalogue', () => {
+    const { autoInterval, EXPLORE_CHANNELS, EXPLORE_INTERVALS } = require('../dist/investigate.js');
+    assert.strictEqual(autoInterval(3_600_000), 'raw');
+    assert.strictEqual(autoInterval(86_400_000), '1m');
+    assert.strictEqual(autoInterval(7 * 86_400_000), '10m');
+    assert.strictEqual(autoInterval(30 * 86_400_000), '1h');
+    const keys = EXPLORE_CHANNELS.map((c) => c.key);
+    for (const k of ['thd_current_a', 'thd_current_b', 'thd_current_c', 'voltage_ab', 'current_n', 'power_factor_b']) assert.ok(keys.includes(k), k);
+    assert.ok(EXPLORE_CHANNELS.find((c) => c.key === 'thd_current_b').agg);
+    assert.ok(!EXPLORE_CHANNELS.find((c) => c.key === 'voltage_ab').agg);       // raw only
+    assert.ok(EXPLORE_INTERVALS.raw.maxMs <= 6 * 3_600_000);
+});

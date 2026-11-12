@@ -351,6 +351,13 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     assessment end, checked on every open; public page `/shared/<token>`, API `/public/preview/:token[?check=1]`).
     "Book a follow-up assessment" (`booking_requests`; any client user incl. viewers) → ops Home panel, email to
     `OPS_NOTIFY_EMAIL` when set.
+  - Data explorer (site section "Data explorer", `components/portal/DataExplorer.tsx`; `GET /points/:id/explore?from&to&
+    interval=auto|raw|1m|10m|1h&channels=`): up to 8 of `EXPLORE_CHANNELS` (`src/investigate.ts`; aggregate channels have
+    avg/min/max at every interval, per-phase P/Q/S/PF, L-L voltages and neutral current are raw only); raw ≤ 6 h (30 000 rows),
+    1m ≤ 3 d, 10m ≤ 31 d; corrections applied as in the point views; one chart per unit, synced readout, values table with
+    jump-to-time, client-side CSV, live refresh every 15 s.
+  - Overview (second pass): meter-silent banner, one hero card (headline + area list | compact journey), tiles energy /
+    demand / load factor / open findings; the context strip hides "time left" on the overview.
   - Investigation (`src/investigate.ts`, migration `1793840000000_evidence-and-cases`): `GET /points/:id/investigate`
     (≤ 31 days; 1m ≤ 6 h, 10m ≤ 4 d, else 1h; avg + bucket min/max + events), `GET /points/:id/compare` (before/after
     10-minute stats, both windows inside the assessment), `evidence_refs` (saved windows; in the dataset as `evidence` and

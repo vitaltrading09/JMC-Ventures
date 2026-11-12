@@ -6,6 +6,7 @@
 //                                                  with min/max kept (decimation never
 //                                                  hides extrema) and the events in it
 //   GET  /points/:id/compare?a_from&a_to&b_from&b_to   before/after on matched windows
+//   GET  /points/:id/explore?from&to&interval&channels  data explorer: any channel, raw/1m/10m/1h
 //   GET  /assessments/:id/evidence                 saved evidence windows
 //   POST /assessments/:id/evidence                 save one (staff, client_admin)
 //   POST /evidence/:id/remove                      remove one (kept, marked removed)
@@ -54,6 +55,47 @@ export function windowStats(rows: any[]) {
         current_unbalance_p95: r(percentile(col('current_unbalance_avg'), 95), 1),
     };
 }
+
+
+// ── Data explorer: any channel, any resolution ──────────────────────────────
+
+type Corr = 'none' | 'scale' | 'sign' | 'signscale';
+/** Every channel a client may plot. `agg` = stored in the 1m/10m/1h aggregates (avg/min/max); others are raw only. */
+export const EXPLORE_CHANNELS: { key: string; label: string; unit: string; group: string; corr: Corr; agg: boolean }[] = [
+    ...['a', 'b', 'c'].map((p) => ({ key: `voltage_${p}`, label: `Voltage ${p.toUpperCase()}-N`, unit: 'V', group: 'Voltage', corr: 'none' as Corr, agg: true })),
+    ...['ab', 'bc', 'ca'].map((p) => ({ key: `voltage_${p}`, label: `Voltage ${p.toUpperCase()}`, unit: 'V', group: 'Voltage', corr: 'none' as Corr, agg: false })),
+    ...['a', 'b', 'c'].map((p) => ({ key: `current_${p}`, label: `Current ${p.toUpperCase()}`, unit: 'A', group: 'Current', corr: 'scale' as Corr, agg: true })),
+    { key: 'current_n', label: 'Current N', unit: 'A', group: 'Current', corr: 'scale', agg: false },
+    { key: 'power_active_total', label: 'Active power total', unit: 'kW', group: 'Power', corr: 'signscale', agg: true },
+    { key: 'power_reactive_total', label: 'Reactive power total', unit: 'kvar', group: 'Power', corr: 'signscale', agg: true },
+    { key: 'power_apparent_total', label: 'Apparent power total', unit: 'kVA', group: 'Power', corr: 'scale', agg: true },
+    ...['a', 'b', 'c'].map((p) => ({ key: `power_active_${p}`, label: `Active power ${p.toUpperCase()}`, unit: 'kW', group: 'Power per phase', corr: 'signscale' as Corr, agg: false })),
+    ...['a', 'b', 'c'].map((p) => ({ key: `power_reactive_${p}`, label: `Reactive power ${p.toUpperCase()}`, unit: 'kvar', group: 'Power per phase', corr: 'signscale' as Corr, agg: false })),
+    ...['a', 'b', 'c'].map((p) => ({ key: `power_apparent_${p}`, label: `Apparent power ${p.toUpperCase()}`, unit: 'kVA', group: 'Power per phase', corr: 'scale' as Corr, agg: false })),
+    { key: 'power_factor_total', label: 'Power factor total', unit: 'PF', group: 'Power factor', corr: 'sign', agg: true },
+    ...['a', 'b', 'c'].map((p) => ({ key: `power_factor_${p}`, label: `Power factor ${p.toUpperCase()}`, unit: 'PF', group: 'Power factor', corr: 'sign' as Corr, agg: false })),
+    { key: 'frequency', label: 'Frequency', unit: 'Hz', group: 'Frequency', corr: 'none', agg: true },
+    ...['a', 'b', 'c'].map((p) => ({ key: `thd_voltage_${p}`, label: `THD-V ${p.toUpperCase()}`, unit: '%', group: 'Distortion', corr: 'none' as Corr, agg: true })),
+    ...['a', 'b', 'c'].map((p) => ({ key: `thd_current_${p}`, label: `THD-I ${p.toUpperCase()}`, unit: '%', group: 'Distortion', corr: 'none' as Corr, agg: true })),
+    { key: 'voltage_unbalance', label: 'Voltage unbalance', unit: '%', group: 'Unbalance', corr: 'none', agg: true },
+    { key: 'current_unbalance', label: 'Current unbalance', unit: '%', group: 'Unbalance', corr: 'none', agg: true },
+];
+const BY_KEY = new Map(EXPLORE_CHANNELS.map((c) => [c.key, c]));
+
+export const EXPLORE_INTERVALS: Record<string, { view: string | null; seconds: number; maxMs: number; label: string }> = {
+    raw: { view: null, seconds: 1, maxMs: 6 * 3_600_000, label: 'every reading' },
+    '1m': { view: 'point_readings_1m', seconds: 60, maxMs: 3 * 86_400_000, label: '1-minute' },
+    '10m': { view: 'point_readings_10m', seconds: 600, maxMs: 31 * 86_400_000, label: '10-minute' },
+    '1h': { view: 'point_readings_1h', seconds: 3600, maxMs: 400 * 86_400_000, label: 'hourly' },
+};
+/** The finest interval that fits a window (auto). */
+export function autoInterval(ms: number): string {
+    return ms <= 2 * 3_600_000 ? 'raw' : ms <= 2 * 86_400_000 ? '1m' : ms <= 14 * 86_400_000 ? '10m' : '1h';
+}
+/** Raw expression with the deployment's corrections (same as the point views and the public API). */
+const rawExpr = (c: { key: string; corr: Corr }) =>
+    c.corr === 'scale' ? `r.${c.key} * d.scale_correction` : c.corr === 'sign' ? `r.${c.key} * d.power_sign`
+        : c.corr === 'signscale' ? `r.${c.key} * d.power_sign * d.scale_correction` : `r.${c.key}`;
 
 export function investigateRouter(pool: Pool, authenticateJwt: (req: any, res: any, next: any) => void): Router {
     const r0 = Router();
@@ -118,6 +160,55 @@ export function investigateRouter(pool: Pool, authenticateJwt: (req: any, res: a
             rows: rows.map(round),
             events: events.map((e) => ({ type: e.type, phase: e.phase, started_at: e.started_at, ended_at: e.ended_at, duration_s: num(e.duration_s), extreme: num(e.extreme_value) })),
             events_basis: 'inferred from the sampled RMS trend unless the meter records events itself',
+        });
+    }));
+
+    // Data explorer: up to 8 channels at raw / 1m / 10m / 1h for one window (clamped to the
+    // assessment; aggregate windows aligned to whole buckets). Raw rows carry the deployment's
+    // corrections, aggregate rows come from the corrected point views with min and max.
+    r0.get('/points/:id/explore', auth, handle(async (req, res) => {
+        const p = await point(req, res);
+        if (!p) return;
+        const from0 = new Date(String(req.query.from)), to0 = new Date(String(req.query.to));
+        if (Number.isNaN(from0.getTime()) || Number.isNaN(to0.getTime()) || from0 >= to0) return res.status(400).json({ error: 'from must be before to' });
+        const asked = String(req.query.interval ?? 'auto');
+        const interval = asked === 'auto' ? autoInterval(to0.getTime() - from0.getTime()) : asked;
+        const iv = EXPLORE_INTERVALS[interval];
+        if (!iv) return res.status(400).json({ error: `interval must be auto, ${Object.keys(EXPLORE_INTERVALS).join(', ')}` });
+        if (to0.getTime() - from0.getTime() > iv.maxMs) return res.status(400).json({ error: `At ${iv.label} resolution a window covers at most ${Math.round(iv.maxMs / 3_600_000)} hours`, code: 'window_too_long', max_hours: Math.round(iv.maxMs / 3_600_000) });
+        const keys = String(req.query.channels ?? 'power_active_total').split(',').map((k) => k.trim()).filter((k) => BY_KEY.has(k));
+        if (!keys.length || keys.length > 8) return res.status(400).json({ error: 'Choose 1 to 8 channels' });
+        const c = clampToAccess(from0, to0, p);
+        const w = c && (interval === 'raw' ? c : alignInward(c, iv.seconds * 1000, p));
+        const channels = keys.map((k) => { const ch = BY_KEY.get(k)!; return { key: k, label: ch.label, unit: ch.unit, available: interval === 'raw' || ch.agg }; });
+        if (!w) return res.json({ point_id: p.id, interval, channels, rows: [], basis: 'nothing inside the assessment window' });
+        let rows: any[];
+        if (interval === 'raw') {
+            const cols = keys.map((k) => `${rawExpr(BY_KEY.get(k)!)} AS ${k}`).join(', ');
+            rows = (await pool.query(`
+                SELECT r.time AS t, ${cols}
+                FROM deployments d JOIN meter_readings r ON r.meter_id = d.device_id AND r.time >= d.installed_at AND (d.removed_at IS NULL OR r.time < d.removed_at)
+                WHERE d.measurement_point_id = $1 AND r.time >= $2 AND r.time < $3 ORDER BY r.time LIMIT 30000`, [p.id, w.from, w.to])).rows;
+        } else {
+            const agg = keys.filter((k) => BY_KEY.get(k)!.agg);
+            const cols = agg.map((k) => `${k}_avg AS ${k}, ${k}_min AS ${k}_min, ${k}_max AS ${k}_max`).join(', ');
+            rows = (await pool.query(`
+                SELECT bucket AS t, n${cols ? `, ${cols}` : ''} FROM ${iv.view}
+                WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3 ORDER BY bucket`, [p.id, w.from, w.to])).rows;
+        }
+        const dec = (k: string) => (k.startsWith('power_factor') ? 3 : k.startsWith('frequency') ? 3 : 2);
+        res.json({
+            point_id: p.id, interval, interval_label: iv.label, bucket_seconds: iv.seconds, from: w.from, to: w.to, timezone: 'Africa/Johannesburg',
+            channels, truncated: interval === 'raw' && rows.length >= 30000,
+            basis: interval === 'raw'
+                ? 'every stored reading (the meter\'s own interval), with the installation corrections applied'
+                : `${iv.label} averages with the lowest and highest reading inside each ${iv.label} period; times are the start of the period`,
+            rows: rows.map((x) => {
+                const o: any = { t: new Date(x.t).toISOString() };
+                if (x.n != null) o.n = Number(x.n);
+                for (const [k, v] of Object.entries(x)) if (k !== 't' && k !== 'n') o[k] = v == null ? null : Math.round(Number(v) * 10 ** dec(k)) / 10 ** dec(k);
+                return o;
+            }),
         });
     }));
 

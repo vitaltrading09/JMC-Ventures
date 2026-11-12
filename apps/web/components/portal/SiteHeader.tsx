@@ -14,8 +14,8 @@ import { elapsedFraction } from "@/lib/assessments";
 import type { Summary } from "@/lib/summary";
 import { inputClass } from "@/components/ops/ui";
 
-export function SiteHeader({ a, summary, pointId, onPoint }: {
-    a: Assessment; summary: Summary | undefined; pointId: string | null; onPoint: (id: string) => void;
+export function SiteHeader({ a, summary, pointId, onPoint, showTime = true }: {
+    a: Assessment; summary: Summary | undefined; pointId: string | null; onPoint: (id: string) => void; showTime?: boolean;
 }) {
     const c = summary?.context;
     const cov = c?.coverage?.fraction;
@@ -45,13 +45,13 @@ export function SiteHeader({ a, summary, pointId, onPoint }: {
                     <p className="text-faint text-xs">Data</p>
                     <p className="text-ink tabular-nums">
                         {cov == null ? "–" : `${Math.round(cov * 100)} % complete`}
-                        <span className={fresh !== null && fresh > 30 * 60_000 ? " text-warn" : " text-muted"}> · {c?.last_data_at ? `latest hour ${fmtAgo(c.last_data_at)}` : "no data yet"}</span>
+                        <span className={ fresh !== null && fresh > 2 * 3_600_000 ? " text-warn font-medium" : " text-muted"}> · {c?.last_data_at ? `last data ${fmtAgo(new Date(new Date(c.last_data_at).getTime() + 3_600_000))}` : "no data yet"}</span>
                     </p>
                 </div>
                 <div className="flex items-center gap-2 ml-auto">
-                    <span className="inline-flex items-center gap-1 text-ink-3 tabular-nums" title={`${pct} % of the assessment elapsed`}>
+                    {showTime && <span className="inline-flex items-center gap-1 text-ink-3 tabular-nums" title={`${pct} % of the assessment elapsed`}>
                         <Clock className="h-4 w-4 text-faint" aria-hidden />{a.remaining} left
-                    </span>
+                    </span>}
                     <a className="inline-flex items-center gap-1 rounded-lg border border-line-strong px-2.5 py-1.5 text-ink-2 hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400"
                         href={apiUrl(`/ingestion/assessments/${a.id}/preview.pdf?kind=overview`)} target="_blank" rel="noreferrer">
                         <FileText className="h-4 w-4" aria-hidden />Report preview
@@ -62,7 +62,6 @@ export function SiteHeader({ a, summary, pointId, onPoint }: {
                     </button>
                 </div>
             </div>
-            <div className="h-1 bg-surface-2" aria-hidden><div className="h-full bg-emerald-500/70" style={{ width: `${pct}%` }} /></div>
             <details className="px-4 py-2 text-xs text-muted">
                 <summary className="cursor-pointer text-muted hover:text-ink-2">Assessment details</summary>
                 <p className="mt-2">{a.package_name ?? `${a.duration_days}-day assessment`}: {fmtDateTime(a.start_at)} → {fmtDateTime(a.effective_end_at)} {TZ_LABEL}.

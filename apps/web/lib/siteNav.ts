@@ -2,7 +2,7 @@
 // sidebar switches to these when a site is open, so the site page needs no
 // tab row of its own.
 
-import { LayoutDashboard, ListChecks, BarChart3, Activity, Search, FileText, Info } from "lucide-react";
+import { LayoutDashboard, ListChecks, BarChart3, Activity, Search, FileText, Info, LineChart } from "lucide-react";
 
 export const SITE_VIEWS = [
     { key: "overview", label: "Overview", icon: LayoutDashboard, live: false },
@@ -10,6 +10,7 @@ export const SITE_VIEWS = [
     { key: "energy", label: "Energy and demand", icon: BarChart3, live: true },
     { key: "pq", label: "Power quality", icon: Activity, live: true },
     { key: "investigate", label: "Investigation", icon: Search, live: true },
+    { key: "data", label: "Data explorer", icon: LineChart, live: true },
     { key: "reports", label: "Reports and data", icon: FileText, live: false },
     { key: "site", label: "Site details", icon: Info, live: true },
 ] as const;

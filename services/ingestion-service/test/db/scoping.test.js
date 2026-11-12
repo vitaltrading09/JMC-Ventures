@@ -247,6 +247,17 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         const list = JSON.parse((await call(A.viewerToken, 'GET', `/assessments/${A.assessment}/evidence`)).text);
         assert.ok(list.some((e) => e.title === 'Afternoon peak'));
         assert.deepStrictEqual(leaks(JSON.stringify(list)), []);
+        // Data explorer: raw readings with corrections, own points only, limits enforced.
+        // (The seeded readings predate the legacy auto-deployment; readings before an install are
+        // never attributed, so move A's install back to cover them.)
+        await q(`UPDATE deployments SET installed_at = NOW() - INTERVAL '2 hours' WHERE id = $1`, [A.deployment]);
+        const ex = await call(A.viewerToken, 'GET', `/points/${A.point}/explore?from=${iso(now - 3_600_000)}&to=${iso(now)}&interval=raw&channels=voltage_a,power_active_total,thd_current_b`);
+        assert.strictEqual(ex.status, 200, ex.text);
+        const exb = JSON.parse(ex.text);
+        assert.ok(exb.rows.length >= 30 && exb.rows[0].voltage_a === 230 && exb.rows[0].power_active_total === 12, JSON.stringify(exb.rows[0]));
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${B.point}/explore?from=${iso(now - 3_600_000)}&to=${iso(now)}&interval=raw`)).status, 403);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/explore?from=${iso(now - 86_400_000)}&to=${iso(now)}&interval=raw`)).status, 400);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/explore?from=${iso(now - 3_600_000)}&to=${iso(now)}&channels=nonsense`)).status, 400);
         // Investigation window: clamped to the assessment.
         const inv = await call(A.adminToken, 'GET', `/points/${A.point}/investigate?from=${iso(now - 10 * 86_400_000)}&to=${iso(now)}`);
         assert.strictEqual(inv.status, 200);

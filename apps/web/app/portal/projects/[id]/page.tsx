@@ -25,6 +25,7 @@ import { PowerQualityView } from "@/components/portal/PowerQualityView";
 import { InvestigateView } from "@/components/portal/InvestigateView";
 import { FindingTiles } from "@/components/portal/FindingTiles";
 import { FindingDetail } from "@/components/portal/FindingDetail";
+import { DataExplorer } from "@/components/portal/DataExplorer";
 import { EnergyView } from "@/components/portal/EnergyView";
 import { ReportsView } from "@/components/portal/ReportsView";
 import { SkeletonPage } from "@/components/portal/Insight";
@@ -50,7 +51,7 @@ export default function PortalSitePage() {
     const p = q.data;
     const telemetry = p.telemetry_visible;
     const asked = viewFrom(params);
-    const allowed = (v: SiteView) => v === "reports" || v === "overview" || (telemetry && (v !== "investigate" || !!live));
+    const allowed = (v: SiteView) => v === "reports" || v === "overview" || (telemetry && ((v !== "investigate" && v !== "data") || !!live));
     const view: SiteView = allowed(asked) ? asked : telemetry ? "overview" : "reports";
     const s = summary.data;
     const effectivePoint = pointId ?? s?.context.point?.id ?? null;
@@ -64,7 +65,7 @@ export default function PortalSitePage() {
                 <h1 className="text-[28px] font-semibold text-ink leading-tight">{p.name}</h1>
                 {p.address && <p className="text-[15px] text-muted">{p.address}</p>}
             </header>
-            {live ? <SiteHeader a={live} summary={s} pointId={effectivePoint} onPoint={setPointId} /> : <AssessmentBanner projectId={p.id} />}
+            {live ? <SiteHeader a={live} summary={s} pointId={effectivePoint} onPoint={setPointId} showTime={view !== "overview"} /> : <AssessmentBanner projectId={p.id} />}
             {title && <h2 className="text-xl font-semibold text-ink pt-2">{title}</h2>}
 
             {view === "overview" && (live
@@ -93,6 +94,9 @@ export default function PortalSitePage() {
                 <InvestigateView assessment={live} pointId={effectivePoint} points={p.points} role={role} starts={startingPoints(s)}
                     initial={params.get("from") && params.get("to") ? { from: params.get("from")!, to: params.get("to")! } : null}
                     findings={list.map((f) => ({ id: f.id, title: f.title }))} />
+            )}
+            {view === "data" && live && effectivePoint && (
+                <DataExplorer assessment={live} pointId={effectivePoint} pointName={p.points.find((x) => x.id === effectivePoint)?.name ?? "Point"} />
             )}
             {view === "reports" && (
                 <div className="space-y-8">
