@@ -512,6 +512,8 @@ docker compose stop api               # ingestion keeps running: api, ingest and
 bash deploy/scripts/build-multiarch.sh   # buildx linux/arm64 + linux/amd64 for every image
 # Ingest load test (20 meters × 1 Hz + a 2 h store-and-forward replay; see the file header)
 npx tsx services/ingestion-service/test/load/simulate.ts --meters 20 --minutes 10 --backlog-hours 2
+# Read-side benchmark: 30 days at 1 Hz for one point, then dataset, PDFs and chart queries (throwaway migrated DB only)
+BENCH_DATABASE_URL=postgres://... node services/ingestion-service/test/load/assessment-benchmark.js --days 30
 npm run build && npm test             # web build needs NEXT_PUBLIC_API_URL (apps/web/.env.local)
 ```
 
