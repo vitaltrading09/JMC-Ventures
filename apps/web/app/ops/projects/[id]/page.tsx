@@ -16,6 +16,7 @@ import { BalanceView, Balance } from "@/components/fleet/BalanceView";
 import { SldView } from "@/components/sld/SldView";
 import { PageHeader, Panel, Table, Badge, Loading, ErrorBox, Empty, Button, Field, inputClass } from "@/components/ops/ui";
 import { Assessment, STATUS_LABEL, STATUS_TONE } from "@/lib/assessments";
+import { PointBriefings } from "@/components/ops/PointBriefing";
 
 interface Point {
     id: string; name: string; role: string; parent_point_id: string | null; nominal_voltage_v: string | null;
@@ -71,6 +72,7 @@ export default function OpsProjectPage() {
             <SiteContext projectId={id} context={p.site_context ?? {}} onSaved={refresh} />
 
             <Points projectId={id} points={live} onChange={refresh} />
+            <PointBriefings points={live.map((x) => ({ id: x.id, name: x.name }))} />
 
             <Panel title="Metering layout" subtitle="Single-line diagram with the project's points pinned on it. Edit to upload the site's SLD PDF and place the points.">
                 <SldView projectId={id} editable />

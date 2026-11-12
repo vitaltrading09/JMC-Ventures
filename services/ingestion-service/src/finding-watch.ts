@@ -22,6 +22,7 @@ import type { Pool } from 'pg';
 import { percentile } from './reports/dataset';
 import { windowFacts, correlation, providerConfig, completeOnce, costCents } from './consultant';
 import { enqueueEmail, appUrl } from './notify/email';
+import { siteHint, describeContext } from './point-context';
 
 export const WATCH_DEFAULT_DAYS = 3;
 export const SETTLE_MS = 30 * 60_000;            // 10-minute aggregates are final by then
@@ -305,7 +306,7 @@ export function suggestion(kind: WatchKind, v: Verdict, o: Observation): string 
 }
 
 /** The five-section conclusion assembled from the measurements. */
-export function conclusionText(kind: WatchKind, v: Verdict, whole: Observation, notes: { day: string; headline: string; seen: boolean; values: number; expected: number }[], w: { point: string; from: Date; to: Date }): string {
+export function conclusionText(kind: WatchKind, v: Verdict, whole: Observation, notes: { day: string; headline: string; seen: boolean; values: number; expected: number }[], w: { point: string; from: Date; to: Date; hint?: string | null }): string {
     const usable = notes.filter(usableDay), days = usable.length, seenDays = usable.filter((x) => x.seen).length;
     const gaps = notes.length - days;
     const withData = gaps ? ' with enough data' : '';
@@ -319,7 +320,7 @@ export function conclusionText(kind: WatchKind, v: Verdict, whole: Observation, 
     const shows = whole.facts.length ? whole.facts : [whole.headline];
     const basis = `${w.point}, ${sastTime(w.from)} to ${sastTime(w.to)} SAST: ${whole.values} of ${whole.expected} ten-minute values received. Automated conclusion from the measured data; links in time are correlations to verify on site.`;
     return [`### In short\n${short} ${whole.headline}`, `### What the data shows\n${shows.map((l) => `- ${l}`).join('\n')}`,
-        `### What it means\n${MEANS[kind]}`, `### Suggested next step\n${suggestion(kind, v, whole)}`, `### Basis\n${basis}`].join('\n\n');
+        `### What it means\n${MEANS[kind]}${w.hint && v !== 'not_seen' && v !== 'insufficient' ? ` ${w.hint}` : ''}`, `### Suggested next step\n${suggestion(kind, v, whole)}`, `### Basis\n${basis}`].join('\n\n');
 }
 
 const WATCH_SYSTEM = `You are GridIQ's electrical metering consultant. A client asked GridIQ to watch one finding at their site for a few days while they investigate it. Write the closing note of that watch.
@@ -384,7 +385,7 @@ async function loadData(db: Pool, w: any, from: Date, to: Date): Promise<WatchDa
 
 const WATCH_SQL = `
     SELECT w.*, r.title, r.problem, r.type, r.site_id AS project_id, a.end_at, a.closed_at, a.status AS a_status, a.ai_budget_cents,
-           mp.name AS point_name, mp.nominal_voltage_v, mp.contracted_mdi_kva
+           mp.name AS point_name, mp.nominal_voltage_v, mp.contracted_mdi_kva, mp.context AS point_context
     FROM finding_watches w
     JOIN recommendations r ON r.id = w.recommendation_id
     JOIN assessments a ON a.id = w.assessment_id
@@ -420,7 +421,7 @@ export async function concludeWatch(db: Pool, w: any, now = new Date()) {
     const whole = observe(w.kind, data, from, to);
     const notes = (w.notes ?? []) as any[];
     const verdict = verdictOf(whole, notes);
-    const win = { point: w.point_name, from, to };
+    const win = { point: w.point_name, from, to, hint: siteHint(w.kind, w.point_context) };
     let text = conclusionText(w.kind, verdict, whole, notes, win);
     let provider = 'none', model: string | null = null;
     const cfg = providerConfig();
@@ -428,7 +429,7 @@ export async function concludeWatch(db: Pool, w: any, now = new Date()) {
         const spent = Number((await db.query(`SELECT COALESCE(sum(cost_cents), 0) AS c FROM ai_messages WHERE assessment_id = $1`, [w.assessment_id])).rows[0].c);
         if (spent < Number(w.ai_budget_cents ?? 0)) {
             try {
-                const evidence = { finding: { title: w.title, text: w.problem }, watch: { point: w.point_name, from: sastTime(from), to: sastTime(to), verdict }, overall: whole, days: notes };
+                const evidence = { finding: { title: w.title, text: w.problem }, point_briefing: describeContext(w.point_context), watch: { point: w.point_name, from: sastTime(from), to: sastTime(to), verdict }, overall: whole, days: notes };
                 const out = await completeOnce(cfg, WATCH_SYSTEM, `WATCH EVIDENCE (authoritative):\n${JSON.stringify(evidence)}\n\nDRAFT NOTE (measured-data version):\n${text}`);
                 if (out.text && out.text.includes('### ')) {
                     text = out.text; provider = cfg.provider; model = out.model ?? cfg.model;

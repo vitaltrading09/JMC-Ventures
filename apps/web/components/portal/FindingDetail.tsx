@@ -17,6 +17,7 @@ import type { Assessment } from "@/lib/assessments";
 import { InvestigateView } from "@/components/portal/InvestigateView";
 import { NextStep } from "@/components/portal/NextStep";
 import { WatchPanel } from "@/components/portal/WatchPanel";
+import { Closeups, momentKindOf } from "@/components/portal/Closeups";
 import { Empty } from "@/components/ops/ui";
 
 export function FindingDetail({ f, c, project, live, role, findings }: {
@@ -68,9 +69,18 @@ export function FindingDetail({ f, c, project, live, role, findings }: {
                 </Step>
                 <Step n={3} title="What to check and do">
                     <p className="whitespace-pre-line">{f.solution}</p>
+                    {f.evidence?.site_hint && (
+                        <p className="mt-3 rounded-xl bg-blue-500/5 px-3 py-2.5 text-[15px] ring-1 ring-blue-500/20">
+                            <span className="block text-xs font-semibold uppercase tracking-wide text-accent">On your site</span>{f.evidence.site_hint}
+                        </p>
+                    )}
                     {Number(f.estimated_monthly_saving_zar) > 0 && <p className="mt-2 text-sm text-muted">Indicative {zar(f.estimated_monthly_saving_zar)}/month from the declared demand tariff; confirm against the bill before relying on it.</p>}
                 </Step>
             </div>
+
+            {live && point && momentKindOf(f.type) && (
+                <Closeups projectId={project.id} pointId={point.id} kind={momentKindOf(f.type)!} window={window} findingTitle={f.title} />
+            )}
 
             <section className="rounded-2xl border border-line bg-surface p-5">
                 <div className="flex flex-wrap items-center gap-3">

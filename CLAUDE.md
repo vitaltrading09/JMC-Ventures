@@ -374,6 +374,20 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     GridIQ"; staff `POST /recommendations/:id/watch/review` (note) and `/watch/conclude` (now); staff/client_admin
     `/watch/stop`; "not needed" or reopening stops it. Email to the starter and client admins with a grant. Returned as
     `watch` on `GET /assessments/:id/cases`; web `components/portal/WatchPanel.tsx` (its suggestion pre-fills the action).
+  - Close-ups (`src/moments.ts`, `GET /points/:id/moments?kind=sags|voltage_high|thd|demand|imbalance|pf&from&to&limit`):
+    the worst 1-minute values of the window (≥ 30 min apart), each with every stored reading around it (2 min before to
+    3 after; ±15 min when the excursion runs off the frame, ±45 min for sparse meters) and `momentFacts`: exact extreme,
+    phases, duration, the load just before and at it, and a reading `site | supply | unclear` with what to verify. After
+    the first, only moments beyond the level get a card. Web: `components/portal/Closeups.tsx` on the finding page.
+  - Point briefing (`src/point-context.ts`, migration `1793870000000_point-context`: `measurement_points.context`): the
+    consultant's questions to staff per point (connection, supplier, transformer, loads, largest motor and start method,
+    PF correction, generation, sensitive equipment, reported symptoms; follow-ups only when they apply). Staff:
+    `GET /points/:id/briefing`, `PATCH /points/:id {context}` (validated by `normaliseContext`); web
+    `components/ops/PointBriefing.tsx` on the ops project page. `siteHint(kind, ctx)` tailors rule findings
+    (`evidence.site_hint`, shown as "On your site"), watch conclusions and the consultant's measured-data answers;
+    `describeContext` goes into the dataset (`points[].briefing`), the model context and portal Site details.
+  - Speed: site tiles cached per site (fresh 10 s, stale ≤ 90 s with one background rebuild); the assessment dataset is
+    served stale ≤ 30 min while it rebuilds. Benchmark: `test/load/assessment-benchmark.js`.
 
 ---
 

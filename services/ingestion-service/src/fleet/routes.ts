@@ -8,6 +8,7 @@
 // written to audit_log (who, when, why, before and after).
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { QUESTIONS, normaliseContext, briefing, describeContext, siteHint } from '../point-context';
 import { Router } from 'express';
 import type { Pool, PoolClient } from 'pg';
 import { projectEnergyBalance } from './balance';
@@ -104,6 +105,8 @@ const POINT_FIELDS: FieldSpec = {
     declared_capacity_kva: (v) => optNum(v, 'declared_capacity_kva', { positive: true }),
     contracted_mdi_kva: (v) => optNum(v, 'contracted_mdi_kva', { positive: true }),
     sort_order: (v) => optNum(v, 'sort_order'),
+    // The consultant's briefing about this point (point-context.ts): validated answers only.
+    context: (v) => { try { return JSON.stringify(normaliseContext(v)); } catch (e: any) { throw new InputError(e.message); } },
 };
 const DEVICE_FIELDS: FieldSpec = {
     name: text, serial_number: text, model: text, comms_module: text, firmware: text,
@@ -278,6 +281,21 @@ export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, ne
             `INSERT INTO measurement_points (${cols.join(', ')}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')}) RETURNING *`,
             [req.params.id, ...Object.values(f)]);
         res.status(201).json(q.rows[0]);
+    }));
+
+    // The consultant's briefing for one point: the questions that apply, the answers so far,
+    // what they come to in words, and what they change for each kind of finding.
+    r.get('/points/:id/briefing', ...guard, handle(async (req, res) => {
+        const q = await pool.query(`SELECT id, name, role, context FROM measurement_points WHERE id = $1`, [req.params.id]);
+        if (!q.rows.length) return res.status(404).json({ error: 'Not found' });
+        const ctx = q.rows[0].context ?? {};
+        const b = briefing(ctx);
+        res.json({
+            point: { id: q.rows[0].id, name: q.rows[0].name, role: q.rows[0].role }, context: ctx, ...b,
+            questions: QUESTIONS.filter((x) => b.asked.includes(x.id)).map(({ when, ...x }) => x),
+            summary: describeContext(ctx),
+            hints: (['sags', 'thd', 'pf', 'demand', 'imbalance', 'baseload'] as const).map((k) => ({ kind: k, text: siteHint(k, ctx) })).filter((h) => h.text),
+        });
     }));
 
     r.patch('/points/:id', ...guard, handle(async (req, res) => {

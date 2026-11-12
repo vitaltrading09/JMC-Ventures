@@ -13,6 +13,8 @@
 //   - no longer fires and the row is still a draft        -> supersede it (condition cleared).
 // Rows are recommendations with type RULE_* and evidence.engine = 'rules'.
 
+import { siteHint } from './point-context';
+import { kindFor } from './finding-watch';
 import type { Pool } from 'pg';
 
 export const WINDOW_DAYS = 7;
@@ -244,7 +246,7 @@ export async function runRuleFindings(db: Pool, now = new Date()) {
     const to = now;
     const from = new Date(now.getTime() - WINDOW_DAYS * 86_400_000);
     const points = (await db.query(`
-        SELECT d.measurement_point_id AS point_id, d.device_id, mp.project_id, p.tenant_id
+        SELECT d.measurement_point_id AS point_id, d.device_id, mp.project_id, p.tenant_id, mp.context
         FROM deployments d
         JOIN measurement_points mp ON mp.id = d.measurement_point_id AND mp.archived_at IS NULL
         JOIN projects p ON p.id = mp.project_id AND p.archived_at IS NULL
@@ -260,6 +262,8 @@ export async function runRuleFindings(db: Pool, now = new Date()) {
                 from: from.toISOString(), to: to.toISOString(), metric: f.type,
                 calculation: `findings-rules: ${WINDOW_DAYS}-day point_readings_10m / point_readings_30m (corrected, per deployment window)`,
                 values: f.values, chart: { meter_id: pt.device_id, days: WINDOW_DAYS },
+                // What the point briefing (where the meter sits, what it feeds) changes for this finding.
+                site_hint: siteHint(kindFor(f.type) as any, pt.context) ?? undefined,
             });
             const last = (await db.query(`
                 SELECT id, review_status, reviewed_at, created_at FROM recommendations

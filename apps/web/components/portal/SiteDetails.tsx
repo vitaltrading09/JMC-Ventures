@@ -34,6 +34,12 @@ export function SiteDetails({ project, s }: { project: PortalProjectDetail; s: S
                             <div><dt className="text-sm text-faint">Readings</dt><dd className="text-ink-2 tabular-nums">{cadenceText(pd.coverage)}</dd></div>
                             <div><dt className="text-sm text-faint">Contracted demand</dt><dd className="text-ink-2 tabular-nums">{pd.demand?.contracted_mdi_kva ? `${num(pd.demand.contracted_mdi_kva)} kVA` : "not recorded"}</dd></div>
                         </dl>
+                        {(pd.briefing ?? []).length > 0 && (
+                            <div className="mt-5 border-t border-line pt-4">
+                                <p className="text-sm text-faint">What GridIQ recorded about this point</p>
+                                <ul className="mt-1.5 space-y-1 text-[15px] text-ink-2">{pd.briefing.map((t: string, i: number) => <li key={i}>{t}</li>)}</ul>
+                            </div>
+                        )}
                     </div>
                     <div>
                         <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-faint"><CalendarCheck className="h-4 w-4" aria-hidden />Data received</p>

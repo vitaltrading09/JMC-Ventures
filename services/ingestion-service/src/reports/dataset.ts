@@ -12,6 +12,7 @@
 // from THD.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { describeContext } from '../point-context';
 import crypto from 'crypto';
 import type { Pool } from 'pg';
 import { loadPointEnergy } from '../fleet/balance';
@@ -221,7 +222,7 @@ export async function buildAssessmentDataset(db: Pool, assessmentId: string, cut
     const ctx = a.site_context ?? {};
 
     const pts = (await db.query(`
-        SELECT mp.id, mp.name, mp.role, mp.parent_point_id, mp.nominal_voltage_v, mp.ct_primary_a,
+        SELECT mp.id, mp.name, mp.role, mp.parent_point_id, mp.nominal_voltage_v, mp.ct_primary_a, mp.context,
                COALESCE(mp.contracted_mdi_kva, ss.contracted_mdi_kva) AS mdi
         FROM assessment_points ap JOIN measurement_points mp ON mp.id = ap.measurement_point_id
         LEFT JOIN site_settings ss ON ss.site_id = mp.project_id
@@ -482,6 +483,8 @@ async function pointSection(db: Pool, pt: any, from: Date, to: Date, days: numbe
 
     return {
         id, name: pt.name, role: pt.role, parent_point_id: pt.parent_point_id,
+        // The point briefing (staff answers about where the meter sits and what it feeds).
+        context: pt.context ?? {}, briefing: describeContext(pt.context),
         nominal_voltage_v: nominal, ct_primary_a: num(pt.ct_primary_a), contracted_mdi_kva: mdi,
         deployments: deps.map((d) => ({ device: d.code, model: d.model, installed_at: d.installed_at, removed_at: d.removed_at,
             sign: d.power_sign, scale: Number(d.scale_correction) })),

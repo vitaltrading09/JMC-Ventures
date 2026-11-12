@@ -293,6 +293,25 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         assert.strictEqual((await call(A.adminToken, 'POST', `/recommendations/${A.rec}/watch/stop`)).status, 404);
         const actions = (await q(`SELECT action FROM audit_log WHERE entity_id = $1 AND action LIKE 'finding_watch.%' ORDER BY id`, [A.rec])).map((x) => x.action);
         assert.deepStrictEqual(actions, ['finding_watch.start', 'finding_watch.conclude', 'finding_watch.review', 'finding_watch.start', 'finding_watch.stop']);
+        // Close-ups: the worst moments of A's own point, reading by reading.
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/moments?kind=bogus`)).status, 400);
+        await require('@gridiq/db').refreshAggregates(pool, new Date(now - 3 * 86_400_000), new Date(now + 3_600_000));
+        const mo = await call(A.viewerToken, 'GET', `/points/${A.point}/moments?kind=sags&from=${iso(now - 10 * 86_400_000)}&to=${iso(now)}`);
+        assert.strictEqual(mo.status, 200, mo.text);
+        const moments = JSON.parse(mo.text).moments;
+        assert.ok(moments.length >= 1 && moments[0].series.length >= 1 && moments[0].unit === 'V');
+        assert.ok(moments.every((m) => new Date(m.from) >= new Date(now - 2 * 86_400_000 - 3_600_000)), 'inside the assessment window');
+        // Point briefing: staff only; validated answers; it reaches the finding hint and the summary.
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/briefing`)).status, 403);
+        assert.strictEqual((await call(A.adminToken, 'PATCH', `/points/${A.point}`, { context: { location: 'main_board' } })).status, 403);
+        assert.strictEqual((await call(ops, 'PATCH', `/points/${A.point}`, { context: { location: 'on the roof' } })).status, 400);
+        assert.strictEqual((await call(ops, 'PATCH', `/points/${A.point}`, { context: { location: 'main_board', loads: ['motors', 'vsd'], start_method: 'dol', pf_kvar: 50 } })).status, 200);
+        const br = JSON.parse((await call(ops, 'GET', `/points/${A.point}/briefing`)).text);
+        assert.strictEqual(br.context.pf_kvar, undefined); // follow-up without its condition is dropped
+        assert.strictEqual(br.next, 'supply');
+        assert.ok(br.summary[0].includes('main distribution board') && br.hints.some((h) => h.kind === 'sags'));
+        const sum = JSON.parse((await call(A.viewerToken, 'GET', `/assessments/${A.assessment}/summary?point=${A.point}`)).text);
+        assert.ok((sum.point_detail?.briefing ?? []).some((t) => t.includes('main distribution board')));
         // Removing evidence keeps the row for the record.
         const id = JSON.parse(made.text).id;
         assert.strictEqual((await call(A.adminToken, 'POST', `/evidence/${id}/remove`)).status, 200);

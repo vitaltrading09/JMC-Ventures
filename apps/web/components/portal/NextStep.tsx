@@ -70,7 +70,7 @@ export function NextStep({ f, c, assessmentId, project, role, suggested }: { f: 
         const starting = status === "open";
         return (
             <Card error={save.error} title={starting ? "Start investigating: who looks into this, and by when?" : "Decide on an action"}>
-                <form className="grid gap-3 md:grid-cols-[1fr_2fr_auto_auto] items-end"
+                <form className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto_auto] items-end [&>*]:min-w-0"
                     onSubmit={(e) => { e.preventDefault(); save.mutate({ status: starting ? "investigating" : "action_planned", owner: form.owner || null, next_step: form.next_step || null, due_on: form.due_on || null }); }}>
                     <Field label="Who"><input className={inputClass} value={form.owner} onChange={(e) => setForm({ ...form, owner: e.target.value })} placeholder="e.g. Facilities manager" required /></Field>
                     <Field label={starting ? "First check" : "The action"}><input className={inputClass} value={form.next_step} onChange={(e) => setForm({ ...form, next_step: e.target.value })} required /></Field>

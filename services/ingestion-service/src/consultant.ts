@@ -27,6 +27,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { withScope, liveAssessmentSql, NO_ACCESS } from './scope';
 import { buildAssessmentDataset } from './reports/dataset';
 import { buildSummary } from './reports/summary';
+import { siteHint, type HintKind } from './point-context';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const PROMPT_VERSION = 'gridiq-consultant-2026.11.1';
@@ -119,7 +120,11 @@ export function deterministicAnswer(ds: any, q: string): { answer: string; evide
         const p0 = ds.points.find((p: any) => t.observed(p)) ?? ds.points[0];
         short.push(t.short(p0));
         means.push(...t.means(p0));
-        expect.push(...t.expect(p0));
+        const ex = t.expect(p0);
+        expect.push(...ex);
+        // What the point briefing changes, when this topic has something to check.
+        const hint = ex.length ? siteHint(HINT_KIND[t.evidence] ?? 'general', p0?.context) : null;
+        if (hint) expect.push(`At ${p0.name}: ${hint}`);
     }
     if (!chosen.length) {
         ev.push('executive');
@@ -141,6 +146,7 @@ export function deterministicAnswer(ds: any, q: string): { answer: string; evide
     return { answer: parts.join('\n\n'), evidence: Array.from(new Set(ev)) };
 }
 
+const HINT_KIND: Record<string, HintKind> = { 'power_quality.pf': 'pf', 'power_quality.thd_v': 'thd', 'power_quality.voltage': 'sags', demand: 'demand' };
 const pct = (x: number | null | undefined) => (x == null ? '–' : `${Math.round(x * 100)} %`);
 const hh = (h: number) => `${String(h).padStart(2, '0')}:00`;
 
@@ -454,7 +460,7 @@ export function consultantRouter(pool: Pool, authenticateJwt: (req: any, res: an
             const point = typeof req.query.point === 'string' && UUID.test(req.query.point) ? req.query.point : null;
             const s = buildSummary(ds, point);
             const p = ds.points.find((x: any) => x.id === s.context.point?.id);
-            res.json({ ...s, point_detail: p ? { power_quality: p.power_quality, demand: p.demand, instantaneous: p.instantaneous,
+            res.json({ ...s, point_detail: p ? { briefing: p.briefing, power_quality: p.power_quality, demand: p.demand, instantaneous: p.instantaneous,
                 coverage: p.coverage, hourly_series: p.hourly_series, patterns: p.patterns, energy: p.energy, capability: p.capability,
                 daily: p.daily, deployments: p.deployments, role: p.role, nominal_voltage_v: p.nominal_voltage_v, ct_primary_a: p.ct_primary_a } : null });
         } catch (e) { console.error('[summary]', e); res.status(500).json({ error: 'Server error' }); }

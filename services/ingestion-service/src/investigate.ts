@@ -7,6 +7,7 @@
 //                                                  hides extrema) and the events in it
 //   GET  /points/:id/compare?a_from&a_to&b_from&b_to   before/after on matched windows
 //   GET  /points/:id/explore?from&to&interval&channels  data explorer: any channel, raw/1m/10m/1h
+//   GET  /points/:id/moments?kind&from&to&limit    close-ups: the worst moments reading by reading (moments.ts)
 //   GET  /assessments/:id/evidence                 saved evidence windows
 //   POST /assessments/:id/evidence                 save one (staff, client_admin)
 //   POST /evidence/:id/remove                      remove one (kept, marked removed)
@@ -27,6 +28,7 @@ import type { Pool } from 'pg';
 import { withScope, findPoint, findOwned, liveAssessmentSql, telemetrySql, clampToAccess, alignInward, canWrite, seesUnpublishedFindings, NO_ACCESS } from './scope';
 import { percentile } from './reports/dataset';
 import { startWatch, concludeWatch, watchForConclusion } from './finding-watch';
+import { MOMENT_KINDS, MOMENT_RANK, momentFacts, spread, type MomentKind } from './moments';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const num = (v: any): number | null => (v === null || v === undefined ? null : Number(v));
@@ -178,6 +180,66 @@ export function investigateRouter(pool: Pool, authenticateJwt: (req: any, res: a
     // Data explorer: up to 8 channels at raw / 1m / 10m / 1h for one window (clamped to the
     // assessment; aggregate windows aligned to whole buckets). Raw rows carry the deployment's
     // corrections, aggregate rows come from the corrected point views with min and max.
+    // Close-ups: the 1-minute values find the worst moments; each comes back with every
+    // stored reading around it and what those readings show (moments.ts).
+    r0.get('/points/:id/moments', auth, handle(async (req, res) => {
+        const p = await point(req, res);
+        if (!p) return;
+        const kind = String(req.query.kind ?? '') as MomentKind;
+        if (!MOMENT_KINDS.includes(kind)) return res.status(400).json({ error: `kind must be one of ${MOMENT_KINDS.join(', ')}` });
+        const to0 = req.query.to ? new Date(String(req.query.to)) : new Date();
+        const from0 = req.query.from ? new Date(String(req.query.from)) : new Date(to0.getTime() - 7 * 86_400_000);
+        if (Number.isNaN(from0.getTime()) || Number.isNaN(to0.getTime()) || from0 >= to0) return res.status(400).json({ error: 'from must be before to' });
+        if (to0.getTime() - from0.getTime() > 31 * 86_400_000) return res.status(400).json({ error: 'A window covers at most 31 days' });
+        const limit = Math.min(5, Math.max(1, Number(req.query.limit) || 3));
+        const c = clampToAccess(from0, to0, p);
+        const w = c && alignInward(c, 60_000, p);
+        const meta = (await pool.query(`SELECT name, nominal_voltage_v, contracted_mdi_kva FROM measurement_points WHERE id = $1`, [p.id])).rows[0];
+        const nominalV = Number(meta?.nominal_voltage_v) || 230;
+        if (!w) return res.json({ point_id: p.id, kind, moments: [] });
+        const rank = MOMENT_RANK[kind];
+        const cands = (await pool.query(`
+            SELECT bucket, ${rank.expr} AS v FROM point_readings_1m
+            WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3 AND ${rank.where} AND ${rank.expr} IS NOT NULL
+            ORDER BY v ${rank.order} LIMIT 200`, [p.id, w.from, w.to])).rows.map((x) => ({ t: new Date(x.bucket).getTime(), v: Number(x.v) }));
+        const moments: any[] = [];
+        for (const m of spread(cands, limit)) {
+            const load = async (beforeMs: number, afterMs: number) => {
+                const cw = clampToAccess(new Date(m.t - beforeMs), new Date(m.t + 60_000 + afterMs), p);
+                if (!cw) return [];
+                return (await pool.query(`
+                    SELECT r.time AS t, r.voltage_a, r.voltage_b, r.voltage_c,
+                           r.current_a * d.scale_correction AS current_a, r.current_b * d.scale_correction AS current_b, r.current_c * d.scale_correction AS current_c,
+                           r.power_active_total * d.power_sign * d.scale_correction AS kw, r.power_apparent_total * d.scale_correction AS kva,
+                           r.power_factor_total * d.power_sign AS pf, r.thd_voltage_a AS thd_a, r.thd_voltage_b AS thd_b, r.thd_voltage_c AS thd_c,
+                           r.current_unbalance AS unbalance
+                    FROM deployments d JOIN meter_readings r ON r.meter_id = d.device_id AND r.time >= d.installed_at AND (d.removed_at IS NULL OR r.time < d.removed_at)
+                    WHERE d.measurement_point_id = $1 AND r.time >= $2 AND r.time < $3 ORDER BY r.time LIMIT 2000`, [p.id, cw.from, cw.to])).rows;
+            };
+            // Two minutes before to three after; a meter that reports rarely gets a wider frame.
+            let rows = await load(120_000, 120_000);
+            if (rows.length < 12) rows = await load(45 * 60_000, 45 * 60_000);
+            const opts = { nominalV, mdiKva: meta?.contracted_mdi_kva != null ? Number(meta.contracted_mdi_kva) : null };
+            let facts = momentFacts(kind, rows, opts);
+            // An excursion that runs off the frame gets a wider one, once.
+            if (facts?.clipped) { rows = await load(15 * 60_000, 15 * 60_000); facts = momentFacts(kind, rows, opts); }
+            if (!facts) continue;
+            // After the first, only moments that are beyond the level that matters are worth a card.
+            if (moments.length && !facts.crossed) continue;
+            if (moments.length && !moments[0].crossed) break;
+            const rd = (v: any, d = 1) => (v == null ? null : Math.round(Number(v) * 10 ** d) / 10 ** d);
+            moments.push({
+                ...facts, from: new Date(rows[0].t).toISOString(), to: new Date(rows[rows.length - 1].t).toISOString(),
+                series: rows.map((x) => ({ t: new Date(x.t).toISOString(), voltage_a: rd(x.voltage_a), voltage_b: rd(x.voltage_b), voltage_c: rd(x.voltage_c),
+                    current_a: rd(x.current_a), current_b: rd(x.current_b), current_c: rd(x.current_c), kw: rd(x.kw), kva: rd(x.kva), pf: rd(x.pf, 3),
+                    thd_a: rd(x.thd_a, 2), thd_b: rd(x.thd_b, 2), thd_c: rd(x.thd_c, 2), unbalance: rd(x.unbalance) })),
+            });
+        }
+        res.json({ point_id: p.id, point: meta?.name ?? null, kind, nominal_voltage_v: nominalV, from: w.from, to: w.to, timezone: 'Africa/Johannesburg',
+            basis: 'The worst 1-minute values of the period, each shown with every stored reading around it (installation corrections applied). The reading of site or supply is a pointer to verify, not a conclusion.',
+            moments });
+    }));
+
     r0.get('/points/:id/explore', auth, handle(async (req, res) => {
         const p = await point(req, res);
         if (!p) return;
