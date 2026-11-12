@@ -136,7 +136,7 @@ export function ChatWidget() {
                         ) : (
                             <div key={i}>
                                 {m.content && <p className="text-[11px] uppercase tracking-wide text-faint mb-1">{m.provider === "none" ? "Measured-data summary" : m.provider ? "Consultant answer (AI, from the measured data)" : "Answer"}</p>}
-                                <div className="rounded-xl px-3 py-2 bg-surface-2 text-ink whitespace-pre-wrap">{m.content || <span className="text-faint">Working…</span>}</div>
+                                <div className="rounded-xl px-4 py-3 bg-surface-2 text-ink">{m.content ? <Answer text={m.content} /> : <span className="text-faint">Working…</span>}</div>
                                 {(m.basis || (m.evidence?.length ?? 0) > 0) && (
                                     <details className="mt-1 text-[11px] text-faint">
                                         <summary className="cursor-pointer">Evidence and basis</summary>
@@ -157,5 +157,45 @@ export function ChatWidget() {
                 </>
             )}
         </aside>
+    );
+}
+
+const SECTION_STYLE: Record<string, string> = {
+    "in short": "text-[15px] font-medium text-ink",
+    "what you can expect to find on site": "",
+    basis: "text-xs text-faint",
+};
+
+/**
+ * Renders an answer written in "### Heading" sections with "- " bullets (the
+ * consultant's fixed structure). Plain text without headings renders as is.
+ * No HTML is interpreted: text only.
+ */
+function Answer({ text }: { text: string }) {
+    const blocks = text.split(/\n(?=###\s)/).map((b) => b.trim()).filter(Boolean);
+    if (!blocks.some((b) => b.startsWith("### "))) return <p className="whitespace-pre-wrap">{text}</p>;
+    return (
+        <div className="space-y-3">
+            {blocks.map((b, i) => {
+                if (!b.startsWith("### ")) return <p key={i} className="whitespace-pre-wrap text-sm text-ink-3">{b}</p>;
+                const [head, ...rest] = b.split("\n");
+                const title = head.replace(/^###\s*/, "").trim();
+                const lines = rest.map((l) => l.trim()).filter(Boolean);
+                const bullets = lines.filter((l) => /^[-•*]\s/.test(l)).map((l) => l.replace(/^[-•*]\s+/, "").replace(/\*\*/g, ""));
+                const prose = lines.filter((l) => !/^[-•*]\s/.test(l)).join(" ").replace(/\*\*/g, "");
+                const key = title.toLowerCase();
+                return (
+                    <section key={i} className={key === "basis" ? "border-t border-line pt-2" : ""}>
+                        <h4 className={`text-[11px] font-semibold uppercase tracking-wide ${key === "what you can expect to find on site" ? "text-accent" : "text-faint"}`}>{title}</h4>
+                        {prose && <p className={`mt-0.5 ${SECTION_STYLE[key] ?? "text-sm text-ink-2"}`}>{prose}</p>}
+                        {bullets.length > 0 && (
+                            <ul className={`mt-1 space-y-1 text-sm ${key === "what you can expect to find on site" ? "text-ink-2" : "text-ink-3"}`}>
+                                {bullets.map((x, j) => <li key={j} className="flex gap-2"><span aria-hidden className="mt-2 h-1 w-1 shrink-0 rounded-full bg-current opacity-60" /><span>{x}</span></li>)}
+                            </ul>
+                        )}
+                    </section>
+                );
+            })}
+        </div>
     );
 }

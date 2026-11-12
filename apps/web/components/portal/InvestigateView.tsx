@@ -62,6 +62,7 @@ export function InvestigateView({ assessment, pointId, points, role, initial, fi
     const [groups, setGroups] = useState<Group[]>(initialGroups ?? ["power", "voltage", "pf", "thd"]);
     const [phases, setPhases] = useState<("A" | "B" | "C")[]>(["A", "B", "C"]);
     const [sel, setSel] = useState<{ a: number; b: number } | null>(null);
+    const [hover, setHover] = useState<number | null>(null);
     const qc = useQueryClient();
 
     const q = useQuery({
@@ -94,9 +95,8 @@ export function InvestigateView({ assessment, pointId, points, role, initial, fi
             <>
                 <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="ms" type="number" domain={["dataMin", "dataMax"]} scale="time" stroke="var(--chart-axis)" fontSize={11} tickFormatter={(v) => tick(v, span)} minTickGap={50} />
-                <Tooltip contentStyle={{ background: "var(--tooltip-bg)", color: "var(--tooltip-ink)", border: "1px solid var(--tooltip-border)", fontSize: 12 }}
-                    labelFormatter={(v) => `${fmtDateTime(new Date(Number(v)))} ${TZ_LABEL} (${q.data?.resolution} bucket)`}
-                    formatter={(v: any, name: string) => [Array.isArray(v) ? `${num(v[0], 1)} – ${num(v[1], 1)}` : num(v, key === "pf" ? 3 : 1), name]} />
+                {/* One readout above the charts instead of a tooltip per chart: the cursor line stays synced. */}
+                <Tooltip content={() => null} cursor={{ stroke: "var(--chart-axis)", strokeWidth: 1 }} />
                 {events.map((e, i) => <ReferenceLine key={i} x={new Date(e.started_at).getTime()} stroke="#a855f7" strokeDasharray="2 2" ifOverflow="hidden" />)}
             </>
         );
@@ -138,7 +138,8 @@ export function InvestigateView({ assessment, pointId, points, role, initial, fi
                 {vals.length === 0 ? <p className="text-sm text-faint py-4">Not measured in this window.</p> : (
                     <div style={{ height }} role="img" aria-label={summary}>
                         <ResponsiveContainer width="100%" height="100%">
-                            <ComposedChart data={rows} syncId="investigate" margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
+                            <ComposedChart data={rows} syncId="investigate" margin={{ top: 4, right: 12, left: 0, bottom: 0 }}
+                                onMouseMove={(e: any) => { if (e?.activeTooltipIndex != null) setHover(e.activeTooltipIndex); }} onMouseLeave={() => setHover(null)}>
                                 <YAxis stroke="var(--chart-axis)" fontSize={11} width={52} domain={["auto", "auto"]} />
                                 {body}
                             </ComposedChart>
@@ -201,7 +202,10 @@ export function InvestigateView({ assessment, pointId, points, role, initial, fi
 
             <Panel title="Aligned channels" subtitle="One time cursor across all charts. Purple dashed lines: voltage/frequency events in this window.">
                 {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : rows.length === 0 ? <Empty>No measurements in this window.</Empty> : (
-                    <div className="space-y-5">{GROUPS.filter((g) => groups.includes(g.key)).map((g) => chart(g.key))}</div>
+                    <>
+                        <Readout row={hover != null ? rows[hover] : null} resolution={q.data?.resolution} phases={phases} />
+                        <div className="space-y-5">{GROUPS.filter((g) => groups.includes(g.key)).map((g) => chart(g.key))}</div>
+                    </>
                 )}
                 {events.length > 0 && (
                     <details className="mt-4 text-sm">
@@ -271,5 +275,25 @@ function EvidencePanel({ assessmentId, pointId, win, role, list, findings, onOpe
                 </form>
             )}
         </Panel>
+    );
+}
+
+/** The values at the cursor, in one line above the charts (replaces a tooltip per chart). */
+function Readout({ row, resolution, phases }: { row: any; resolution?: string; phases: ("A" | "B" | "C")[] }) {
+    const ph = (k: string, d = 1) => phases.map((p) => row?.[`${k}${p.toLowerCase()}`]).map((v) => (v == null ? "–" : num(v, d))).join(" / ");
+    return (
+        <div className="sticky top-12 lg:top-0 z-10 -mx-1 mb-3 rounded-xl bg-surface-2/95 px-4 py-2 text-[13px] tabular-nums backdrop-blur">
+            {!row || row.gap ? <span className="text-faint">Hover over a chart to read the values at that moment.</span> : (
+                <div className="flex flex-wrap gap-x-5 gap-y-1">
+                    <span className="font-medium text-ink">{fmtDateTime(row.t)} <span className="text-faint font-normal">{TZ_LABEL} · {resolution} average</span></span>
+                    <span><span className="text-faint">kW </span>{num(row.kw, 1)}<span className="text-faint"> (max {num(row.kw_max, 1)})</span></span>
+                    <span><span className="text-faint">kvar </span>{num(row.kvar, 1)}</span>
+                    <span><span className="text-faint">V {phases.join("/")} </span>{ph("v")}</span>
+                    <span><span className="text-faint">I </span>{ph("i")}</span>
+                    <span><span className="text-faint">PF </span>{num(row.pf, 3)}</span>
+                    <span><span className="text-faint">THD-V </span>{ph("thd_v", 2)} %</span>
+                </div>
+            )}
+        </div>
     );
 }

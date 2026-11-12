@@ -87,7 +87,7 @@ export default function PortalSitePage() {
                 ? <EnergyView project={p} s={s} since={live.start_at} pointId={effectivePoint} />
                 : live && summary.isLoading ? <SkeletonPage /> : <EnergyDemandTab project={p} since={live?.start_at ?? null} pointId={effectivePoint} />)}
             {view === "pq" && (live
-                ? summary.isLoading ? <Loading label="Assessing" /> : s ? <PowerQualityView detail={s.point_detail} period={{ from: s.context.period_from, to: s.context.period_to }} /> : <ErrorBox error={summary.error} />
+                ? summary.isLoading ? <Loading label="Assessing" /> : s ? <PowerQualityView detail={s.point_detail} pointId={effectivePoint} period={{ from: s.context.period_from, to: s.context.period_to }} /> : <ErrorBox error={summary.error} />
                 : <Empty>Power quality is shown during a live assessment.</Empty>)}
             {view === "investigate" && live && effectivePoint && (
                 <InvestigateView assessment={live} pointId={effectivePoint} points={p.points} role={role} starts={startingPoints(s)}

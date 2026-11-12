@@ -6,6 +6,9 @@
 // what was not measured or not collected. Replaces the old health-check view,
 // which stated compliance and responsibility the data cannot support.
 
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "@/lib/api";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, Legend } from "recharts";
 import { fmtDateTime, TZ_LABEL } from "@/lib/api";
 import { num } from "@/lib/format";
@@ -14,16 +17,17 @@ import { Panel, Empty, Table, Badge } from "@/components/ops/ui";
 import { BulletBar } from "@/components/portal/Insight";
 
 const SAST = 2 * 3_600_000;
+const hm = (ms: number) => { const d = new Date(ms + SAST); return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`; };
 const tick = (ms: number) => { const d = new Date(ms + SAST); return `${d.getUTCDate()}/${d.getUTCMonth() + 1} ${String(d.getUTCHours()).padStart(2, "0")}h`; };
 
-export function PowerQualityView({ detail, period }: { detail: any; period: { from: string; to: string } }) {
+export function PowerQualityView({ detail, period, pointId }: { detail: any; period: { from: string; to: string }; pointId?: string | null }) {
     if (!detail) return <Panel><Empty>No measurement point in this assessment.</Empty></Panel>;
     return (
         <div className="space-y-8">
             <PQRows pq={detail.power_quality} />
-            <details className="group rounded-2xl bg-surface p-6 shadow-sm ring-1 ring-line">
+            <details className="group rounded-2xl bg-surface p-6 shadow-sm ring-1 ring-line" open>
                 <summary className="cursor-pointer text-[15px] font-semibold text-ink">Phase-by-phase detail, charts and what this data cannot show</summary>
-                <div className="mt-6"><PQDetail detail={detail} period={period} /></div>
+                <div className="mt-6"><PQDetail detail={detail} period={period} pointId={pointId} /></div>
             </details>
         </div>
     );
@@ -92,42 +96,64 @@ function PQRows({ pq }: { pq: any }) {
     );
 }
 
-function PQDetail({ detail, period }: { detail: any; period: { from: string; to: string } }) {
+type Span = "day" | "week" | "all";
+const SPANS: [Span, string][] = [["day", "Last day"], ["week", "Last week"], ["all", "Whole assessment"]];
+
+/** Day / week / whole assessment, shown under the charts (one choice drives both). */
+function SpanSwitch({ value, onChange }: { value: Span; onChange: (s: Span) => void }) {
+    return (
+        <div role="group" aria-label="Chart period" className="mt-3 flex justify-center gap-1">
+            {SPANS.map(([k, l]) => (
+                <button key={k} type="button" aria-pressed={value === k} onClick={() => onChange(k)}
+                    className={`rounded-full px-3 py-1 text-sm ${value === k ? "bg-blue-600 text-white" : "text-muted ring-1 ring-line-strong hover:bg-surface-2"}`}>{l}</button>
+            ))}
+        </div>
+    );
+}
+
+function PQDetail({ detail, period, pointId }: { detail: any; period: { from: string; to: string }; pointId?: string | null }) {
+    const [span, setSpan] = useState<Span>("day");
+    const to = new Date(period.to).getTime(), start = new Date(period.from).getTime();
+    const from = span === "all" ? start : Math.max(start, to - (span === "day" ? 1 : 7) * 86_400_000);
+    // 1 day: 10-minute values; a week or more: hourly (the investigation endpoint keeps min/max).
+    const q = useQuery({
+        queryKey: ["pq-series", pointId, from, to], enabled: !!pointId,
+        queryFn: () => apiGet<any>(`/ingestion/points/${pointId}/investigate?from=${new Date(from).toISOString()}&to=${new Date(to).toISOString()}`),
+    });
     if (!detail) return <Panel><Empty>No measurement point in this assessment.</Empty></Panel>;
-    const pq = detail.power_quality, hs = detail.hourly_series;
+    const pq = detail.power_quality;
     const range = `${fmtDateTime(period.from)} – ${fmtDateTime(period.to)} ${TZ_LABEL}`;
-    // A row for every hour of the observed window: hours without data stay empty,
-    // so the chart shows the gap instead of joining the points either side of it.
-    const data = (() => {
-        const H = 3_600_000;
-        const byHour = new Map<number, any>();
-        (hs?.t ?? []).forEach((t: string, i: number) => byHour.set(new Date(t).getTime(), { va: hs.v_a[i], vb: hs.v_b[i], vc: hs.v_c[i], ta: hs.thd_v_a[i], tb: hs.thd_v_b[i], tc: hs.thd_v_c[i] }));
-        const start = Math.floor(new Date(period.from).getTime() / H) * H, end = new Date(period.to).getTime();
-        const out: any[] = [];
-        for (let ms = start; ms < end && out.length < 24 * 95; ms += H) out.push({ ms, t: new Date(ms).toISOString(), ...(byHour.get(ms) ?? {}) });
-        return out;
-    })();
-    const missing = data.filter((d: any) => d.va == null && d.ta == null).length;
+    const width = (q.data?.bucket_seconds ?? 3600) * 1000;
+    // Rows from the API, with an empty row where buckets are missing so lines break at gaps.
+    const rows = (q.data?.rows ?? []).map((r: any) => ({ ms: new Date(r.t).getTime(), va: r.va, vb: r.vb, vc: r.vc, ta: r.thd_va, tb: r.thd_vb, tc: r.thd_vc }));
+    const data: any[] = [];
+    rows.forEach((r: any, i: number) => { if (i > 0 && r.ms - rows[i - 1].ms > 1.5 * width) data.push({ ms: rows[i - 1].ms + width }); data.push(r); });
+    const expected = Math.max(1, Math.round((to - from) / width));
+    const measured = rows.length;
     const nominal = pq?.nominal_v ?? 230;
     const has = (k: string) => data.some((d: any) => d[k] !== null && d[k] !== undefined);
     const lines = (keys: [string, keyof typeof PHASE][]) => keys.filter(([k]) => has(k)).map(([k, ph]) => (
         <Line key={k} dataKey={k} name={PHASE[ph].label} stroke={PHASE[ph].color} strokeDasharray={PHASE[ph].dash} dot={false} strokeWidth={1.6} isAnimationActive={false} connectNulls={false} />
     ));
-    const axis = <XAxis dataKey="ms" type="number" scale="time" domain={["dataMin", "dataMax"]} stroke="var(--chart-axis)" fontSize={11} tickFormatter={tick} minTickGap={40} />;
-    const tip = <Tooltip contentStyle={{ background: "var(--tooltip-bg)", color: "var(--tooltip-ink)", border: "1px solid var(--tooltip-border)", fontSize: 12 }} labelFormatter={(ms) => `${fmtDateTime(new Date(Number(ms)))} ${TZ_LABEL} (hour average)`} />;
+    const axis = <XAxis dataKey="ms" type="number" scale="time" domain={[from, to]} allowDataOverflow stroke="var(--chart-axis)" fontSize={11} tickFormatter={(ms) => (span === "day" ? hm(ms) : tick(ms))} minTickGap={40} />;
+    const tip = <Tooltip contentStyle={{ background: "var(--tooltip-bg)", color: "var(--tooltip-ink)", border: "1px solid var(--tooltip-border)", fontSize: 12 }}
+        labelFormatter={(ms) => `${fmtDateTime(new Date(Number(ms)))} ${TZ_LABEL} (${q.data?.resolution ?? ""} average)`} formatter={(v: any) => num(v, 2)} />;
+    const res = q.data?.resolution ? `${q.data.resolution[0].toUpperCase()}${q.data.resolution.slice(1)} averages` : "Averages";
+    const chart = (body: React.ReactElement) => q.isLoading ? <div className="h-64 animate-pulse rounded-xl bg-surface-2" /> : (
+        <div className="h-64"><ResponsiveContainer width="100%" height="100%">{body}</ResponsiveContainer></div>
+    );
 
     return (
         <div className="space-y-6">
             <Panel title="Screening basis" subtitle={range}>
                 <p className="text-sm text-ink-3">{pq.verdict.type === "formal" ? "Formal assessment basis met: " : "Screening only: "}{pq.verdict.reason}</p>
-                {missing > 0 && <p className="text-sm text-warn mt-1">{missing} of {data.length} hours in this window have no measurements; they show as gaps in the charts.</p>}
-                <p className="text-xs text-faint mt-1">Statistics below use 10-minute values; the charts show hourly averages for readability, so short peaks are lower in the charts than in the tables.</p>
+                <p className="text-xs text-faint mt-1">The statistics tables use every 10-minute value of the assessment; the charts show the period you choose under them.</p>
             </Panel>
 
-            <div className="grid xl:grid-cols-2 gap-6">
-                <Panel title="Voltage by phase" subtitle={`Hourly average, V. Screening band ±10 % of ${nominal} V.`}>
-                    {!has("va") && !has("vb") && !has("vc") ? <Empty>Voltage not measured.</Empty> : (
-                        <div className="h-64"><ResponsiveContainer width="100%" height="100%">
+            <div>
+                <div className="grid xl:grid-cols-2 gap-6">
+                    <Panel title="Voltage by phase" subtitle={`${res}, V. Screening band ±10 % of ${nominal} V.`}>
+                        {!q.isLoading && !has("va") && !has("vb") && !has("vc") ? <Empty>No voltage measurements in this period.</Empty> : chart(
                             <LineChart data={data} margin={{ top: 5, right: 12, left: 0, bottom: 0 }}>
                                 <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 3" vertical={false} />
                                 {axis}<YAxis stroke="var(--chart-axis)" fontSize={11} domain={["auto", "auto"]} width={48} />{tip}
@@ -135,23 +161,23 @@ function PQDetail({ detail, period }: { detail: any; period: { from: string; to:
                                 <ReferenceLine y={nominal * 1.1} stroke="var(--chart-axis)" strokeDasharray="4 4" />
                                 <Legend wrapperStyle={{ fontSize: 12 }} />
                                 {lines([["va", "A"], ["vb", "B"], ["vc", "C"]])}
-                            </LineChart>
-                        </ResponsiveContainer></div>
-                    )}
-                </Panel>
-                <Panel title="Voltage distortion (THD-V) by phase" subtitle="Hourly average, %. Screening reference 8 % (NRS 048-2).">
-                    {!has("ta") && !has("tb") && !has("tc") ? <Empty>THD-V not measured.</Empty> : (
-                        <div className="h-64"><ResponsiveContainer width="100%" height="100%">
+                            </LineChart>)}
+                    </Panel>
+                    <Panel title="Voltage distortion (THD-V) by phase" subtitle={`${res}, %. Screening reference 8 % (NRS 048-2).`}>
+                        {!q.isLoading && !has("ta") && !has("tb") && !has("tc") ? <Empty>No distortion measurements in this period.</Empty> : chart(
                             <LineChart data={data} margin={{ top: 5, right: 12, left: 0, bottom: 0 }}>
                                 <CartesianGrid stroke="var(--chart-grid)" strokeDasharray="3 3" vertical={false} />
-                                {axis}<YAxis stroke="var(--chart-axis)" fontSize={11} unit=" %" width={48} />{tip}
-                                <ReferenceLine y={8} stroke="#f59e0b" strokeDasharray="4 4" />
+                                {axis}<YAxis stroke="var(--chart-axis)" fontSize={11} unit=" %" width={48} domain={[0, (m: number) => Math.max(9, Math.ceil(m))]} />{tip}
+                                <ReferenceLine y={8} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: "8 %", position: "insideTopRight", fill: "#d97706", fontSize: 11 }} />
                                 <Legend wrapperStyle={{ fontSize: 12 }} />
                                 {lines([["ta", "A"], ["tb", "B"], ["tc", "C"]])}
-                            </LineChart>
-                        </ResponsiveContainer></div>
-                    )}
-                </Panel>
+                            </LineChart>)}
+                    </Panel>
+                </div>
+                <SpanSwitch value={span} onChange={setSpan} />
+                {!q.isLoading && measured < expected * 0.9 && (
+                    <p className="mt-2 text-center text-sm text-warn">{expected - Math.min(expected, measured)} of {expected} {q.data?.resolution === "hourly" ? "hours" : "10-minute periods"} in this period have no measurements; they show as gaps.</p>
+                )}
             </div>
 
             <div className="grid xl:grid-cols-2 gap-6">
