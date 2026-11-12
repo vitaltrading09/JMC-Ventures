@@ -11,11 +11,88 @@ import { fmtDateTime, TZ_LABEL } from "@/lib/api";
 import { num } from "@/lib/format";
 import { PHASE } from "@/lib/summary";
 import { Panel, Empty, Table, Badge } from "@/components/ops/ui";
+import { BulletBar } from "@/components/portal/Insight";
 
 const SAST = 2 * 3_600_000;
 const tick = (ms: number) => { const d = new Date(ms + SAST); return `${d.getUTCDate()}/${d.getUTCMonth() + 1} ${String(d.getUTCHours()).padStart(2, "0")}h`; };
 
 export function PowerQualityView({ detail, period }: { detail: any; period: { from: string; to: string } }) {
+    if (!detail) return <Panel><Empty>No measurement point in this assessment.</Empty></Panel>;
+    return (
+        <div className="space-y-8">
+            <PQRows pq={detail.power_quality} />
+            <details className="group rounded-2xl bg-surface p-6 shadow-sm ring-1 ring-line">
+                <summary className="cursor-pointer text-[15px] font-semibold text-ink">Phase-by-phase detail, charts and what this data cannot show</summary>
+                <div className="mt-6"><PQDetail detail={detail} period={period} /></div>
+            </details>
+        </div>
+    );
+}
+
+type Row = { name: string; status: "ok" | "close" | "out" | "none"; sentence: string; bar?: React.ComponentProps<typeof BulletBar> };
+const STATUS = {
+    ok: { word: "Within limits", cls: "text-ok" }, close: { word: "Close to the limit", cls: "text-warn" },
+    out: { word: "Outside the limit", cls: "text-warn" }, none: { word: "Not measured", cls: "text-faint" },
+} as const;
+
+/** One row per quantity: a status word, one sentence, and a bullet bar against the screening limit. */
+function PQRows({ pq }: { pq: any }) {
+    const nominal = pq.nominal_v ?? 230, lo = nominal * 0.9, hi = nominal * 1.1;
+    const rows: Row[] = [];
+    const v = pq.voltage ?? [];
+    if (v.length) {
+        const p5 = Math.min(...v.map((x: any) => x.p05)), p95 = Math.max(...v.map((x: any) => x.p95));
+        const outside = Math.max(...v.map((x: any) => x.outside_pct ?? 0));
+        const margin = Math.min(p5 - lo, hi - p95);
+        rows.push({ name: "Voltage", status: outside > 0 ? "out" : margin < nominal * 0.02 ? "close" : "ok",
+            sentence: outside > 0 ? `Outside ${num(lo, 0)}–${num(hi, 0)} V in ${num(outside, 1)} % of the time on the worst phase.` : `Normally between ${num(p5, 0)} and ${num(p95, 0)} V on all phases; at least ${num(margin, 0)} V from the nearest limit.`,
+            bar: { min: nominal * 0.85, max: nominal * 1.15, band: [lo, hi], range: [p5, p95], unit: "V", decimals: 0, ariaLabel: `Voltage ${num(p5, 0)} to ${num(p95, 0)} V against ${num(lo, 0)} to ${num(hi, 0)} V` } });
+    } else rows.push({ name: "Voltage", status: "none", sentence: "No voltage measurements yet." });
+    const thd = (pq.thd_v ?? []).map((x: any) => x.p95).filter((x: any) => x != null);
+    if (thd.length) {
+        const worst = Math.max(...thd);
+        rows.push({ name: "Voltage distortion", status: worst > 8 ? "out" : worst > 6.5 ? "close" : "ok",
+            sentence: worst > 8 ? `Up to ${num(worst, 1)} % on the worst phase (95 % of the time below that), above the 8 % screening level.` : `At most ${num(worst, 1)} % on any phase, ${num(8 - worst, 1)} points below the 8 % screening level.`,
+            bar: { min: 0, max: Math.max(12, worst * 1.2), band: [0, 8], value: worst, unit: "%", decimals: 0, ariaLabel: `Voltage distortion ${num(worst, 1)} % against 8 %` } });
+    } else rows.push({ name: "Voltage distortion", status: "none", sentence: "Not measured by this meter." });
+    const iu = pq.unbalance?.current_p95;
+    if (iu != null) rows.push({ name: "Phase balance", status: iu > 15 ? "out" : iu > 10 ? "close" : "ok",
+        sentence: iu > 15 ? `The phases differ by up to ${num(iu, 0)} % in current: one phase carries noticeably more.` : `Current is shared evenly across the phases (up to ${num(iu, 0)} % difference).`,
+        bar: { min: 0, max: Math.max(30, iu * 1.2), band: [0, 15], value: iu, unit: "%", decimals: 0, ariaLabel: `Current unbalance ${num(iu, 1)} % against the 15 % investigation level` } });
+    const pf = pq.pf?.avg_loaded;
+    if (pf != null) rows.push({ name: "Power factor", status: pf < 0.85 ? "out" : pf < 0.9 ? "close" : "ok",
+        sentence: pf < 0.85 ? `Averages ${num(pf, 2)} while the site is working: more kVA is drawn than the useful kW needs.` : `Averages ${num(pf, 2)} while the site is working.`,
+        bar: { min: 0.6, max: 1, band: [0.85, 1], value: pf, unit: "", decimals: 2, ariaLabel: `Power factor ${num(pf, 2)} against 0.85` } });
+    const f = pq.frequency;
+    if (f?.min != null) rows.push({ name: "Frequency", status: f.outside_values > 0 ? "out" : "ok",
+        sentence: f.outside_values > 0 ? `Left 49–51 Hz in ${f.outside_values} ten-minute period(s).` : `Stayed between ${num(f.min, 2)} and ${num(f.max, 2)} Hz.`,
+        bar: { min: 48.5, max: 51.5, band: [49, 51], range: [f.min, f.max], unit: "Hz", decimals: 0, ariaLabel: `Frequency ${f.min} to ${f.max} Hz against 49 to 51 Hz` } });
+    const ev = pq.events?.count ?? 0, mins = pq.interruption_minutes ?? 0;
+    rows.push({ name: "Dips and interruptions", status: ev > 0 || mins > 0 ? "close" : "ok",
+        sentence: ev || mins ? `${ev} voltage/frequency event(s) and ${mins} minute(s) without supply were recorded; see Investigation for the times.` : "No dips, swells or interruptions were recorded in the 1-second data." });
+    const flagged = rows.filter((r) => r.status === "out" || r.status === "close").length;
+    return (
+        <section className="rounded-2xl bg-surface p-6 shadow-sm ring-1 ring-line">
+            <p className="text-xs font-semibold uppercase tracking-wider text-faint">Supply and installation health</p>
+            <h3 className="mt-1 text-lg font-semibold text-ink">{flagged === 0 ? "Everything measured so far is within the screening limits." : `${flagged} of ${rows.length} measures need a closer look.`}</h3>
+            <ul className="mt-5 divide-y divide-line">
+                {rows.map((r) => (
+                    <li key={r.name} className="grid gap-x-6 gap-y-2 py-4 md:grid-cols-[180px_minmax(0,1fr)_minmax(0,1.1fr)] items-center">
+                        <div>
+                            <p className="font-semibold text-ink">{r.name}</p>
+                            <p className={`text-sm ${STATUS[r.status].cls}`}>{STATUS[r.status].word}</p>
+                        </div>
+                        <p className="text-[15px] text-ink-3">{r.sentence}</p>
+                        <div className="pb-3">{r.bar ? <BulletBar {...r.bar} /> : null}</div>
+                    </li>
+                ))}
+            </ul>
+            <p className="mt-3 text-xs text-faint">Shaded band: the acceptable range (NRS 048-2 screening levels; 15 % for phase balance is GridIQ's investigation level). Bars show the typical range or the 95th-percentile value from 10-minute data. Screening only, not certification.</p>
+        </section>
+    );
+}
+
+function PQDetail({ detail, period }: { detail: any; period: { from: string; to: string } }) {
     if (!detail) return <Panel><Empty>No measurement point in this assessment.</Empty></Panel>;
     const pq = detail.power_quality, hs = detail.hourly_series;
     const range = `${fmtDateTime(period.from)} – ${fmtDateTime(period.to)} ${TZ_LABEL}`;

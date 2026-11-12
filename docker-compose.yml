@@ -44,6 +44,7 @@ x-ingestion-env: &ingestion-env
   # configured (messages fail visibly in the ops console).
   EMAIL_PROVIDER: ${EMAIL_PROVIDER:-}
   EMAIL_FROM: ${EMAIL_FROM:-}
+  OPS_NOTIFY_EMAIL: ${OPS_NOTIFY_EMAIL:-}
   SMTP_URL: ${SMTP_URL:-}
   EMAIL_DIR: /data/outbox
   # Consultant: anthropic | openai | none (default: whichever key is set).

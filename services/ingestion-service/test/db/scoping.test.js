@@ -69,6 +69,7 @@ function routes() {
     scan('reports/closeout.ts', 'r');
     scan('consultant.ts', 'r');
     scan('investigate.ts', 'r0');
+    scan('sharing.ts', 'r');
     // The public API declares its routes as objects: { method: 'get', path: '/v1/...' }.
     const v1 = fs.readFileSync(path.join(ROOT, 'src', 'v1', 'routes.ts'), 'utf8');
     for (const m of v1.matchAll(/method: '(get|post)', path: '([^']+)'/g)) out.push([m[1].toUpperCase(), m[2]]);
@@ -187,7 +188,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         const map = ids(x);
         return p.split('/').map((seg, i, all) => (seg.startsWith(':') ? (seg === ':token' ? 'x' : seg === ':file' ? `${map[all[i - 1]]}.pdf` : map[all[i - 1]] ?? crypto.randomUUID()) : seg)).join('/');
     };
-    const ROUTES = routes().filter(([, p]) => !['/health', '/health/deep', '/public/report/:token'].includes(p));
+    const ROUTES = routes().filter(([, p]) => !['/health', '/health/deep', '/public/report/:token', '/public/preview/:token'].includes(p));
     assert.ok(ROUTES.length > 60, `only ${ROUTES.length} routes found`);
 
     const bSecrets = [B.mark, B.tenant, B.site, B.meter, B.alert, B.share, B.rec, B.draft, B.lead, B.report, B.unpublished, B.deployment, B.export, B.assessment, B.evidence];
@@ -269,6 +270,33 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/compare?a_from=${iso(now - 40 * 86_400_000)}&a_to=${iso(now - 39 * 86_400_000)}&b_from=${iso(now - 10 * 3_600_000)}&b_to=${iso(now)}`)).status, 400);
     });
 
+    await t.test('provisional share links and booking requests', async () => {
+        assert.strictEqual((await call(A.viewerToken, 'POST', `/assessments/${A.assessment}/preview-shares`, {})).status, 403);
+        const made = await call(A.adminToken, 'POST', `/assessments/${A.assessment}/preview-shares`, { kind: 'overview', label: 'for the board' });
+        assert.strictEqual(made.status, 201, made.text);
+        const share = JSON.parse(made.text);
+        assert.ok(new Date(share.expires_at) <= new Date(now + 5 * 86_400_000 + 60_000)); // never past the end
+        const token = share.path.split('/').pop();
+        const pdf = await fetch(`http://127.0.0.1:${apiPort}/public/preview/${token}`);
+        assert.strictEqual(pdf.status, 200);
+        assert.strictEqual(pdf.headers.get('content-type'), 'application/pdf');
+        assert.strictEqual((await q(`SELECT opened_count FROM preview_shares WHERE id = $1`, [share.id]))[0].opened_count, 1);
+        assert.strictEqual((await call(B.adminToken, 'POST', `/preview-shares/${share.id}/revoke`)).status, 403);
+        assert.strictEqual((await call(A.adminToken, 'POST', `/preview-shares/${share.id}/revoke`)).status, 200);
+        assert.strictEqual((await fetch(`http://127.0.0.1:${apiPort}/public/preview/${token}`)).status, 410);
+        assert.strictEqual((await fetch(`http://127.0.0.1:${apiPort}/public/preview/${'x'.repeat(43)}`)).status, 404);
+        // Bookings: a viewer may ask; another tenant's site is refused; only staff handle them.
+        assert.strictEqual((await call(A.viewerToken, 'POST', '/booking-requests', { purpose: 'nonsense' })).status, 400);
+        assert.strictEqual((await call(A.viewerToken, 'POST', '/booking-requests', { purpose: 'follow_up', project_id: B.site })).status, 403);
+        const bk = await call(A.viewerToken, 'POST', '/booking-requests', { purpose: 'follow_up', project_id: A.site, assessment_id: A.assessment, duration_days: 14, preferred_start: '2027-02-01', contact_phone: '012 345 6789' });
+        assert.strictEqual(bk.status, 201, bk.text);
+        const booking = JSON.parse(bk.text);
+        assert.deepStrictEqual(leaks((await call(A.adminToken, 'GET', '/booking-requests')).text), []);
+        assert.ok(!(await call(B.adminToken, 'GET', '/booking-requests')).text.includes(booking.id));
+        assert.strictEqual((await call(A.adminToken, 'PATCH', `/booking-requests/${booking.id}`, { status: 'booked' })).status, 403);
+        assert.strictEqual((await call(ops, 'PATCH', `/booking-requests/${booking.id}`, { status: 'contacted' })).status, 200);
+    });
+
     await t.test('the SLD upload refuses another tenant\'s site before writing the file', async () => {
         const form = new FormData();
         form.append('pdf', new Blob([`${A.mark}-overwrite`], { type: 'application/pdf' }), 'x.pdf');
@@ -299,7 +327,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
     });
 
     await t.test('client_viewer is read-only', async () => {
-        const allowed = [/\/compliance\/ask$/, /\/alerts\/:id\/read$/, /\/recommendations\/:id\/notify$/, /^\/v1\/exports$/];
+        const allowed = [/\/compliance\/ask$/, /\/alerts\/:id\/read$/, /\/recommendations\/:id\/notify$/, /^\/v1\/exports$/, /^\/booking-requests$/];
         const failures = [];
         for (const [method, p] of ROUTES.filter(([m]) => m !== 'GET')) {
             if (allowed.some((re) => re.test(p))) continue;

@@ -129,3 +129,24 @@ test('before/after statistics: loaded PF only, interruptions excluded from minim
     assert.strictEqual(s.kw_max, 120);
     assert.strictEqual(s.thd_v_p95.B, null);
 });
+
+const { previewShareAllowed } = require('../dist/sharing.js');
+const { loadDuration } = require('../dist/portal.js');
+
+test('a provisional report can be shared after 24 h of data and only while the assessment runs', () => {
+    const now = Date.parse('2026-11-12T10:00:00Z');
+    assert.strictEqual(previewShareAllowed({ start_at: null, end_at: '2026-11-20T00:00:00Z' }, now).ok, false);
+    assert.strictEqual(previewShareAllowed({ start_at: '2026-11-12T00:00:00Z', end_at: '2026-11-20T00:00:00Z' }, now).ok, false); // 10 h
+    assert.strictEqual(previewShareAllowed({ start_at: '2026-11-10T00:00:00Z', end_at: '2026-11-20T00:00:00Z' }, now).ok, true);
+    assert.strictEqual(previewShareAllowed({ start_at: '2026-11-01T00:00:00Z', end_at: '2026-11-20T00:00:00Z', closed_at: '2026-11-11T00:00:00Z' }, now).ok, false);
+});
+
+test('load-duration curve: highest first, thinned, ends kept', () => {
+    const v = Array.from({ length: 1000 }, (_, i) => i);
+    const c = loadDuration(v, 100);
+    assert.ok(c.length <= 101);
+    assert.deepStrictEqual(c[0], { pct: 0, kva: 999 });
+    assert.strictEqual(c[c.length - 1].kva, 0);
+    assert.ok(c.every((x, i) => i === 0 || x.kva <= c[i - 1].kva));
+    assert.deepStrictEqual(loadDuration([], 10), []);
+});

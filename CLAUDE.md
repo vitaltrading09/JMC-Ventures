@@ -339,6 +339,18 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     energy|pq|investigate|reports|site`; old `?tab=` links still map). Findings are tiles (`FindingTiles.tsx`); a finding
     has its own page (`FindingDetail.tsx`: measured → why it can matter → what to check → follow-up → the investigation
     charts on the finding's window, channels per type in `lib/findings.ts`).
+  - Client experience pass (2026-11-12): every section is an `InsightCard` (`components/portal/Insight.tsx`: headline
+    sentence → one chart → takeaway → one action, method folded; `Sparkline`, `BulletBar`, `Skeleton`). Overview: `Journey`
+    (day X of N, real milestones), number tiles with 14-day trends. Energy (`EnergyView.tsx`): peak vs contracted limit with
+    top-5 intervals linking to Investigation (`?view=investigate&from&to`), load-duration curve (`/points/:id/demand` →
+    `duration_curve`, `hours_above_90pct_mdi`), daily energy, date × hour heatmap; no time-of-use cost (owner's decision).
+    Power quality: one bullet-bar row per quantity, detail folded. Investigation: starting points (`startingPoints`).
+    Site details: installation card and data-completeness calendar (`SiteDetails.tsx`).
+  - Sharing and booking (`src/sharing.ts`, migration `1793850000000_preview-shares-bookings`): client admins share the
+    PROVISIONAL report after 24 h of data (`preview_shares`, token hashed, valid until the earlier of expiry and the
+    assessment end, checked on every open; public page `/shared/<token>`, API `/public/preview/:token[?check=1]`).
+    "Book a follow-up assessment" (`booking_requests`; any client user incl. viewers) → ops Home panel, email to
+    `OPS_NOTIFY_EMAIL` when set.
   - Investigation (`src/investigate.ts`, migration `1793840000000_evidence-and-cases`): `GET /points/:id/investigate`
     (≤ 31 days; 1m ≤ 6 h, 10m ≤ 4 d, else 1h; avg + bucket min/max + events), `GET /points/:id/compare` (before/after
     10-minute stats, both windows inside the assessment), `evidence_refs` (saved windows; in the dataset as `evidence` and

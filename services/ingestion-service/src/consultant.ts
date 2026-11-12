@@ -234,7 +234,8 @@ export function consultantRouter(pool: Pool, authenticateJwt: (req: any, res: an
             const s = buildSummary(ds, point);
             const p = ds.points.find((x: any) => x.id === s.context.point?.id);
             res.json({ ...s, point_detail: p ? { power_quality: p.power_quality, demand: p.demand, instantaneous: p.instantaneous,
-                coverage: p.coverage, hourly_series: p.hourly_series, patterns: p.patterns, energy: p.energy, capability: p.capability } : null });
+                coverage: p.coverage, hourly_series: p.hourly_series, patterns: p.patterns, energy: p.energy, capability: p.capability,
+                daily: p.daily, deployments: p.deployments, role: p.role, nominal_voltage_v: p.nominal_voltage_v, ct_primary_a: p.ct_primary_a } : null });
         } catch (e) { console.error('[summary]', e); res.status(500).json({ error: 'Server error' }); }
     });
     return r;

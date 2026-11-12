@@ -16,7 +16,7 @@ import { PortalProjectDetail, useRole } from "@/lib/portal";
 import { useSummary } from "@/lib/summary";
 import { SITE_VIEWS, siteHref, viewFrom, type SiteView } from "@/lib/siteNav";
 import { Loading, ErrorBox, Empty, Panel } from "@/components/ops/ui";
-import { OverviewTab, LayoutTab, EnergyDemandTab, ReportsTab } from "@/components/portal/ProjectTabs";
+import { OverviewTab, EnergyDemandTab } from "@/components/portal/ProjectTabs";
 import { ExportsTab } from "@/components/portal/ExportsTab";
 import { AssessmentBanner, usePortalAssessments } from "@/components/portal/AssessmentBanner";
 import { SiteHeader } from "@/components/portal/SiteHeader";
@@ -25,6 +25,10 @@ import { PowerQualityView } from "@/components/portal/PowerQualityView";
 import { InvestigateView } from "@/components/portal/InvestigateView";
 import { FindingTiles } from "@/components/portal/FindingTiles";
 import { FindingDetail } from "@/components/portal/FindingDetail";
+import { EnergyView } from "@/components/portal/EnergyView";
+import { ReportsView } from "@/components/portal/ReportsView";
+import { SkeletonPage } from "@/components/portal/Insight";
+import { SiteDetails, startingPoints } from "@/components/portal/SiteDetails";
 
 export default function PortalSitePage() {
     const { id } = useParams<{ id: string }>();
@@ -34,13 +38,14 @@ export default function PortalSitePage() {
     const q = useQuery({ queryKey: ["portal-project", id], queryFn: () => apiGet<PortalProjectDetail>(`/ingestion/portal/projects/${id}`), refetchInterval: 60_000 });
     const mine = usePortalAssessments();
     const live = (mine.data ?? []).find((a) => a.project_id === id && a.live) ?? null;
+    const ended = (mine.data ?? []).filter((a) => a.project_id === id && a.effective_status === "ended").sort((a, b) => new Date(b.effective_end_at ?? 0).getTime() - new Date(a.effective_end_at ?? 0).getTime())[0] ?? null;
     const [pointId, setPointId] = useState<string | null>(null);
     const summary = useSummary(live?.id, pointId);
     const findings = useQuery({ queryKey: ["findings", id], enabled: !!q.data?.telemetry_visible, queryFn: () => apiGet<any[]>(`/ingestion/sites/${id}/recommendations`) });
     const cases = useQuery({ queryKey: ["cases", live?.id], enabled: !!live, queryFn: () => apiGet<any[]>(`/ingestion/assessments/${live!.id}/cases`) });
     const go = (v: SiteView) => router.push(siteHref(id, v));
 
-    if (q.isLoading || mine.isLoading) return <Loading />;
+    if (q.isLoading || mine.isLoading) return <SkeletonPage />;
     if (q.error || !q.data) return <ErrorBox error={q.error ?? "Not found"} />;
     const p = q.data;
     const telemetry = p.telemetry_visible;
@@ -63,8 +68,8 @@ export default function PortalSitePage() {
             {title && <h2 className="text-xl font-semibold text-ink pt-2">{title}</h2>}
 
             {view === "overview" && (live
-                ? summary.isLoading ? <Loading label="Building the summary" /> : summary.error ? <ErrorBox error={summary.error} />
-                    : s && <SummaryTab s={s} projectId={p.id} findings={list} cases={cases.data} onTab={(t) => go(t === "summary" ? "overview" : t)} />
+                ? summary.isLoading ? <SkeletonPage /> : summary.error ? <ErrorBox error={summary.error} />
+                    : s && <SummaryTab s={s} assessment={live} projectId={p.id} findings={list} cases={cases.data} onTab={(t) => go(t === "summary" ? "overview" : t)} />
                 : telemetry ? <OverviewTab project={p} /> : <Empty>Live data is shown during an assessment. Final reports are under Reports and data.</Empty>)}
 
             {view === "findings" && (
@@ -78,17 +83,20 @@ export default function PortalSitePage() {
                     project={p} live={live} role={role} findings={list} />
             ))}
 
-            {view === "energy" && <EnergyDemandTab project={p} since={live?.start_at ?? null} pointId={effectivePoint} />}
+            {view === "energy" && (live && s && effectivePoint
+                ? <EnergyView project={p} s={s} since={live.start_at} pointId={effectivePoint} />
+                : live && summary.isLoading ? <SkeletonPage /> : <EnergyDemandTab project={p} since={live?.start_at ?? null} pointId={effectivePoint} />)}
             {view === "pq" && (live
                 ? summary.isLoading ? <Loading label="Assessing" /> : s ? <PowerQualityView detail={s.point_detail} period={{ from: s.context.period_from, to: s.context.period_to }} /> : <ErrorBox error={summary.error} />
                 : <Empty>Power quality is shown during a live assessment.</Empty>)}
             {view === "investigate" && live && effectivePoint && (
-                <InvestigateView assessment={live} pointId={effectivePoint} points={p.points} role={role}
+                <InvestigateView assessment={live} pointId={effectivePoint} points={p.points} role={role} starts={startingPoints(s)}
+                    initial={params.get("from") && params.get("to") ? { from: params.get("from")!, to: params.get("to")! } : null}
                     findings={list.map((f) => ({ id: f.id, title: f.title }))} />
             )}
             {view === "reports" && (
-                <div className="space-y-6">
-                    <ReportsTab project={p} role={role} />
+                <div className="space-y-8">
+                    <ReportsView project={p} a={live} ended={ended} s={s} role={role} />
                     {s && (
                         <Panel title="Feasibility handover" subtitle={s.feasibility.note}>
                             <p className="text-[15px] text-ink-2">Supplied: {s.feasibility.supplied.join("; ")}.</p>
@@ -98,7 +106,7 @@ export default function PortalSitePage() {
                     {telemetry && <ExportsTab project={p} />}
                 </div>
             )}
-            {view === "site" && <LayoutTab project={p} />}
+            {view === "site" && <SiteDetails project={p} s={s} />}
         </div>
     );
 }

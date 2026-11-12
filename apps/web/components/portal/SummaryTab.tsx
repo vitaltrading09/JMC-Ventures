@@ -13,6 +13,9 @@ import { askConsultant } from "@/lib/portal";
 import { Summary, STATE_STYLE, tabForEvidence } from "@/lib/summary";
 import { Panel, Empty } from "@/components/ops/ui";
 import { FindingTiles } from "@/components/portal/FindingTiles";
+import { Sparkline } from "@/components/portal/Insight";
+import { Journey } from "@/components/portal/Journey";
+import type { Assessment } from "@/lib/assessments";
 
 type Tab = ReturnType<typeof tabForEvidence>;
 
@@ -20,13 +23,14 @@ type Tab = ReturnType<typeof tabForEvidence>;
  * Site overview: the story first (glance + area statuses), then four numbers,
  * then the findings as tiles, then the site's typical day. Detail is one click away.
  */
-export function SummaryTab({ s, onTab, projectId, findings, cases }: {
-    s: Summary; onTab: (t: Tab) => void; projectId: string; findings: any[]; cases?: any[];
+export function SummaryTab({ s, onTab, projectId, findings, cases, assessment }: {
+    s: Summary; onTab: (t: Tab) => void; projectId: string; findings: any[]; cases?: any[]; assessment?: Assessment | null;
 }) {
     const cov = s.context.coverage?.fraction;
     return (
         <div className="space-y-8">
-            <section aria-labelledby="glance" className="rounded-2xl border border-line bg-surface p-6 shadow-sm">
+            {assessment && <Journey a={assessment} />}
+            <section aria-labelledby="glance" className="rounded-2xl bg-surface p-6 shadow-sm ring-1 ring-line">
                 <div className="flex flex-wrap items-baseline gap-x-3">
                     <h2 id="glance" className="text-xl font-semibold text-ink">Your site at a glance</h2>
                     <p className="text-sm text-faint">
@@ -54,17 +58,28 @@ export function SummaryTab({ s, onTab, projectId, findings, cases }: {
             </section>
 
             <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-                {s.metrics.map((m) => (
-                    <button key={m.key} type="button" onClick={() => onTab(tabForEvidence(m.evidence))} title={m.definition}
-                        className="text-left rounded-2xl border border-line bg-surface p-5 shadow-sm hover:border-blue-400/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
-                        <p className="text-sm text-muted">{m.label}</p>
-                        <p className="mt-1 text-3xl font-semibold text-ink tabular-nums">
-                            {m.value === null ? "–" : m.key === "energy" ? num(m.value) : m.value}
-                            <span className="ml-1 text-base font-normal text-muted">{m.unit}</span>
-                        </p>
-                        <p className="mt-2 text-xs text-faint line-clamp-2">{m.definition}{m.at ? ` At ${fmtDateTime(m.at)}.` : ""}</p>
-                    </button>
-                ))}
+                {s.metrics.map((m) => {
+                    const daily: any[] = s.point_detail?.daily ?? [];
+                    const trend = m.key === "energy" ? daily.map((d) => d.kwh_estimate) : m.key === "demand" ? daily.map((d) => d.max_kw) : null;
+                    const mdi = s.point_detail?.demand?.contracted_mdi_kva;
+                    const context = m.key === "demand" && mdi && m.value != null ? `${Math.round((m.value / mdi) * 100)} % of your contracted ${num(mdi)} kVA`
+                        : m.key === "energy" && daily.length ? `about ${num((m.value ?? 0) / Math.max(1, s.context.observed_days))} kWh a day`
+                        : m.key === "load_factor" ? (m.value == null ? "" : m.value >= 60 ? "a steady, well-used supply" : m.value >= 35 ? "typical for a day-shift site" : "short, sharp peaks") 
+                        : m.key === "findings" ? (m.value ? "see What we found below" : "nothing needs follow-up so far") : "";
+                    return (
+                        <button key={m.key} type="button" onClick={() => onTab(tabForEvidence(m.evidence))} title={m.definition}
+                            className="text-left rounded-2xl bg-surface p-5 shadow-sm ring-1 ring-line transition hover:ring-blue-400/60 hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+                            <p className="text-sm text-muted">{m.label}</p>
+                            <p className="mt-1 text-[32px] leading-tight font-semibold text-ink tabular-nums">
+                                {m.value === null ? "–" : m.key === "energy" ? num(m.value) : m.value}
+                                <span className="ml-1 text-base font-normal text-muted">{m.unit}</span>
+                            </p>
+                            <p className="mt-1 text-sm text-ink-3">{context}</p>
+                            {trend && trend.filter((x) => x != null).length > 1 && <div className="mt-3"><Sparkline values={trend.slice(-14)} label={`${m.label}, daily trend`} /></div>}
+                            {trend && <p className="mt-1 text-[11px] text-faint">{m.key === "energy" ? "daily energy" : "daily peak kW"}, last {Math.min(14, trend.length)} days</p>}
+                        </button>
+                    );
+                })}
             </div>
 
             <section aria-labelledby="findings-h">

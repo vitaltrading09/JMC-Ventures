@@ -46,12 +46,14 @@ const GROUPS: { key: Group; label: string }[] = [
     { key: "pf", label: "Power factor" }, { key: "thd", label: "Voltage THD" },
 ];
 
-export function InvestigateView({ assessment, pointId, points, role, initial, findings, initialGroups }: {
+export function InvestigateView({ assessment, pointId, points, role, initial, findings, initialGroups, starts }: {
     assessment: { id: string; start_at: string | null; effective_end_at: string | null };
     pointId: string; points: { id: string; name: string }[]; role: string | null;
     initial?: Window | null; findings?: { id: string; title: string }[];
     /** Channels to open with (a finding page opens with the ones that explain it). */
     initialGroups?: Group[];
+    /** One-click starting points ("Highest peak", …) with their windows and channels. */
+    starts?: { label: string; detail: string; window: Window; groups: Group[] }[];
 }) {
     const start = assessment.start_at ?? new Date(Date.now() - 7 * D).toISOString();
     const end = () => new Date(Math.min(Date.now(), new Date(assessment.effective_end_at ?? Date.now()).getTime())).toISOString();
@@ -150,6 +152,20 @@ export function InvestigateView({ assessment, pointId, points, role, initial, fi
 
     return (
         <div className="space-y-6">
+            {starts && starts.length > 0 && (
+                <section aria-label="Starting points">
+                    <p className="text-sm text-muted mb-2">Start from a notable moment:</p>
+                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                        {starts.map((st) => (
+                            <button key={st.label} type="button" onClick={() => { setWin(st.window); setGroups(st.groups); setSel(null); }}
+                                className="rounded-2xl bg-surface p-4 text-left shadow-sm ring-1 ring-line transition hover:ring-blue-400/60 hover:shadow-md">
+                                <p className="font-semibold text-ink">{st.label}</p>
+                                <p className="mt-0.5 text-sm text-muted">{st.detail}</p>
+                            </button>
+                        ))}
+                    </div>
+                </section>
+            )}
             <Panel title="Investigation window" subtitle={q.data ? `${fmtDateTime(q.data.from)} – ${fmtDateTime(q.data.to)} ${TZ_LABEL} · ${q.data.basis}` : undefined}>
                 <div className="flex flex-wrap items-end gap-3">
                     <div className="flex flex-wrap gap-1" role="group" aria-label="Window presets">

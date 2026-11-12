@@ -39,6 +39,17 @@ interface Queryable { query(text: string, values?: unknown[]): Promise<{ rows: a
 
 const num = (v: any): number | null => (v === null || v === undefined ? null : Number(v));
 const LIVE_WINDOW = "INTERVAL '15 minutes'";
+/** Sorted-descending values with their share of time, thinned to at most n points (ends kept). */
+export function loadDuration(values: number[], n: number): { pct: number; kva: number }[] {
+    const v = [...values].sort((a, b) => b - a);
+    if (!v.length) return [];
+    const step = Math.max(1, Math.ceil(v.length / n));
+    const out: { pct: number; kva: number }[] = [];
+    for (let i = 0; i < v.length; i += step) out.push({ pct: Math.round((i / v.length) * 1000) / 10, kva: Math.round(v[i] * 10) / 10 });
+    if (out[out.length - 1].pct !== Math.round(((v.length - 1) / v.length) * 1000) / 10) out.push({ pct: Math.round(((v.length - 1) / v.length) * 1000) / 10, kva: Math.round(v[v.length - 1] * 10) / 10 });
+    return out;
+}
+
 /** Local midnight in South Africa (UTC+2, no DST). */
 export function sastMidnight(now = new Date()): Date {
     const shifted = new Date(now.getTime() + 2 * 3_600_000);
@@ -294,6 +305,10 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
             utilisation_pct: mdi && max?.kva ? Math.round((max.kva / mdi) * 1000) / 10 : null,
             top_intervals: top,
             daily_max: [...daily.values()],
+            // Load-duration curve: every assessed interval, highest first, thinned to ≤ 300 points
+            // (the first and last are always kept), and the time spent near the contracted limit.
+            duration_curve: loadDuration(rows.map((x) => x.kva).filter((v): v is number => v !== null), 300),
+            hours_above_90pct_mdi: mdi ? rows.filter((x) => x.kva !== null && x.kva > 0.9 * mdi).length / 2 : null,
         });
     }));
 

@@ -52,6 +52,8 @@ export function FindingDetail({ f, c, project, live, role, findings }: {
                 </button>
             </header>
 
+            <Track status={c?.status ?? "open"} />
+
             <div className="grid gap-4 lg:grid-cols-3">
                 <Step n={1} title="What we measured">
                     <p className="whitespace-pre-line">{f.problem}</p>
@@ -91,5 +93,23 @@ export function FindingDetail({ f, c, project, live, role, findings }: {
                 ) : <Empty>The detailed charts are available while the assessment is running.</Empty>}
             </section>
         </div>
+    );
+}
+
+/** Where the finding is on its way: Found → Investigating → Action → Verified. */
+function Track({ status }: { status: string }) {
+    if (status === "not_needed") return <p className="text-[15px] text-muted">Closed: no action needed.</p>;
+    const steps = ["Found", "Investigating", "Action", "Verified"];
+    const at = status === "verified" ? 3 : status === "action_planned" || status === "action_done" ? 2 : status === "investigating" ? 1 : 0;
+    return (
+        <ol className="flex items-center gap-2" aria-label="Progress of this finding">
+            {steps.map((label, i) => (
+                <li key={label} className="flex flex-1 items-center gap-2" aria-current={i === at ? "step" : undefined}>
+                    <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${i <= at ? "bg-blue-600 text-white" : "bg-surface-3 text-muted"}`}>{i + 1}</span>
+                    <span className={`text-sm ${i === at ? "font-semibold text-ink" : i < at ? "text-ink-3" : "text-faint"}`}>{label}</span>
+                    {i < steps.length - 1 && <span className={`h-0.5 flex-1 rounded ${i < at ? "bg-blue-600" : "bg-surface-3"}`} />}
+                </li>
+            ))}
+        </ol>
     );
 }

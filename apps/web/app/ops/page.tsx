@@ -6,8 +6,8 @@
 // calibration due. Every tile links to its page.
 
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet, fmtAgo, fmtDateTime, fmtDate, TZ_LABEL } from "@/lib/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiSend, fmtAgo, fmtDateTime, fmtDate, TZ_LABEL } from "@/lib/api";
 import { FleetRow, deviceHealth } from "@/lib/ops";
 import { Assessment, STATUS_LABEL, STATUS_TONE } from "@/lib/assessments";
 import { PageHeader, Panel, Stat, Loading, ErrorBox, Empty, RagDot, Button, Badge } from "@/components/ops/ui";
@@ -130,6 +130,8 @@ export default function OpsHome() {
                 </Panel>}
             </div>
 
+            <BookingRequests />
+
             <Panel title="Awaiting review" actions={<Link href="/ops/review" className="text-xs text-blue-300 hover:underline">review</Link>}>
                 <div className="flex gap-6 text-sm">
                     <span>Findings: <b className={findings ? "text-amber-300" : "text-emerald-300"}>{findings}</b> <span className="text-slate-500">(drafts and in review)</span></span>
@@ -137,5 +139,36 @@ export default function OpsHome() {
                 </div>
             </Panel>
         </div>
+    );
+}
+
+const PURPOSE: Record<string, string> = { follow_up: "Follow-up", verify_improvement: "Verify improvement", new_site: "New site", other: "Other" };
+
+/** Booking requests from clients ("Book a follow-up assessment"). Shown while any is open. */
+function BookingRequests() {
+    const qc = useQueryClient();
+    const q = useQuery({ queryKey: ["booking-requests"], queryFn: () => apiGet<any[]>("/ingestion/booking-requests"), refetchInterval: 60_000 });
+    const set = useMutation({ mutationFn: ({ id, status }: { id: string; status: string }) => apiSend("PATCH", `/ingestion/booking-requests/${id}`, { status }),
+        onSuccess: () => qc.invalidateQueries({ queryKey: ["booking-requests"] }) });
+    const open = (q.data ?? []).filter((b) => b.status === "new" || b.status === "contacted");
+    if (!open.length) return null;
+    return (
+        <Panel title={`Booking requests (${open.length})`} subtitle="Clients asking for a follow-up or new assessment">
+            <ul className="divide-y divide-slate-800">
+                {open.map((b) => (
+                    <li key={b.id} className="py-2.5 text-sm flex flex-wrap items-center gap-x-4 gap-y-1">
+                        <Badge tone={b.status === "new" ? "amber" : "blue"}>{b.status}</Badge>
+                        <span className="text-slate-200">{b.tenant_name}{b.project_name ? ` · ${b.project_name}` : ""}</span>
+                        <span className="text-slate-400">{PURPOSE[b.purpose] ?? b.purpose}{b.duration_days ? `, ${b.duration_days} days` : ""}{b.preferred_start ? `, from ${fmtDate(b.preferred_start)}` : ""}</span>
+                        <span className="text-slate-500">{[b.contact_name, b.contact_phone, b.requested_by_email].filter(Boolean).join(" · ")}</span>
+                        <span className="text-xs text-slate-500">{fmtAgo(b.created_at)}</span>
+                        <select aria-label="Status" className="ml-auto rounded bg-slate-900 border border-slate-700 px-2 py-1 text-xs text-slate-200" value={b.status} onChange={(e) => set.mutate({ id: b.id, status: e.target.value })}>
+                            {["new", "contacted", "booked", "declined"].map((x) => <option key={x} value={x}>{x}</option>)}
+                        </select>
+                        {b.notes && <p className="basis-full text-slate-400">{b.notes}</p>}
+                    </li>
+                ))}
+            </ul>
+        </Panel>
     );
 }
