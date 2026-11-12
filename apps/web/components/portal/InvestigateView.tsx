@@ -40,22 +40,24 @@ const tick = (ms: number, span: number) => {
     return span > 2 * D ? `${d.getUTCDate()}/${d.getUTCMonth() + 1} ${hm}` : hm;
 };
 
-type Group = "power" | "voltage" | "current" | "pf" | "thd";
+export type Group = "power" | "voltage" | "current" | "pf" | "thd";
 const GROUPS: { key: Group; label: string }[] = [
     { key: "power", label: "Power (kW, kvar)" }, { key: "voltage", label: "Voltage" }, { key: "current", label: "Current" },
     { key: "pf", label: "Power factor" }, { key: "thd", label: "Voltage THD" },
 ];
 
-export function InvestigateView({ assessment, pointId, points, role, initial, findings }: {
+export function InvestigateView({ assessment, pointId, points, role, initial, findings, initialGroups }: {
     assessment: { id: string; start_at: string | null; effective_end_at: string | null };
     pointId: string; points: { id: string; name: string }[]; role: string | null;
     initial?: Window | null; findings?: { id: string; title: string }[];
+    /** Channels to open with (a finding page opens with the ones that explain it). */
+    initialGroups?: Group[];
 }) {
     const start = assessment.start_at ?? new Date(Date.now() - 7 * D).toISOString();
     const end = () => new Date(Math.min(Date.now(), new Date(assessment.effective_end_at ?? Date.now()).getTime())).toISOString();
     const [win, setWin] = useState<Window>(initial ?? { from: new Date(Math.max(new Date(start).getTime(), Date.now() - D)).toISOString(), to: end() });
     useEffect(() => { if (initial) setWin(initial); }, [initial?.from, initial?.to]); // eslint-disable-line react-hooks/exhaustive-deps
-    const [groups, setGroups] = useState<Group[]>(["power", "voltage", "pf", "thd"]);
+    const [groups, setGroups] = useState<Group[]>(initialGroups ?? ["power", "voltage", "pf", "thd"]);
     const [phases, setPhases] = useState<("A" | "B" | "C")[]>(["A", "B", "C"]);
     const [sel, setSel] = useState<{ a: number; b: number } | null>(null);
     const qc = useQueryClient();

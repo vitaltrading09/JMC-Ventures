@@ -1,79 +1,58 @@
 "use client";
 
-// A site on the portal overview (engineering UI brief §1): a compact summary
-// with the current load, whether the meters are reporting, ONE main issue and
-// one clear next action. The detail lives on the site's Summary view.
-// "Reporting" is shown in a neutral style: a meter talking to the server says
-// nothing about whether the site is healthy.
+// A site tile on the client home page: the whole tile opens the site. It shows
+// only what a first look needs: the assessment state, time left, and how many
+// findings need attention (with the main one). Details live inside the site.
 
 import Link from "next/link";
-import { ArrowRight } from "lucide-react";
-import { fmtAgo, fmtDate } from "@/lib/api";
-import { num } from "@/lib/format";
-import { isDraftFinding, type PortalProject } from "@/lib/portal";
-import { Badge } from "@/components/ops/ui";
+import { ArrowRight, CheckCircle2, AlertTriangle, Lock, Clock } from "lucide-react";
+import { fmtDate } from "@/lib/api";
+import type { PortalProject } from "@/lib/portal";
+import type { Assessment } from "@/lib/assessments";
+import { elapsedFraction } from "@/lib/assessments";
 
-export function ProjectCard({ p }: { p: PortalProject }) {
+export function ProjectCard({ p, a }: { p: PortalProject; a: Assessment | null }) {
     const t = p.tiles;
-    const meters = t?.meters ?? [];
-    const reporting = meters.filter((m) => m.state === "live").length;
-    const silent = meters.filter((m) => m.state === "silent").length;
-    const issue = t?.findings?.[0] ?? null;
-    const alert = t?.top_alerts?.[0] ?? null;
+    const findings = t?.findings ?? [];
+    const attention = findings.filter((f) => f.priority <= 2).length;
+    const pct = a?.live ? Math.round(elapsedFraction(a) * 100) : null;
     return (
-        <article className="rounded-xl border border-line bg-surface/50 p-5 flex flex-col gap-4 hover:border-line-strong transition-colors">
-            <header className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                    <h3 className="font-semibold text-ink truncate">{p.name}</h3>
-                    <p className="text-xs text-faint truncate">{[p.end_client_name, p.address].filter(Boolean).join(" · ") || " "}</p>
-                </div>
-                {t ? <Badge tone="blue">Assessment live</Badge> : <Badge>No live assessment</Badge>}
-            </header>
+        <Link href={`/portal/projects/${p.id}`}
+            className="group flex flex-col min-h-[230px] rounded-2xl border border-line bg-surface p-5 shadow-sm transition hover:border-blue-400/60 hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+            <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-ink truncate">{p.name}</h3>
+                <p className="text-sm text-faint truncate">{p.address || p.end_client_name || " "}</p>
+            </div>
 
-            {!t ? (
-                <p className="text-sm text-muted">Live data, history and the consultant are available only during an assessment. Final reports stay under Reports and data.</p>
-            ) : (
-                <>
-                    <dl className="grid grid-cols-3 gap-3">
-                        <div>
-                            <dt className="text-xs text-faint">Load now</dt>
-                            <dd className="text-lg font-semibold text-ink tabular-nums">{t.incomer_kw === null ? "–" : `${num(t.incomer_kw, 1)} kW`}</dd>
-                            <dd className="text-[11px] text-faint">{t.incomer_at ? `incomer, ${fmtAgo(t.incomer_at)}` : "no live value"}</dd>
+            <div className="mt-4 text-sm">
+                {a?.live ? (
+                    <>
+                        <p className="flex items-center gap-1.5 text-ink-3"><Clock className="h-4 w-4 text-faint" aria-hidden />Assessment running · <span className="tabular-nums">{a.remaining} left</span></p>
+                        <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden" aria-label={`${pct} % of the assessment elapsed`}>
+                            <div className="h-full bg-blue-500/80" style={{ width: `${pct}%` }} />
                         </div>
-                        <div>
-                            <dt className="text-xs text-faint">Today (SAST)</dt>
-                            <dd className="text-lg font-semibold text-ink tabular-nums">{t.today_kwh === null ? "–" : `${num(t.today_kwh)} kWh`}</dd>
-                            <dd className="text-[11px] text-faint">grid import</dd>
-                        </div>
-                        <div>
-                            <dt className="text-xs text-faint">Meters</dt>
-                            <dd className={`text-lg font-semibold tabular-nums ${silent ? "text-warn" : "text-ink"}`}>{meters.length ? `${reporting}/${meters.length}` : "–"}</dd>
-                            <dd className="text-[11px] text-faint">{silent ? `${silent} not reporting` : "reporting"}{t.coverage_24h !== null ? ` · ${Math.round(t.coverage_24h * 100)} % in 24 h` : ""}</dd>
-                        </div>
-                    </dl>
+                    </>
+                ) : a?.effective_status === "ended" ? (
+                    <p className="flex items-center gap-1.5 text-muted"><Lock className="h-4 w-4" aria-hidden />Assessment ended{a.delivery_open && a.delivery_until ? ` · reports until ${fmtDate(a.delivery_until)}` : ""}</p>
+                ) : a ? (
+                    <p className="text-muted">Assessment starts when the meter is commissioned.</p>
+                ) : <p className="text-muted">No assessment for this site.</p>}
+            </div>
 
-                    <div className="rounded-lg bg-canvas/50 px-3 py-2.5">
-                        <p className="text-[11px] uppercase tracking-wide text-faint">Main issue</p>
-                        {issue ? (
-                            <p className="text-sm text-ink mt-0.5">{issue.title}{isDraftFinding(issue.review_status) && <span className="ml-2 text-[11px] text-accent">draft, not yet reviewed</span>}</p>
-                        ) : alert ? (
-                            <p className="text-sm text-ink mt-0.5 line-clamp-2">{alert.message}</p>
-                        ) : <p className="text-sm text-muted mt-0.5">No open issue so far.</p>}
-                        {(t.findings.length > 1 || t.open_alerts > 0) && (
-                            <p className="text-[11px] text-faint mt-1">{t.findings.length > 1 ? `${t.findings.length - 1} more finding(s)` : ""}{t.findings.length > 1 && t.open_alerts > 0 ? " · " : ""}{t.open_alerts > 0 ? `${t.open_alerts} alert(s) in 7 days` : ""}</p>
-                        )}
+            <div className="mt-auto pt-5">
+                {t ? attention > 0 ? (
+                    <div className="flex items-start gap-2">
+                        <AlertTriangle className="h-5 w-5 text-warn shrink-0 mt-0.5" aria-hidden />
+                        <div className="min-w-0">
+                            <p className="font-semibold text-ink">{attention} finding{attention === 1 ? "" : "s"} to look at</p>
+                            <p className="text-sm text-muted line-clamp-2">{findings[0]?.title}</p>
+                        </div>
                     </div>
-                </>
-            )}
-
-            <footer className="flex items-center justify-between gap-3 pt-3 border-t border-line text-xs mt-auto">
-                <span className="text-faint truncate">
-                    {p.latest_report ? <>Latest report: {fmtDate(p.latest_report.period_start)} – {fmtDate(new Date(new Date(p.latest_report.period_end).getTime() - 1))}</> : "No issued report yet"}
-                </span>
-                <Link href={`/portal/projects/${p.id}`} className="inline-flex items-center gap-1 text-sm text-accent hover:underline whitespace-nowrap focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400">
-                    {t ? "Open site summary" : "Open site"}<ArrowRight className="h-3.5 w-3.5" aria-hidden />
-                </Link>
-            </footer>
-        </article>
+                ) : (
+                    <p className="flex items-center gap-2 font-semibold text-ink"><CheckCircle2 className="h-5 w-5 text-ok" aria-hidden />No issues found so far</p>
+                ) : <p className="text-sm text-muted">{p.latest_report ? "Final reports available" : "Nothing to show yet"}</p>}
+                <p className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-accent">Open site<ArrowRight className="h-4 w-4 transition group-hover:translate-x-0.5" aria-hidden /></p>
+            </div>
+        </Link>
     );
 }

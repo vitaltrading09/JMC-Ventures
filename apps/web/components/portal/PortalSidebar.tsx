@@ -1,22 +1,50 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Zap, LayoutDashboard, FolderKanban, Bell, Settings, LogOut, Menu, X, Sun, Moon } from "lucide-react";
+import { Zap, LayoutDashboard, Bell, Settings, LogOut, Menu, X, Sun, Moon, ArrowLeft } from "lucide-react";
 import { useTheme } from "@/components/ThemeRoot";
 import { apiGet } from "@/lib/api";
+import { SITE_VIEWS, SITE_PATH, siteHref, viewFrom } from "@/lib/siteNav";
+import { usePortalAssessments } from "@/components/portal/AssessmentBanner";
 
 const LINKS = [
-    { name: "Overview", href: "/portal",          icon: LayoutDashboard },
-    { name: "Sites",    href: "/portal/projects", icon: FolderKanban },
+    { name: "My sites", href: "/portal",          icon: LayoutDashboard },
     { name: "Alerts",   href: "/portal/alerts",   icon: Bell },
     { name: "Settings", href: "/portal/settings", icon: Settings },
 ];
+const linkClass = (active: boolean) => `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+    active ? "bg-blue-600/10 text-accent font-semibold" : "text-muted hover:bg-surface-2 hover:text-ink"}`;
+
+/** Inside a site: its own sections replace the portal links. */
+function SiteNav({ id, onNavigate }: { id: string; onNavigate: () => void }) {
+    const params = useSearchParams();
+    const view = viewFrom(params);
+    const project = useQuery({ queryKey: ["portal-project", id], queryFn: () => apiGet<{ name: string }>(`/ingestion/portal/projects/${id}`) });
+    const live = (usePortalAssessments().data ?? []).some((a) => a.project_id === id && a.live);
+    return (
+        <nav aria-label="Site sections" className="flex-1 px-3 overflow-y-auto">
+            <Link href="/portal" className="flex items-center gap-2 px-3 py-2 text-sm text-muted hover:text-ink"><ArrowLeft className="h-4 w-4" />All sites</Link>
+            <p className="px-3 pt-2 pb-3 text-base font-semibold text-ink leading-snug">{project.data?.name ?? "…"}</p>
+            <div className="space-y-1">
+                {SITE_VIEWS.filter((v) => live || !v.live).map((v) => {
+                    const active = view === v.key || (v.key === "findings" && view === "finding");
+                    return (
+                        <Link key={v.key} href={siteHref(id, v.key)} onClick={onNavigate} aria-current={active ? "page" : undefined} className={linkClass(active)}>
+                            <v.icon className="h-4 w-4" /><span>{v.label}</span>
+                        </Link>
+                    );
+                })}
+            </div>
+        </nav>
+    );
+}
 
 export function PortalSidebar() {
     const pathname = usePathname();
+    const siteId = SITE_PATH.exec(pathname ?? "")?.[1] ?? null;
     const { theme, toggle } = useTheme();
     // Below 1024 px the sidebar is a drawer behind a menu button (brief §3: one column on mobile).
     const [open, setOpen] = useState(false);
@@ -58,19 +86,18 @@ export function PortalSidebar() {
                     <span className="text-lg font-bold text-ink truncate">{brand.data?.brand_name || "GridIQ"}</span>
                 </Link>
             </div>
-            <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
-                {LINKS.map((l) => {
-                    const active = l.href === "/portal" ? pathname === "/portal" : pathname.startsWith(l.href);
-                    return (
-                        <Link key={l.href} href={l.href}
-                            className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                                active ? "bg-blue-600/15 text-accent border border-blue-500/20" : "text-muted hover:bg-surface-2 hover:text-ink"}`}>
-                            <l.icon className="h-4 w-4" />
-                            <span className="font-medium">{l.name}</span>
-                        </Link>
-                    );
-                })}
-            </nav>
+            {siteId ? <Suspense fallback={<div className="flex-1" />}><SiteNav id={siteId} onNavigate={() => setOpen(false)} /></Suspense> : (
+                <nav aria-label="Main" className="flex-1 px-3 space-y-1 overflow-y-auto">
+                    {LINKS.map((l) => {
+                        const active = l.href === "/portal" ? pathname === "/portal" || pathname === "/portal/projects" : pathname.startsWith(l.href);
+                        return (
+                            <Link key={l.href} href={l.href} aria-current={active ? "page" : undefined} className={linkClass(active)}>
+                                <l.icon className="h-4 w-4" /><span>{l.name}</span>
+                            </Link>
+                        );
+                    })}
+                </nav>
+            )}
             <div className="p-3 border-t border-line space-y-2">
                 <button type="button" onClick={toggle} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted hover:bg-surface-2 hover:text-ink">
                     {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}{theme === "light" ? "Dark mode" : "Light mode"}

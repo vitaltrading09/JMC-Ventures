@@ -334,6 +334,11 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     Recharts). Portal: `components/ThemeRoot.tsx`, light by default, dark toggle in the sidebar (localStorage only).
     Ops sets `data-theme="dark"`. New portal UI uses token classes, never `slate-*`/`text-white` (except on saturated buttons).
   - Portal sidebar is a drawer below 1024 px; skip link; visible focus on themed areas.
+  - Client navigation (2026-11-12 walkthrough): `/portal` is "Your sites", a grid of site tiles (`ProjectCard.tsx`).
+    Inside a site the sidebar switches to the site's sections (`lib/siteNav.ts`, `?view=overview|findings|finding&f=<id>|
+    energy|pq|investigate|reports|site`; old `?tab=` links still map). Findings are tiles (`FindingTiles.tsx`); a finding
+    has its own page (`FindingDetail.tsx`: measured → why it can matter → what to check → follow-up → the investigation
+    charts on the finding's window, channels per type in `lib/findings.ts`).
   - Investigation (`src/investigate.ts`, migration `1793840000000_evidence-and-cases`): `GET /points/:id/investigate`
     (≤ 31 days; 1m ≤ 6 h, 10m ≤ 4 d, else 1h; avg + bucket min/max + events), `GET /points/:id/compare` (before/after
     10-minute stats, both windows inside the assessment), `evidence_refs` (saved windows; in the dataset as `evidence` and

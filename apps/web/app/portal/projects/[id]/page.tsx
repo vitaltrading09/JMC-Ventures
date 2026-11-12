@@ -1,89 +1,104 @@
 "use client";
 
-// A site workspace (engineering UI brief §4): one persistent context strip and
-// six views: Summary, Energy and demand, Power quality, Findings, Reports and
-// data, Site details. Everything reads the live assessment of THIS site; a
-// client without one sees the access state and the Reports view only.
+// A site workspace. The portal sidebar lists this site's sections (lib/siteNav.ts),
+// so the page itself only shows the site name, one compact context strip and
+// the chosen section: Overview (glance, numbers, finding tiles, typical day),
+// Findings, a finding's own page, Energy and demand, Power quality,
+// Investigation, Reports and data, Site details. Everything reads the live
+// assessment of THIS site; a client without one sees the access state and
+// the Reports section only.
 
-import Link from "next/link";
-import { useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft } from "lucide-react";
+import { useState } from "react";
 import { apiGet } from "@/lib/api";
 import { PortalProjectDetail, useRole } from "@/lib/portal";
 import { useSummary } from "@/lib/summary";
-import { PageHeader, Loading, ErrorBox } from "@/components/ops/ui";
-import { OverviewTab, LayoutTab, EnergyDemandTab, FindingsTab, ReportsTab } from "@/components/portal/ProjectTabs";
+import { SITE_VIEWS, siteHref, viewFrom, type SiteView } from "@/lib/siteNav";
+import { Loading, ErrorBox, Empty, Panel } from "@/components/ops/ui";
+import { OverviewTab, LayoutTab, EnergyDemandTab, ReportsTab } from "@/components/portal/ProjectTabs";
 import { ExportsTab } from "@/components/portal/ExportsTab";
 import { AssessmentBanner, usePortalAssessments } from "@/components/portal/AssessmentBanner";
 import { SiteHeader } from "@/components/portal/SiteHeader";
 import { SummaryTab } from "@/components/portal/SummaryTab";
 import { PowerQualityView } from "@/components/portal/PowerQualityView";
-import { InvestigateView, type Window } from "@/components/portal/InvestigateView";
+import { InvestigateView } from "@/components/portal/InvestigateView";
+import { FindingTiles } from "@/components/portal/FindingTiles";
+import { FindingDetail } from "@/components/portal/FindingDetail";
 
-const TABS = [
-    ["summary", "Summary"], ["energy", "Energy and demand"], ["pq", "Power quality"], ["investigate", "Events and investigation"], ["findings", "Findings and actions"],
-    ["reports", "Reports and data"], ["site", "Site details"],
-] as const;
-type Tab = (typeof TABS)[number][0];
-// Old links (?tab=findings, ?tab=demand …) still land somewhere sensible.
-const ALIAS: Record<string, Tab> = { overview: "summary", balance: "energy", load: "energy", demand: "energy", layout: "site", exports: "reports" };
-
-export default function PortalProjectPage() {
+export default function PortalSitePage() {
     const { id } = useParams<{ id: string }>();
+    const params = useSearchParams();
+    const router = useRouter();
     const role = useRole();
     const q = useQuery({ queryKey: ["portal-project", id], queryFn: () => apiGet<PortalProjectDetail>(`/ingestion/portal/projects/${id}`), refetchInterval: 60_000 });
     const mine = usePortalAssessments();
     const live = (mine.data ?? []).find((a) => a.project_id === id && a.live) ?? null;
     const [pointId, setPointId] = useState<string | null>(null);
     const summary = useSummary(live?.id, pointId);
-    const asked = useSearchParams().get("tab") ?? "";
-    const initial: Tab = (TABS.some(([k]) => k === asked) ? asked : ALIAS[asked]) as Tab ?? "summary";
-    const [tab, setTab] = useState<Tab>(initial ?? "summary");
-    const [investWin, setInvestWin] = useState<Window | null>(null);
-    const findings = useQuery({ queryKey: ["findings", id], enabled: !!live, queryFn: () => apiGet<any[]>(`/ingestion/sites/${id}/recommendations`) });
-    const inspect = (w: Window) => { setInvestWin(w); setTab("investigate"); };
+    const findings = useQuery({ queryKey: ["findings", id], enabled: !!q.data?.telemetry_visible, queryFn: () => apiGet<any[]>(`/ingestion/sites/${id}/recommendations`) });
+    const cases = useQuery({ queryKey: ["cases", live?.id], enabled: !!live, queryFn: () => apiGet<any[]>(`/ingestion/assessments/${live!.id}/cases`) });
+    const go = (v: SiteView) => router.push(siteHref(id, v));
 
     if (q.isLoading || mine.isLoading) return <Loading />;
     if (q.error || !q.data) return <ErrorBox error={q.error ?? "Not found"} />;
     const p = q.data;
     const telemetry = p.telemetry_visible;
-    const tabs = TABS.filter(([k]) => (telemetry || k === "reports") && (k !== "investigate" || !!live));
-    const current: Tab = tabs.some(([k]) => k === tab) ? tab : tabs[0][0];
+    const asked = viewFrom(params);
+    const allowed = (v: SiteView) => v === "reports" || v === "overview" || (telemetry && (v !== "investigate" || !!live));
+    const view: SiteView = allowed(asked) ? asked : telemetry ? "overview" : "reports";
     const s = summary.data;
     const effectivePoint = pointId ?? s?.context.point?.id ?? null;
+    const list = findings.data ?? [];
+    const title = view === "finding" || view === "overview" ? null : SITE_VIEWS.find((v) => v.key === view)?.label;
+    const fid = params.get("f");
 
     return (
-        <div className="space-y-5">
-            <Link href="/portal/projects" className="inline-flex items-center text-sm text-muted hover:text-ink"><ArrowLeft className="h-4 w-4 mr-1" />Sites</Link>
-            <PageHeader title={p.name} subtitle={[p.end_client_name, p.address].filter(Boolean).join(" · ")} />
+        <div className="space-y-6 max-w-[1400px]">
+            <header>
+                <h1 className="text-[28px] font-semibold text-ink leading-tight">{p.name}</h1>
+                {p.address && <p className="text-[15px] text-muted">{p.address}</p>}
+            </header>
             {live ? <SiteHeader a={live} summary={s} pointId={effectivePoint} onPoint={setPointId} /> : <AssessmentBanner projectId={p.id} />}
-            <nav aria-label="Site views" className="flex gap-1 border-b border-line overflow-x-auto no-scrollbar" role="tablist">
-                {tabs.map(([k, label]) => (
-                    <button key={k} role="tab" aria-selected={current === k} onClick={() => setTab(k)}
-                        className={`px-3 py-2 text-[15px] whitespace-nowrap border-b-2 -mb-px focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-400 ${current === k ? "border-blue-500 text-ink" : "border-transparent text-muted hover:text-ink"}`}>{label}</button>
-                ))}
-            </nav>
-            {current === "summary" && (live
-                ? summary.isLoading ? <Loading label="Building the summary" /> : summary.error ? <ErrorBox error={summary.error} /> : s && <SummaryTab s={s} onTab={setTab} />
-                : <OverviewTab project={p} />)}
-            {current === "energy" && <EnergyDemandTab project={p} since={live?.start_at ?? null} pointId={effectivePoint} />}
-            {current === "pq" && (live
-                ? summary.isLoading ? <Loading label="Assessing" /> : s ? <PowerQualityView detail={s.point_detail} period={{ from: s.context.period_from, to: s.context.period_to }} /> : <ErrorBox error={summary.error} />
-                : <ErrorBox error="Power quality is shown during a live assessment." />)}
-            {current === "investigate" && live && effectivePoint && (
-                <InvestigateView assessment={live} pointId={effectivePoint} points={p.points} role={role} initial={investWin}
-                    findings={(findings.data ?? []).map((f) => ({ id: f.id, title: f.title }))} />
+            {title && <h2 className="text-xl font-semibold text-ink pt-2">{title}</h2>}
+
+            {view === "overview" && (live
+                ? summary.isLoading ? <Loading label="Building the summary" /> : summary.error ? <ErrorBox error={summary.error} />
+                    : s && <SummaryTab s={s} projectId={p.id} findings={list} cases={cases.data} onTab={(t) => go(t === "summary" ? "overview" : t)} />
+                : telemetry ? <OverviewTab project={p} /> : <Empty>Live data is shown during an assessment. Final reports are under Reports and data.</Empty>)}
+
+            {view === "findings" && (
+                <div className="space-y-4">
+                    <p className="text-[15px] text-muted max-w-3xl">Each finding opens on its own page: what was measured, why it can matter, what to check, the follow-up, and the charts behind it.</p>
+                    {findings.isLoading ? <Loading /> : <FindingTiles projectId={p.id} findings={list} cases={cases.data} />}
+                </div>
             )}
-            {current === "findings" && <FindingsTab project={p} assessmentId={live?.id ?? null} role={role} onInspect={live ? inspect : undefined} />}
-            {current === "reports" && (
+            {view === "finding" && (findings.isLoading ? <Loading /> : (
+                <FindingDetail f={list.find((f) => f.id === fid) ?? null} c={(cases.data ?? []).find((c) => c.recommendation_id === fid) ?? null}
+                    project={p} live={live} role={role} findings={list} />
+            ))}
+
+            {view === "energy" && <EnergyDemandTab project={p} since={live?.start_at ?? null} pointId={effectivePoint} />}
+            {view === "pq" && (live
+                ? summary.isLoading ? <Loading label="Assessing" /> : s ? <PowerQualityView detail={s.point_detail} period={{ from: s.context.period_from, to: s.context.period_to }} /> : <ErrorBox error={summary.error} />
+                : <Empty>Power quality is shown during a live assessment.</Empty>)}
+            {view === "investigate" && live && effectivePoint && (
+                <InvestigateView assessment={live} pointId={effectivePoint} points={p.points} role={role}
+                    findings={list.map((f) => ({ id: f.id, title: f.title }))} />
+            )}
+            {view === "reports" && (
                 <div className="space-y-6">
                     <ReportsTab project={p} role={role} />
+                    {s && (
+                        <Panel title="Feasibility handover" subtitle={s.feasibility.note}>
+                            <p className="text-[15px] text-ink-2">Supplied: {s.feasibility.supplied.join("; ")}.</p>
+                            {s.feasibility.missing.length > 0 && <p className="text-[15px] text-ink-2 mt-2">Still missing: {s.feasibility.missing.join("; ")}.</p>}
+                        </Panel>
+                    )}
                     {telemetry && <ExportsTab project={p} />}
                 </div>
             )}
-            {current === "site" && <LayoutTab project={p} />}
+            {view === "site" && <LayoutTab project={p} />}
         </div>
     );
 }

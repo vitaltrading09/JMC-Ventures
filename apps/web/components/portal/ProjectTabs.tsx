@@ -340,7 +340,7 @@ export function FindingsTab({ project, assessmentId, role, onInspect }: {
     );
 }
 
-function CaseEditor({ f, c, assessmentId, project }: { f: any; c: any; assessmentId: string; project: PortalProjectDetail }) {
+export function CaseEditor({ f, c, assessmentId, project }: { f: any; c: any; assessmentId: string; project: PortalProjectDetail }) {
     const qc = useQueryClient();
     const [open, setOpen] = useState<"" | "case" | "verify">("");
     const [form, setForm] = useState({ owner: c?.owner ?? "", status: c?.status ?? "open", next_step: c?.next_step ?? "", due_on: c?.due_on?.slice(0, 10) ?? "" });
