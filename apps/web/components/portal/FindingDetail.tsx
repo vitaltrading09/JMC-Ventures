@@ -44,6 +44,7 @@ export function FindingDetail({ f, c, project, live, role, findings }: {
                     <p className="mt-1 text-sm">
                         <span className={`font-medium ${sev.text}`}>{sev.label}</span>
                         <span className="text-muted"> · {String(f.confidence ?? "–").toLowerCase()} confidence · {findingSource(f.type)}</span>
+                        {f.evidence?.cleared_at && <span className="text-ok"> · not seen in the last 7 days (since {fmtDate(f.evidence.cleared_at)})</span>}
                         {isDraftFinding(f.review_status) ? <span className="text-muted"> · not yet reviewed by GridIQ</span> : f.reviewed_at ? <span className="text-muted"> · reviewed {fmtDate(f.reviewed_at)}</span> : null}
                     </p>
                 </div>

@@ -54,6 +54,18 @@ export function percentile(values: number[], p: number): number | null {
 }
 
 export type Severity = 'act' | 'investigate' | 'note';
+/** The concluded watch of a finding, as the report states it. */
+function watchSummary(f: any) {
+    const section = (name: string) => String(f.w_conclusion.text ?? '').split(/\n(?=###\s)/).find((b: string) => b.startsWith(`### ${name}`))
+        ?.split('\n').slice(1).join(' ').replace(/\s+/g, ' ').replace(/\*\*/g, '').trim() ?? null;
+    return {
+        from: new Date(f.w_from).toISOString(), to: new Date(f.w_to).toISOString(), verdict: f.w_conclusion.verdict,
+        in_short: section('In short'), suggested_next_step: section('Suggested next step'),
+        source: f.w_conclusion.provider === 'none' ? 'measured-data summary' : 'AI consultant, from the measured data',
+        reviewed: !!f.w_reviewed, staff_note: f.w_note ?? null,
+    };
+}
+
 export interface ExecItem { severity: Severity; point: string; text: string; evidence: string; confidence: 'high' | 'medium' | 'low'; who: string }
 
 interface PointPQ {
@@ -451,9 +463,12 @@ async function pointSection(db: Pool, pt: any, from: Date, to: Date, days: numbe
 
     const findings = (await db.query(`
         SELECT r.id, r.type, r.title, r.priority, r.problem, r.solution, r.evidence, r.review_status, r.created_at,
-               c.owner AS case_owner, c.status AS case_status, c.next_step AS case_next, c.verification AS case_verification
+               c.owner AS case_owner, c.status AS case_status, c.next_step AS case_next, c.verification AS case_verification,
+               w.started_at AS w_from, w.concluded_at AS w_to, w.conclusion AS w_conclusion, w.reviewed_at AS w_reviewed, w.staff_note AS w_note
         FROM recommendations r JOIN deployments d ON d.device_id = r.meter_id
         LEFT JOIN finding_cases c ON c.recommendation_id = r.id
+        LEFT JOIN LATERAL (SELECT * FROM finding_watches fw WHERE fw.recommendation_id = r.id AND fw.status = 'concluded'
+                           ORDER BY fw.concluded_at DESC LIMIT 1) w ON TRUE
         WHERE d.measurement_point_id = $1 AND r.status = 'ACTIVE' AND r.review_status <> 'dismissed'
           AND r.created_at >= $2::timestamptz - INTERVAL '1 day' AND r.created_at < $3::timestamptz + INTERVAL '3 hours'
         ORDER BY r.priority, r.created_at`, [id, from, to])).rows.map((f) => ({
@@ -462,6 +477,7 @@ async function pointSection(db: Pool, pt: any, from: Date, to: Date, days: numbe
             engine: f.evidence?.engine ?? 'ai', id: f.id,
             case: f.case_status ? { owner: f.case_owner, status: f.case_status, next_step: f.case_next,
                                     verification_result: f.case_verification?.result ?? null } : null,
+            watch: f.w_conclusion ? watchSummary(f) : null,
         }));
 
     return {

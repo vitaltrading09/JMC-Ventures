@@ -285,11 +285,16 @@ export async function runRuleFindings(db: Pool, now = new Date()) {
                  f.saving_zar, f.standard_reference, evidence]);
             counts.inserted++;
         }
-        // A draft whose condition has cleared is no longer a finding.
-        const cleared = await db.query(`
-            UPDATE recommendations SET status = 'SUPERSEDED'
-            WHERE meter_id = $1 AND type LIKE 'RULE\\_%' AND status = 'ACTIVE' AND review_status = 'draft'
-              AND NOT (type = ANY($2::text[]))`, [pt.device_id, [...firing]]);
+        // A draft whose condition has cleared is no longer a finding, unless someone is
+        // following it up (a case beyond "open", or a watch): that one stays visible and is
+        // marked as not seen since (evidence.cleared_at; a refresh removes the mark).
+        const TRACKED = `(EXISTS (SELECT 1 FROM finding_cases c WHERE c.recommendation_id = recommendations.id AND c.status NOT IN ('open', 'not_needed'))
+                          OR EXISTS (SELECT 1 FROM finding_watches w WHERE w.recommendation_id = recommendations.id AND w.status <> 'cancelled'))`;
+        const stale = `meter_id = $1 AND type LIKE 'RULE\\_%' AND status = 'ACTIVE' AND review_status = 'draft' AND NOT (type = ANY($2::text[]))`;
+        await db.query(`
+            UPDATE recommendations SET evidence = jsonb_set(COALESCE(evidence, '{}'::jsonb), '{cleared_at}', to_jsonb($3::text))
+            WHERE ${stale} AND ${TRACKED} AND NOT (COALESCE(evidence, '{}'::jsonb) ? 'cleared_at')`, [pt.device_id, [...firing], now.toISOString()]);
+        const cleared = await db.query(`UPDATE recommendations SET status = 'SUPERSEDED' WHERE ${stale} AND NOT ${TRACKED}`, [pt.device_id, [...firing]]);
         counts.cleared += cleared.rowCount ?? 0;
     }
     return counts;

@@ -88,8 +88,7 @@ async function projectTiles(db: Queryable, projectId: string, seesDrafts: boolea
     if (incomers.length) {
         const from = sastMidnight();
         let total = 0, any = false;
-        for (const id of incomers) {
-            const e = await loadPointEnergy(db, id, from, new Date());
+        for (const e of await Promise.all(incomers.map((id) => loadPointEnergy(db, id, from, new Date())))) {
             if (e.coverage > 0) { any = true; total += e.importKwh; }
         }
         todayKwh = any ? Math.round(total * 10) / 10 : null;
@@ -188,9 +187,9 @@ export function portalRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
             FROM projects p
             WHERE p.archived_at IS NULL AND ${tenantSql(req.scope, 'p.tenant_id', params)}
             ORDER BY (p.status = 'active') DESC, p.name`, params);
-        const out = [];
-        for (const p of q.rows) out.push({ ...p, tiles: p.telemetry_visible ? await projectTiles(pool, p.id, seesUnpublishedFindings(req.scope)) : null });
-        res.json(out);
+        // Sites are independent: build their tiles side by side (the page polls this every 15 s).
+        const drafts = seesUnpublishedFindings(req.scope);
+        res.json(await Promise.all(q.rows.map(async (p) => ({ ...p, tiles: p.telemetry_visible ? await projectTiles(pool, p.id, drafts) : null }))));
     }));
 
     r.get('/portal/projects/:id', auth, handle(async (req, res) => {

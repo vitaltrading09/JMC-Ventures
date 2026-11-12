@@ -373,6 +373,17 @@ function overview(doc: Doc, ds: any) {
             cases.map((g: any) => [`${g.title} (${g.point})`, g.case.owner ?? '–', String(g.case.status).replace(/_/g, ' '), g.case.next_step ?? '–', g.case.verification_result ? String(g.case.verification_result).replace(/_/g, ' ') : 'not yet verified']),
             [0.3, 0.14, 0.14, 0.26, 0.16]);
     }
+    const watched = cases.filter((g: any) => g.watch);
+    if (watched.length) {
+        h2(doc, 'Watch conclusions');
+        p(doc, 'Findings the client started investigating were watched for some days. Each conclusion below is automated from the measured data unless marked as reviewed by GridIQ.');
+        const VERDICT: Record<string, string> = { persists: 'still happening', intermittent: 'happens at times', not_seen: 'not seen during the watch', insufficient: 'not enough data' };
+        const day = (iso: string) => new Date(new Date(iso).getTime() + 2 * 3_600_000).toISOString().slice(0, 10);
+        for (const g of watched) {
+            const w = g.watch;
+            bullet(doc, `${g.title} (${g.point}), ${day(w.from)} to ${day(w.to)} SAST: ${VERDICT[w.verdict] ?? w.verdict}. ${w.in_short ?? ''}${w.suggested_next_step ? ` Suggested next step: ${w.suggested_next_step}` : ''} (${w.source}; ${w.reviewed ? 'reviewed by GridIQ' : 'not yet reviewed by GridIQ'}${w.staff_note ? `: ${w.staff_note}` : ''})`);
+        }
+    }
     if ((ds.evidence ?? []).length) {
         h2(doc, 'Evidence references');
         table(doc, ['Reference', 'Point', 'Window (SAST)', 'Note'],
