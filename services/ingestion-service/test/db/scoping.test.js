@@ -267,11 +267,32 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         assert.strictEqual((await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'verified' })).status, 400);
         const c = await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { owner: 'Facilities', status: 'investigating', next_step: 'Check the HVAC schedule' });
         assert.strictEqual(c.status, 200);
+        assert.ok(JSON.parse(c.text).watch?.id, 'investigating starts a finding watch');
         assert.strictEqual((await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'verified', verification: { result: 'improved', note: 'after the schedule change' } })).status, 200);
         assert.strictEqual(JSON.parse((await call(A.adminToken, 'GET', `/assessments/${A.assessment}/cases`)).text)[0].owner, 'Facilities');
         assert.strictEqual((await call(A.viewerToken, 'PATCH', `/recommendations/${A.rec}/case`, { owner: 'x' })).status, 403);
         const audit = await q(`SELECT count(*)::int AS n FROM audit_log WHERE entity_type = 'recommendation' AND entity_id = $1 AND action = 'finding_case.update'`, [A.rec]);
         assert.strictEqual(audit[0].n, 2);
+        // Finding watch: staff conclude and review it; clients see it with the case.
+        assert.strictEqual((await call(A.adminToken, 'POST', `/recommendations/${A.rec}/watch/conclude`)).status, 403);
+        const done = await call(ops, 'POST', `/recommendations/${A.rec}/watch/conclude`);
+        assert.strictEqual(done.status, 200, done.text);
+        assert.match(JSON.parse(done.text).conclusion.text, /### In short[\s\S]*### Suggested next step/);
+        let listed = JSON.parse((await call(A.viewerToken, 'GET', `/assessments/${A.assessment}/cases`)).text)[0].watch;
+        assert.strictEqual(listed.status, 'concluded');
+        assert.strictEqual((await call(A.adminToken, 'POST', `/recommendations/${A.rec}/watch/review`, { note: 'x' })).status, 403);
+        assert.strictEqual((await call(ops, 'POST', `/recommendations/${A.rec}/watch/review`, { note: 'Checked: agreed' })).status, 200);
+        listed = JSON.parse((await call(A.viewerToken, 'GET', `/assessments/${A.assessment}/cases`)).text)[0].watch;
+        assert.strictEqual(listed.staff_note, 'Checked: agreed');
+        assert.ok((await q(`SELECT 1 FROM email_outbox WHERE purpose = 'finding_watch' AND dedupe_key LIKE $1`, [`watch:${listed.id}:%`])).length >= 1);
+        // A new watch; viewers cannot stop it, the client admin can.
+        await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'open' });
+        assert.ok(JSON.parse((await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'investigating' })).text).watch?.id);
+        assert.strictEqual((await call(A.viewerToken, 'POST', `/recommendations/${A.rec}/watch/stop`)).status, 403);
+        assert.strictEqual((await call(A.adminToken, 'POST', `/recommendations/${A.rec}/watch/stop`)).status, 200);
+        assert.strictEqual((await call(A.adminToken, 'POST', `/recommendations/${A.rec}/watch/stop`)).status, 404);
+        const actions = (await q(`SELECT action FROM audit_log WHERE entity_id = $1 AND action LIKE 'finding_watch.%' ORDER BY id`, [A.rec])).map((x) => x.action);
+        assert.deepStrictEqual(actions, ['finding_watch.start', 'finding_watch.conclude', 'finding_watch.review', 'finding_watch.start', 'finding_watch.stop']);
         // Removing evidence keeps the row for the record.
         const id = JSON.parse(made.text).id;
         assert.strictEqual((await call(A.adminToken, 'POST', `/evidence/${id}/remove`)).status, 200);

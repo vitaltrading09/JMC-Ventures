@@ -31,12 +31,15 @@ function Card({ title, error, children }: { title: string; error: unknown; child
 
 const firstSentence = (t: string | null | undefined) => (t ?? "").split(/(?<=\.)\s/)[0] ?? "";
 
-export function NextStep({ f, c, assessmentId, project, role }: { f: any; c: any; assessmentId: string | null; project: PortalProjectDetail; role: string | null }) {
+export function NextStep({ f, c, assessmentId, project, role, suggested }: { f: any; c: any; assessmentId: string | null; project: PortalProjectDetail; role: string | null; suggested?: string }) {
     const qc = useQueryClient();
     const status = c?.status ?? "open";
     const [form, setForm] = useState({ owner: c?.owner ?? "", next_step: c?.next_step ?? firstSentence(f.solution), due_on: c?.due_on?.slice(0, 10) ?? "" });
     // Each step asks its own question: the action is not the first check again.
-    useEffect(() => { if (status === "investigating") setForm((x) => ({ ...x, next_step: "" })); }, [status]);
+    // Once the watch has concluded, its suggested action is the starting point.
+    useEffect(() => { if (status === "investigating") setForm((x) => ({ ...x, next_step: suggested ?? "" })); }, [status, suggested]);
+    // The case may load after the page: fill in what is known without overwriting typing.
+    useEffect(() => { setForm((x) => ({ ...x, owner: x.owner || c?.owner || "", due_on: x.due_on || c?.due_on?.slice(0, 10) || "" })); }, [c?.owner, c?.due_on]);
     const [closing, setClosing] = useState(false);
     const [reason, setReason] = useState("");
     const save = useMutation({
@@ -74,7 +77,12 @@ export function NextStep({ f, c, assessmentId, project, role }: { f: any; c: any
                     <Field label="By"><input type="date" className={inputClass} value={form.due_on} onChange={(e) => setForm({ ...form, due_on: e.target.value })} /></Field>
                     <Button type="submit" disabled={save.isPending}>{starting ? "Start investigating" : "Plan this action"}<ArrowRight className="h-4 w-4" /></Button>
                 </form>
-                <div className="mt-3">{closeLink}</div>
+                <p className="mt-3 text-sm text-muted">
+                    {starting
+                        ? "GridIQ then watches this finding until the date you set (or for 3 days), notes what the measurements show each day, and sends a conclusion with a suggested next step."
+                        : suggested ? "The action is filled in from the watch's conclusion below; change it to what you will actually do." : null}
+                </p>
+                <div className="mt-2">{closeLink}</div>
                 {closeForm}
             </Card>
         );

@@ -11,7 +11,11 @@
 //   POST /assessments/:id/evidence                 save one (staff, client_admin)
 //   POST /evidence/:id/remove                      remove one (kept, marked removed)
 //   GET  /assessments/:id/cases                    finding cases of the site
-//   PATCH /recommendations/:id/case                owner, status, next step, due, verification
+//   PATCH /recommendations/:id/case                owner, status, next step, due, verification;
+//                                                  "investigating" starts a finding watch (finding-watch.ts)
+//   POST /recommendations/:id/watch/stop           stop the running watch (staff, client_admin)
+//   POST /recommendations/:id/watch/conclude       conclude it now (staff)
+//   POST /recommendations/:id/watch/review         staff review note on the conclusion (staff)
 //
 // Access as everywhere: points through findPoint (live assessment grant, ranges
 // clamped and aligned to whole buckets); assessments through the live grant;
@@ -22,6 +26,7 @@ import { Router } from 'express';
 import type { Pool } from 'pg';
 import { withScope, findPoint, findOwned, liveAssessmentSql, telemetrySql, clampToAccess, alignInward, canWrite, seesUnpublishedFindings, NO_ACCESS } from './scope';
 import { percentile } from './reports/dataset';
+import { startWatch, concludeWatch, watchForConclusion } from './finding-watch';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const num = (v: any): number | null => (v === null || v === undefined ? null : Number(v));
@@ -34,6 +39,13 @@ export function viewFor(ms: number): { view: string; widthMs: number; label: str
     if (h <= 96) return { view: 'point_readings_10m', widthMs: 600_000, label: '10-minute' };
     return { view: 'point_readings_1h', widthMs: 3_600_000, label: 'hourly' };
 }
+
+/** A DATE column as YYYY-MM-DD (node-pg parses DATE as local midnight). */
+const localDate = (d: any): string | null => {
+    if (!d) return null;
+    if (typeof d === 'string') return d.slice(0, 10);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 export const CASE_STATUSES = ['open', 'investigating', 'action_planned', 'action_done', 'verified', 'not_needed'] as const;
 const RESULTS = ['improved', 'no_change', 'worse', 'inconclusive'];
@@ -289,7 +301,13 @@ export function investigateRouter(pool: Pool, authenticateJwt: (req: any, res: a
         if (!a) return res.status(403).json({ error: NO_ACCESS, code: 'no_active_assessment' });
         const rows = (await pool.query(`
             SELECT c.recommendation_id, c.owner, c.status, c.next_step, c.due_on, c.verification, c.updated_at,
-                   (SELECT count(*)::int FROM evidence_refs e WHERE e.recommendation_id = c.recommendation_id AND e.removed_at IS NULL) AS evidence_count
+                   (SELECT count(*)::int FROM evidence_refs e WHERE e.recommendation_id = c.recommendation_id AND e.removed_at IS NULL) AS evidence_count,
+                   (SELECT json_build_object('id', w.id, 'status', w.status, 'kind', w.kind, 'started_at', w.started_at, 'until_at', w.until_at,
+                                             'notes', w.notes, 'conclusion', w.conclusion, 'concluded_at', w.concluded_at,
+                                             'reviewed_at', w.reviewed_at, 'staff_note', w.staff_note, 'point', mp.name)
+                    FROM finding_watches w JOIN measurement_points mp ON mp.id = w.measurement_point_id
+                    WHERE w.recommendation_id = c.recommendation_id AND w.status <> 'cancelled'
+                    ORDER BY w.started_at DESC LIMIT 1) AS watch
             FROM finding_cases c JOIN recommendations r ON r.id = c.recommendation_id
             WHERE r.site_id = $1 AND r.status = 'ACTIVE'`, [a.project_id])).rows;
         res.json(rows);
@@ -330,7 +348,54 @@ export function investigateRouter(pool: Pool, authenticateJwt: (req: any, res: a
              b.owner !== undefined, b.next_step !== undefined, b.due_on !== undefined])).rows[0];
         await pool.query(`INSERT INTO audit_log (actor_user_id, action, entity_type, entity_id, before, after) VALUES ($1, 'finding_case.update', 'recommendation', $2, $3, $4)`,
             [req.scope.userId, f.id, before ? JSON.stringify(before) : null, JSON.stringify(row)]);
-        res.json(row);
+        // Investigating starts a watch of the finding; closing it as not needed stops one.
+        let watch = null;
+        if (b.status === 'investigating' && before?.status !== 'investigating') watch = await startWatch(pool, f, req.scope.userId, localDate(row.due_on));
+        if (b.status === 'not_needed' || b.status === 'open') await stopWatch(f.id, req.scope.userId);
+        res.json({ ...row, watch });
+    }));
+
+    const ownedFinding = (req: any) => findOwned(pool, req.scope, 'recommendations', req.params.id, req.scope.isInternal ? 'TRUE'
+        : `x.review_status <> 'dismissed' AND (x.review_status = 'published' OR ${seesUnpublishedFindings(req.scope) ? 'TRUE' : 'FALSE'})
+           AND EXISTS (SELECT 1 FROM projects pj WHERE pj.id = x.site_id AND ${telemetrySql(req.scope, 'pj')})`);
+    async function stopWatch(recId: string, userId: string | null) {
+        const w = (await pool.query(`UPDATE finding_watches SET status = 'cancelled', cancelled_at = NOW() WHERE recommendation_id = $1 AND status = 'watching' RETURNING id`, [recId])).rows[0];
+        if (w) await pool.query(`INSERT INTO audit_log (actor_user_id, action, entity_type, entity_id, after) VALUES ($1, 'finding_watch.stop', 'recommendation', $2, $3)`,
+            [userId, recId, JSON.stringify({ watch: w.id })]);
+        return w ?? null;
+    }
+
+    r0.post('/recommendations/:id/watch/stop', auth, handle(async (req, res) => {
+        if (!canWrite(req.scope)) return res.status(403).json({ error: 'Read-only role' });
+        const f = await ownedFinding(req);
+        if (!f) return res.status(403).json({ error: 'Forbidden' });
+        const w = await stopWatch(f.id, req.scope.userId);
+        if (!w) return res.status(404).json({ error: 'No watch is running for this finding' });
+        res.json({ ok: true });
+    }));
+
+    r0.post('/recommendations/:id/watch/conclude', auth, handle(async (req, res) => {
+        if (!req.scope.isInternal) return res.status(403).json({ error: 'Forbidden' });
+        const f = await ownedFinding(req);
+        if (!f) return res.status(403).json({ error: 'Forbidden' });
+        const w = await watchForConclusion(pool, f.id);
+        if (!w) return res.status(404).json({ error: 'No watch is running for this finding' });
+        res.json(await concludeWatch(pool, w));
+    }));
+
+    r0.post('/recommendations/:id/watch/review', auth, handle(async (req, res) => {
+        if (!req.scope.isInternal) return res.status(403).json({ error: 'Forbidden' });
+        const f = await ownedFinding(req);
+        if (!f) return res.status(403).json({ error: 'Forbidden' });
+        const note = req.body?.note ? String(req.body.note).slice(0, 2000) : null;
+        const w = (await pool.query(`
+            UPDATE finding_watches SET reviewed_by = $2, reviewed_at = NOW(), staff_note = $3
+            WHERE id = (SELECT id FROM finding_watches WHERE recommendation_id = $1 AND status = 'concluded' ORDER BY concluded_at DESC LIMIT 1)
+            RETURNING id, reviewed_at, staff_note`, [f.id, req.scope.userId, note])).rows[0];
+        if (!w) return res.status(404).json({ error: 'No concluded watch for this finding' });
+        await pool.query(`INSERT INTO audit_log (actor_user_id, action, entity_type, entity_id, after) VALUES ($1, 'finding_watch.review', 'recommendation', $2, $3)`,
+            [req.scope.userId, f.id, JSON.stringify(w)]);
+        res.json(w);
     }));
 
     return r0;

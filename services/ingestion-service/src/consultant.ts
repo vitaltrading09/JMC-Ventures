@@ -308,6 +308,33 @@ async function callModel(cfg: { provider: string; model: string | null }, ds: an
     return { text: resp.choices?.[0]?.message?.content ?? '', in: resp.usage?.prompt_tokens ?? 0, out: resp.usage?.completion_tokens ?? 0, model: cfg.model };
 }
 
+/** US cents for one model call (the same estimate the chat records). */
+export function costCents(model: string | null, inTok: number, outTok: number) {
+    const price = (model && PRICES[model]) || [0, 0];
+    return ((inTok * price[0] + outTok * price[1]) / 1e6) * 100;
+}
+
+/** One stand-alone model call (no chat history), used by the finding watch conclusions. */
+export async function completeOnce(cfg: { provider: string; model: string | null }, system: string, message: string, maxTokens = 1500) {
+    if (cfg.provider === 'anthropic') {
+        const client = new Anthropic();
+        const resp = await client.beta.messages.create({
+            model: cfg.model!, max_tokens: maxTokens,
+            betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',
+            output_config: { effort: 'low' },
+            system, messages: [{ role: 'user', content: message }],
+        } as any) as any;
+        if (resp.stop_reason === 'refusal') return { text: '', in: resp.usage?.input_tokens ?? 0, out: resp.usage?.output_tokens ?? 0, model: resp.model ?? cfg.model };
+        const text = (resp.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n').trim();
+        return { text, in: resp.usage?.input_tokens ?? 0, out: resp.usage?.output_tokens ?? 0, model: resp.model ?? cfg.model };
+    }
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const OpenAI = require('openai').default;
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const resp = await openai.chat.completions.create({ model: cfg.model, max_tokens: maxTokens, messages: [{ role: 'system', content: system }, { role: 'user', content: message }] });
+    return { text: resp.choices?.[0]?.message?.content ?? '', in: resp.usage?.prompt_tokens ?? 0, out: resp.usage?.completion_tokens ?? 0, model: cfg.model };
+}
+
 export function consultantRouter(pool: Pool, authenticateJwt: (req: any, res: any, next: any) => void): Router {
     const r = Router();
     const auth = withScope(authenticateJwt);

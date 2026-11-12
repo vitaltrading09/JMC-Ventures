@@ -365,6 +365,15 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     needs a comparison result; audited). Writes: staff and client_admin. Web: `components/portal/InvestigateView.tsx`
     (tab "Events and investigation", synced cursor, brush zoom, before/after, phase/channel toggles), findings as cases
     with "Verify improvement" in `ProjectTabs.tsx`.
+  - Finding watches (`src/finding-watch.ts`, migration `1793860000000_finding-watches`): moving a finding to
+    "investigating" (`PATCH /recommendations/:id/case`) starts a watch of its condition at its point until the due date
+    (end of that SAST day) or 3 days, ≥ 1 day, never past the assessment end. Jobs role every 15 min: one note per SAST
+    day once settled (30 min), then a conclusion (verdict persists | intermittent | not_seen | insufficient; five sections
+    incl. "Suggested next step"). Measured-data text by default; with an AI provider and budget the model rewrites it from
+    the same evidence (cost in `ai_messages`). Shown to clients at once as "Automated conclusion · not yet reviewed by
+    GridIQ"; staff `POST /recommendations/:id/watch/review` (note) and `/watch/conclude` (now); staff/client_admin
+    `/watch/stop`; "not needed" or reopening stops it. Email to the starter and client admins with a grant. Returned as
+    `watch` on `GET /assessments/:id/cases`; web `components/portal/WatchPanel.tsx` (its suggestion pre-fills the action).
 
 ---
 

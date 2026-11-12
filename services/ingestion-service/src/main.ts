@@ -35,6 +35,7 @@ import { consultantRouter } from './consultant';
 import { investigateRouter } from './investigate';
 import { sharingRouter } from './sharing';
 import { runRetention } from './assessments/retention';
+import { runWatches } from './finding-watch';
 import { v1Router } from './v1/routes';
 import { runExports, expireExports } from './v1/exports-job';
 import { runRuleFindings } from './findings-rules';
@@ -376,6 +377,7 @@ function registerJobs(pool: Pool) {
     cron.schedule('*/15 * * * *', job('nearing-end notices', () => notifyNearingEnd(pool)));
     cron.schedule('* * * * *', job('email outbox', () => sendDueEmails(pool)));
     cron.schedule('17 * * * *', job('retention purge', () => runRetention(pool)));
+    cron.schedule('3-59/15 * * * *', job('finding watches', () => runWatches(pool)));
     setTimeout(runRules, 120_000).unref();
 
     console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00, exports 1m, rule findings 1h, assessment expiry 1m, close-out 5m, notices 15m, email 1m, retention 1h)');

@@ -16,6 +16,7 @@ import { siteHref } from "@/lib/siteNav";
 import type { Assessment } from "@/lib/assessments";
 import { InvestigateView } from "@/components/portal/InvestigateView";
 import { NextStep } from "@/components/portal/NextStep";
+import { WatchPanel } from "@/components/portal/WatchPanel";
 import { Empty } from "@/components/ops/ui";
 
 export function FindingDetail({ f, c, project, live, role, findings }: {
@@ -53,7 +54,8 @@ export function FindingDetail({ f, c, project, live, role, findings }: {
             </header>
 
             <Track status={c?.status ?? "open"} />
-            <NextStep f={f} c={c} assessmentId={live?.id ?? null} project={project} role={role} />
+            <NextStep f={f} c={c} assessmentId={live?.id ?? null} project={project} role={role} suggested={suggestedAction(c?.watch)} />
+            <WatchPanel f={f} w={c?.watch} role={role} assessmentId={live?.id ?? null} />
 
             <div className="grid gap-4 lg:grid-cols-3">
                 <Step n={1} title="What we measured">
@@ -94,6 +96,14 @@ export function FindingDetail({ f, c, project, live, role, findings }: {
             </section>
         </div>
     );
+}
+
+/** The watch's suggested action, to start the "Decide on an action" step from. */
+function suggestedAction(w: any): string | undefined {
+    if (w?.status !== "concluded" || !["persists", "intermittent"].includes(w.conclusion?.verdict)) return undefined;
+    const sec = String(w.conclusion.text ?? "").split(/\n(?=###\s)/).find((b) => /^###\s*Suggested next step/i.test(b));
+    const t = sec?.split("\n").slice(1).join(" ").replace(/^[-•*]\s*/, "").replace(/\*\*/g, "").replace(/^Move to Action:\s*/i, "").trim();
+    return t ? t.charAt(0).toUpperCase() + t.slice(1, 1000) : undefined;
 }
 
 /** Where the finding is on its way: Found → Investigating → Action → Verified. */

@@ -176,7 +176,7 @@ const SECTION_STYLE: Record<string, string> = {
  * consultant's fixed structure). Plain text without headings renders as is.
  * No HTML is interpreted: text only.
  */
-function Answer({ text }: { text: string }) {
+export function Answer({ text }: { text: string }) {
     const blocks = text.split(/\n(?=###\s)/).map((b) => b.trim()).filter(Boolean);
     if (!blocks.some((b) => b.startsWith("### "))) return <p className="whitespace-pre-wrap">{text}</p>;
     return (
@@ -191,7 +191,7 @@ function Answer({ text }: { text: string }) {
                 const key = title.toLowerCase();
                 return (
                     <section key={i} className={key === "basis" ? "border-t border-line pt-2" : ""}>
-                        <h4 className={`text-[11px] font-semibold uppercase tracking-wide ${key === "what you can expect to find on site" ? "text-accent" : "text-faint"}`}>{title}</h4>
+                        <h4 className={`text-[11px] font-semibold uppercase tracking-wide ${key === "what you can expect to find on site" || key === "suggested next step" ? "text-accent" : "text-faint"}`}>{title}</h4>
                         {prose && <p className={`mt-0.5 ${SECTION_STYLE[key] ?? "text-sm text-ink-2"}`}>{prose}</p>}
                         {bullets.length > 0 && (
                             <ul className={`mt-1 space-y-1 text-sm ${key === "what you can expect to find on site" ? "text-ink-2" : "text-ink-3"}`}>
