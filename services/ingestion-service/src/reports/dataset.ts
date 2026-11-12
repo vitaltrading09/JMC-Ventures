@@ -17,8 +17,8 @@ import type { Pool } from 'pg';
 import { loadPointEnergy } from '../fleet/balance';
 
 export const SCHEMA = 'gridiq.assessment-dataset/1';
-export const CALC_VERSION = 'gridiq-calc-2026.11.1';
-export const RULE_VERSION = 'gridiq-rules-2026.11.1';
+export const CALC_VERSION = 'gridiq-calc-2026.11.2';
+export const RULE_VERSION = 'gridiq-rules-2026.11.2';
 export const TEMPLATE_VERSION = 'gridiq-templates-2026.11.1';
 
 /** NRS 048-2 screening thresholds (the basis is stated with every use). */
@@ -28,6 +28,8 @@ export const SCREENING = {
 };
 
 const SAST_MS = 2 * 3_600_000;
+/** "2026-11-02 10:00" in SAST, for sentences in the dataset. */
+const sast = (t: Date) => new Date(t.getTime() + SAST_MS).toISOString().slice(0, 16).replace('T', ' ');
 const r = (v: number | null | undefined, d = 1): number | null =>
     v === null || v === undefined || !Number.isFinite(v) ? null : Math.round(v * 10 ** d) / 10 ** d;
 const num = (v: any): number | null => (v === null || v === undefined ? null : Number(v));
@@ -90,7 +92,7 @@ export function executiveItems(points: any[]): ExecItem[] {
         }
         if (pq?.pf?.avg_loaded !== null && pq?.pf?.avg_loaded !== undefined && pq.pf.avg_loaded < SCREENING.pf_min) {
             out.push({ severity: 'act', point: name, confidence: 'high', who: 'electrical contractor',
-                text: `Average power factor while loaded was ${pq.pf.avg_loaded}. Low PF raises kVA demand and reactive charges; it is not by itself a supply-quality breach. Check the PF-correction equipment before sizing anything new.`,
+                text: `Average power factor while loaded was ${pq.pf.avg_loaded}. Low PF raises kVA demand and reactive charges; it is not by itself a supply-quality breach. Inspect the existing compensation and the harmonic situation before any capacitor study.`,
                 evidence: 'power_quality.pf' });
         }
         for (const t of pq?.thd_v ?? []) {
@@ -111,7 +113,7 @@ export function executiveItems(points: any[]): ExecItem[] {
         }
         if (pq && pq.unbalance.current_p95 !== null && pq.unbalance.current_p95 > 15) {
             out.push({ severity: 'investigate', point: name, confidence: 'medium', who: 'electrical contractor',
-                text: `Current unbalance reached ${pq.unbalance.current_p95} % (95th percentile, ${pq.unbalance.metric}). Rebalancing single-phase loads usually helps.`,
+                text: `Current unbalance reached ${pq.unbalance.current_p95} % (95th percentile, ${pq.unbalance.metric}). Review circuit allocation against a verified load schedule before moving loads.`,
                 evidence: 'power_quality.unbalance' });
         }
         if (pq && pq.interruption_minutes > 0) {
@@ -127,6 +129,59 @@ export function executiveItems(points: any[]): ExecItem[] {
     }
     const rank: Record<Severity, number> = { act: 0, investigate: 1, note: 2 };
     return out.sort((a, b) => rank[a.severity] - rank[b.severity]);
+}
+
+/**
+ * Coverage on unique 10-minute slots at each slot's own cadence: a slot with n
+ * samples spaced s seconds apart covers min(1, n × s / 600) of itself. Mixed
+ * cadences (e.g. a 5-minute history and a 5-second live feed) therefore never
+ * add up to more than the window, and nothing is capped after the fact.
+ */
+export function slotCoverage(rows: { n: number; t_first: Date | string | null; t_last: Date | string | null }[], fallbackSpacingS: number, windowS: number, slotS = 600) {
+    const expected = Math.max(0, Math.floor(windowS / slotS));
+    let covered = 0, withData = 0, samples = 0;
+    const cadences = new Map<number, number>();
+    for (const x of rows) {
+        const n = Number(x.n) || 0;
+        if (n <= 0) continue;
+        withData++; samples += n;
+        const span = x.t_first && x.t_last ? (new Date(x.t_last).getTime() - new Date(x.t_first).getTime()) / 1000 : 0;
+        const s = n > 1 && span > 0 ? span / (n - 1) : fallbackSpacingS;
+        covered += Math.min(1, (n * s) / slotS);
+        const band = s < 2 ? 1 : s < 20 ? 10 : s < 90 ? 60 : s < 450 ? 300 : 900;
+        cadences.set(band, (cadences.get(band) ?? 0) + 1);
+    }
+    const cad = Array.from(cadences.entries()).sort((a, b) => b[1] - a[1])
+        .map(([s, slots]) => ({ approx_interval_s: s, slots, share: r(slots / Math.max(1, withData), 3) }));
+    return {
+        fraction: expected ? Math.min(1, covered / expected) : null,
+        expected_slots: expected, slots_with_data: withData, samples,
+        cadences: cad, mixed_cadence: cad.filter((c) => (c.share ?? 0) >= 0.05).length > 1,
+    };
+}
+
+/**
+ * The site's operating fingerprint: per local hour, the median and P10–P90 of
+ * hourly kW across comparable days (weekdays or weekend days), with how many
+ * days contributed. One observed day is returned as that day (no band).
+ */
+export function typicalDay(t: string[], kw: (number | null)[], weekend: boolean) {
+    const byDay = new Map<string, (number | null)[]>();
+    t.forEach((iso, i) => {
+        const local = new Date(new Date(iso).getTime() + SAST_MS);
+        const dow = local.getUTCDay(); // 0 Sunday
+        if ((dow === 0 || dow === 6) !== weekend) return;
+        const day = local.toISOString().slice(0, 10);
+        if (!byDay.has(day)) byDay.set(day, Array(24).fill(null));
+        if (kw[i] !== null && kw[i] !== undefined) byDay.get(day)![local.getUTCHours()] = kw[i];
+    });
+    const days = Array.from(byDay.keys()).sort();
+    const hours = Array.from({ length: 24 }, (_, h) => {
+        const v = days.map((d) => byDay.get(d)![h]).filter((x): x is number => x !== null);
+        return { hour: h, n: v.length, p10: v.length >= 3 ? r(percentile(v, 10)) : null, median: v.length ? r(percentile(v, 50)) : null, p90: v.length >= 3 ? r(percentile(v, 90)) : null };
+    });
+    return { days: days.length, dates: days, band: days.length >= 3, hours,
+        basis: `hourly average kW, SAST; ${weekend ? 'Saturdays and Sundays' : 'Monday to Friday'}; median with P10–P90 across days when at least 3 days contribute to an hour` };
 }
 
 /** Formal standards verdict only when method, instrument, duration and completeness allow it. */
@@ -176,12 +231,13 @@ export async function buildAssessmentDataset(db: Pool, assessmentId: string, cut
 
     const executive = executiveItems(points);
     const limitations: string[] = [
-        `Observation period ${r(days, 1)} days (${from.toISOString()} to ${to.toISOString()}); results describe this period only. No annual figure is extrapolated.`,
+        `Observation period ${r(days, 1)} days (${sast(from)} to ${sast(to)} SAST); results describe this period only. No annual figure is extrapolated.`,
         'One-second RMS trends cannot prove that no sub-second disturbance occurred; events listed are inferred from sampled trends unless marked device-recorded.',
         'A single net grid meter cannot separate PV production, battery behaviour or individual equipment loads.',
     ];
     for (const p of points) {
         if (p.coverage.fraction !== null && p.coverage.fraction < 0.95) limitations.push(`${p.name}: ${Math.round(p.coverage.fraction * 100)} % of expected measurements received (${p.coverage.gaps.length} gap(s) of 30 min or more).`);
+        if (p.coverage.mixed_cadence) limitations.push(`${p.name}: the meter reported at more than one interval (${p.coverage.cadences.map((c: any) => `~${c.approx_interval_s} s in ${Math.round((c.share ?? 0) * 100)} % of slots`).join(', ')}); coverage is counted per 10-minute slot at each slot's own interval.`);
         if (!p.capability.confirmed) limitations.push(`${p.name}: the meter's capability profile is not confirmed; only channels present in the data are reported.`);
     }
     if (opts.provisional) limitations.unshift('PROVISIONAL: the assessment is still running; these results cover the elapsed period only and are not final.');
@@ -234,21 +290,21 @@ async function pointSection(db: Pool, pt: any, from: Date, to: Date, days: numbe
     const caps = deps.reduce((acc: any, d: any) => ({ ...acc, ...(d.capability_profile ?? {}) }), {});
     const confirmed = Object.keys(caps).length > 0;
 
-    // Coverage at the box's own cadence (sparse boxes are not penalised).
+    // Coverage on unique 10-minute slots at each slot's cadence (slotCoverage).
     const cov = (await db.query(`
-        SELECT COALESCE(sum(n), 0)::bigint AS n,
-               percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM t_last - t_first) / NULLIF(n - 1, 0)) AS spacing
+        SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM t_last - t_first) / NULLIF(n - 1, 0)) AS spacing
         FROM point_readings_1h WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3`, [id, from, to])).rows[0];
     const spacing = Math.max(1, Number(cov.spacing) || 60);
     const windowS = (to.getTime() - from.getTime()) / 1000;
-    const fraction = windowS > 0 ? Math.min(1, (Number(cov.n) * spacing) / windowS) : null;
     const tenRows = (await db.query(`
-        SELECT bucket, voltage_a_avg, voltage_b_avg, voltage_c_avg, voltage_a_min, voltage_b_min, voltage_c_min,
+        SELECT bucket, n, t_first, t_last, voltage_a_avg, voltage_b_avg, voltage_c_avg, voltage_a_min, voltage_b_min, voltage_c_min,
                voltage_a_max, voltage_b_max, voltage_c_max,
                thd_voltage_a_avg, thd_voltage_b_avg, thd_voltage_c_avg, thd_current_a_avg, thd_current_b_avg, thd_current_c_avg,
                voltage_unbalance_avg, current_unbalance_avg, power_factor_total_avg, power_active_total_avg,
                frequency_min, frequency_max, n_interrupt
         FROM point_readings_10m WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3 ORDER BY bucket`, [id, from, to])).rows;
+    const slots = slotCoverage(tenRows, spacing, windowS);
+    const fraction = slots.fraction;
     // Gaps of 30 min or more (missing 10-minute values).
     const gaps: { from: string; to: string }[] = [];
     let prev = from.getTime();
@@ -285,6 +341,16 @@ async function pointSection(db: Pool, pt: any, from: Date, to: Date, days: numbe
         SELECT bucket, power_active_total_max AS kw FROM point_readings_1m
         WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3 AND power_active_total_max IS NOT NULL
         ORDER BY power_active_total_max DESC LIMIT 1`, [id, from, to])).rows[0] ?? null;
+
+    // Compact hourly series for the report charts (same values the portal charts read).
+    const h1 = (await db.query(`
+        SELECT bucket, power_active_total_avg AS kw, voltage_a_avg AS va, voltage_b_avg AS vb, voltage_c_avg AS vc,
+               thd_voltage_a_avg AS ta, thd_voltage_b_avg AS tb, thd_voltage_c_avg AS tc, power_factor_total_avg AS pf
+        FROM point_readings_1h WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3 ORDER BY bucket`, [id, from, to])).rows;
+    const col = (k: string, d = 1) => h1.map((x) => r(num(x[k]), d));
+    const hourly_series = { basis: 'hourly averages (point_readings_1h), UTC bucket start; gaps are absent hours, never zero',
+        t: h1.map((x) => new Date(x.bucket).toISOString()), kw: col('kw'), v_a: col('va'), v_b: col('vb'), v_c: col('vc'),
+        thd_v_a: col('ta', 2), thd_v_b: col('tb', 2), thd_v_c: col('tc', 2), pf: col('pf', 3) };
 
     // Operating patterns: declared hours if parseable ("HH:MM–HH:MM"), else 06–18 weekdays.
     const hours = parseHours(ctx.operating_hours);
@@ -372,16 +438,6 @@ async function pointSection(db: Pool, pt: any, from: Date, to: Date, days: numbe
         verdict: verdictFor(caps, days, tenCoverage),
     };
 
-    // Compact hourly series for the report charts (same values the portal charts read).
-    const h1 = (await db.query(`
-        SELECT bucket, power_active_total_avg AS kw, voltage_a_avg AS va, voltage_b_avg AS vb, voltage_c_avg AS vc,
-               thd_voltage_a_avg AS ta, thd_voltage_b_avg AS tb, thd_voltage_c_avg AS tc, power_factor_total_avg AS pf
-        FROM point_readings_1h WHERE measurement_point_id = $1 AND bucket >= $2 AND bucket < $3 ORDER BY bucket`, [id, from, to])).rows;
-    const col = (k: string, d = 1) => h1.map((x) => r(num(x[k]), d));
-    const hourly_series = { basis: 'hourly averages (point_readings_1h), UTC bucket start; gaps are absent hours, never zero',
-        t: h1.map((x) => new Date(x.bucket).toISOString()), kw: col('kw'), v_a: col('va'), v_b: col('vb'), v_c: col('vc'),
-        thd_v_a: col('ta', 2), thd_v_b: col('tb', 2), thd_v_c: col('tc', 2), pf: col('pf', 3) };
-
     const findings = (await db.query(`
         SELECT r.type, r.title, r.priority, r.problem, r.solution, r.evidence, r.review_status, r.created_at
         FROM recommendations r JOIN deployments d ON d.device_id = r.meter_id
@@ -400,8 +456,10 @@ async function pointSection(db: Pool, pt: any, from: Date, to: Date, days: numbe
             sign: d.power_sign, scale: Number(d.scale_correction) })),
         capability: { confirmed, profile: caps,
             channels_present: { thd_v: thdV.length > 0, thd_i: thdI.length > 0, unbalance: tenRows.some((x) => x.voltage_unbalance_avg !== null), frequency: fmins.length > 0 } },
-        coverage: { fraction: r(fraction, 3), samples: Number(cov.n), median_spacing_s: r(spacing, 1), ten_minute_values: tenRows.length,
-                    gaps: gaps.slice(0, 50), basis: 'samples received × the box’s median reporting interval ÷ the observation window' },
+        coverage: { fraction: r(fraction, 3), samples: slots.samples, median_spacing_s: r(spacing, 1), ten_minute_values: tenRows.length,
+                    expected_slots: slots.expected_slots, slots_with_data: slots.slots_with_data, cadences: slots.cadences, mixed_cadence: slots.mixed_cadence,
+                    gaps: gaps.slice(0, 50),
+                    basis: 'unique 10-minute slots of the observation window; each slot counts min(1, samples × its own reporting interval ÷ 600 s); samples are unique per meter and timestamp (duplicates are rejected at ingest)' },
         energy: { import_kwh: r(energy.importKwh, 1), export_kwh: r(energy.exportKwh, 1), method: energy.method ?? 'register', coverage: r(energy.coverage, 3),
                   basis: 'kWh registers per deployment (resets never summed through); power-integrated only where registers are absent' },
         daily,
@@ -420,6 +478,8 @@ async function pointSection(db: Pool, pt: any, from: Date, to: Date, days: numbe
             operating_avg_kw: r(dayAvg), outside_avg_kw: r(nightAvg),
             baseload_kw: r(percentile(kws, 10)),
             baseload_ratio: dayAvg && nightAvg !== null && dayAvg > 0 ? r(nightAvg / dayAvg, 3) : null,
+            typical_weekday: typicalDay(hourly_series.t, hourly_series.kw, false),
+            typical_weekend: typicalDay(hourly_series.t, hourly_series.kw, true),
             basis: `hourly averages, SAST; operating hours ${hours.declared ? 'as declared' : 'assumed'} ${hours.from}:00–${hours.to}:00 weekdays`,
         },
         power_quality,

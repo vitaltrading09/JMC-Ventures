@@ -23,7 +23,6 @@ const THD_V_MAX = 8;               // % NRS 048-2
 const CURRENT_UNBALANCE_MAX = 15;  // %, sustained: a load-balancing matter, not a standard limit
 const SAG_FRACTION = 0.9;          // below 90 % of nominal (207 V at 230 V)
 const BASELOAD_RATIO = 0.6;        // night load / working-day load
-const AVG_TARIFF_ZAR_KWH = 2.5;    // CLAUDE.md key constant, for savings estimates
 
 /** What the rules read for one point over the window. Null = not measured. */
 export interface PointMetrics {
@@ -79,8 +78,10 @@ export function evaluateRules(m: PointMetrics): RuleFinding[] {
             problem: `The average power factor while the site was loaded was ${r2(pf)}`
                 + (m.pf_low_share !== null ? `, and ${pct(m.pf_low_share)} of loaded 10-minute intervals were below ${PF_MIN}` : '')
                 + ` (${basis}). Reactive current raises the kVA the utility bills and loads cables and transformers.`,
-            solution: `Have power factor correction (a capacitor bank, detuned if harmonics are present) sized for about ${PF_TARGET}.`
-                + (kvaNow !== null && kvaAfter !== null ? ` At ${PF_TARGET} the same load would need about ${Math.round(kvaAfter)} kVA instead of ${Math.round(kvaNow)} kVA.` : ''),
+            // Brief §12: inspect reactive behaviour and existing compensation, consider harmonics
+            // before a capacitor study; no capacitor size from PF alone.
+            solution: `Check whether the low PF occurs at high load or only at light load, and inspect any existing compensation. Consider the harmonic situation before a capacitor study; a correction size needs displacement PF, the load range and an engineering review.`
+                + (kvaNow !== null && kvaAfter !== null ? ` For scale: at ${PF_TARGET} the same load would draw about ${Math.round(kvaAfter)} kVA instead of ${Math.round(kvaNow)} kVA.` : ''),
             saving_zar: Math.round(saving),
             standard_reference: 'NRS 048-2 / utility PF minimum 0.85',
             values: { pf_avg_loaded: r2(pf), pf_low_share: m.pf_low_share === null ? null : r2(m.pf_low_share), kva_now: kvaNow === null ? null : Math.round(kvaNow), kva_at_target: kvaAfter === null ? null : Math.round(kvaAfter) },
@@ -93,8 +94,8 @@ export function evaluateRules(m: PointMetrics): RuleFinding[] {
             type: 'RULE_HIGH_THD_V',
             priority: 1,
             title: `Voltage distortion above the NRS 048-2 limit (THD ${r1(m.thd_v_p95)} %)`,
-            problem: `The 95th percentile of 10-minute voltage THD was ${r1(m.thd_v_p95)} %${m.thd_v_phase ? ` on phase ${m.thd_v_phase}` : ''}, above the ${THD_V_MAX} % limit (${basis}). Distortion overheats motors and transformers and can trip sensitive equipment.`,
-            solution: 'Identify the main harmonic sources (VSDs, UPSs, LED drivers, rectifiers) with a harmonic survey, then consider active or passive filtering. Any capacitor bank on this supply should be detuned.',
+            problem: `The 95th percentile of 10-minute voltage THD was ${r1(m.thd_v_p95)} %${m.thd_v_phase ? ` on phase ${m.thd_v_phase}` : ''}, above the ${THD_V_MAX} % limit (${basis}). Sustained distortion can add heating in motors and transformers; whether it affects equipment here is not established by this data.`,
+            solution: 'Log individual harmonic orders per phase, compare the distortion with site operation, and obtain supply (point of common coupling) information. Whether the source is on site or in the network is a hypothesis to verify; no filter is sized from THD alone.',
             saving_zar: 0,
             standard_reference: 'NRS 048-2: voltage THD 8 %',
             values: { thd_v_p95: r1(m.thd_v_p95), phase: m.thd_v_phase },
@@ -107,8 +108,8 @@ export function evaluateRules(m: PointMetrics): RuleFinding[] {
             type: 'RULE_CURRENT_IMBALANCE',
             priority: 2,
             title: `Phase currents out of balance (${r1(m.current_unbalance_avg)} % average)`,
-            problem: `Current unbalance averaged ${r1(m.current_unbalance_avg)} % across 10-minute values (${basis}). One phase carries noticeably more load, which heats that phase's cables and breaker, raises neutral current and limits usable capacity.`,
-            solution: 'Redistribute single-phase loads across the three phases at the distribution boards, starting with the most loaded phase.',
+            problem: `Current unbalance averaged ${r1(m.current_unbalance_avg)} % across 10-minute values (${basis}). One phase carries noticeably more load than the others.`,
+            solution: 'Review the circuit allocation at the distribution boards against a verified load schedule before moving loads; the benefit of rebalancing depends on what that review finds.',
             saving_zar: 0,
             standard_reference: null,
             values: { current_unbalance_avg: r1(m.current_unbalance_avg) },
@@ -122,8 +123,8 @@ export function evaluateRules(m: PointMetrics): RuleFinding[] {
             type: 'RULE_MDI_EXCEEDED',
             priority: 1,
             title: `Maximum demand exceeded (${Math.round(m.demand_max_kva)} kVA vs ${Math.round(m.mdi_kva)} kVA contracted)`,
-            problem: `Billed demand went above the contracted ${Math.round(m.mdi_kva)} kVA in ${m.demand_over} half-hour interval${m.demand_over === 1 ? '' : 's'}, peaking at ${Math.round(m.demand_max_kva)} kVA (${basis}, 30-minute demand). Utilities charge excess-demand penalties and may raise the contracted MDI.`,
-            solution: 'Look at what runs during the peak half-hours and stagger large loads (compressors, ovens, chillers, pumps). Power factor correction also lowers kVA. If the peaks are structural, review the contracted MDI with the utility.',
+            problem: `Billed demand went above the contracted ${Math.round(m.mdi_kva)} kVA in ${m.demand_over} half-hour interval${m.demand_over === 1 ? '' : 's'}, peaking at ${Math.round(m.demand_max_kva)} kVA (${basis}, 30-minute demand). Exceeding the notified demand normally attracts charges under the supply agreement.`,
+            solution: 'Investigate which operations coincide with the peak half-hours and whether start-ups can be sequenced (supervised). Share the peak windows with the feasibility engineer; if the peaks are structural, review the contracted MDI with the utility.',
             saving_zar: m.tariff_demand ? Math.round(excess * m.tariff_demand) : 0,
             standard_reference: null,
             values: { demand_max_kva: Math.round(m.demand_max_kva), mdi_kva: Math.round(m.mdi_kva), intervals_over: m.demand_over },
@@ -136,8 +137,8 @@ export function evaluateRules(m: PointMetrics): RuleFinding[] {
             type: 'RULE_VOLTAGE_SAGS',
             priority: m.sag_intervals > 6 ? 1 : 2,
             title: `Voltage dips below ${Math.round(m.v_nominal * SAG_FRACTION)} V (${m.sag_intervals} ten-minute windows)`,
-            problem: `The voltage fell below ${Math.round(m.v_nominal * SAG_FRACTION)} V (90 % of ${Math.round(m.v_nominal)} V) in ${m.sag_intervals} ten-minute window${m.sag_intervals === 1 ? '' : 's'}; the lowest was ${r1(m.v_min)} V (${basis}). Dips stop drives and contactors and reset controllers.`,
-            solution: 'Check whether the dips line up with large motor starts on site (then consider soft starters or VSDs) or come from the utility supply (then log them with the utility). Ride-through (UPS or DC bus support) protects critical loads.',
+            problem: `The voltage fell below ${Math.round(m.v_nominal * SAG_FRACTION)} V (90 % of ${Math.round(m.v_nominal)} V) in ${m.sag_intervals} ten-minute window${m.sag_intervals === 1 ? '' : 's'}; the lowest was ${r1(m.v_min)} V (${basis}). Dips of this kind can stop drives and contactors.`,
+            solution: 'Compare the dip times with large motor starts on site and with production trips or the incident log, and check regulation and connections at the measurement location. Report supply-side dips to the utility with these times.',
             saving_zar: 0,
             standard_reference: 'NRS 048-2: voltage 207-253 V',
             values: { sag_windows: m.sag_intervals, v_min: r1(m.v_min), v_nominal: m.v_nominal },
@@ -147,7 +148,6 @@ export function evaluateRules(m: PointMetrics): RuleFinding[] {
     // After-hours baseload
     if (m.night_kw !== null && m.day_kw !== null && m.day_kw > 5 && m.night_kw / m.day_kw > BASELOAD_RATIO) {
         const ratio = m.night_kw / m.day_kw;
-        const avoidable = Math.max(0, m.night_kw - 0.3 * m.day_kw);
         out.push({
             type: 'RULE_HIGH_BASELOAD',
             priority: 3,
@@ -155,7 +155,8 @@ export function evaluateRules(m: PointMetrics): RuleFinding[] {
             problem: `On weekdays the site drew ${r1(m.night_kw)} kW on average between 00:00 and 05:00 SAST, ${Math.round(ratio * 100)} % of the ${r1(m.day_kw)} kW it drew between 09:00 and 16:00 (${basis}).`,
             // Only a saving if the site is not meant to run around the clock (a data centre, cold
             // store or 24/7 plant is), so the estimate is stated as conditional in the text.
-            solution: `If the site is not meant to run around the clock, walk it after hours: lighting, HVAC, compressors and equipment left on are the usual causes, and timers or building-management schedules often recover most of it. Bringing the night load down to 30 % of the day load would save roughly R ${Math.round(avoidable * 5 * 22 * AVG_TARIFF_ZAR_KWH).toLocaleString('en-ZA')} a month (00:00-05:00 on weekdays only, at R ${AVG_TARIFF_ZAR_KWH}/kWh). For a 24/7 operation this is expected and can be dismissed.`,
+            // No rand estimate: a saving needs the approved avoidable portion and a verified tariff (brief §12).
+            solution: `Verify the operating schedule and which equipment needs to run after hours (cooling, security, IT and process loads may). Not all baseload is avoidable; for a 24/7 operation this pattern is expected and can be dismissed.`,
             saving_zar: 0,
             standard_reference: null,
             values: { night_kw: r1(m.night_kw), day_kw: r1(m.day_kw), ratio: r2(ratio) },

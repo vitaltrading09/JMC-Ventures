@@ -3,6 +3,7 @@
 //
 //   POST /assessments/:id/chat   { message }        staff, or a client while live
 //   GET  /assessments/:id/chat                      the caller's conversation
+//   GET  /assessments/:id/summary?point=             the site summary (reports/summary.ts)
 //
 // Retrieval is server-side and scoped: the assessment comes from the path and
 // the caller's grant (src/scope.ts), never from a browser-supplied tenant or
@@ -25,6 +26,7 @@ import type { Pool } from 'pg';
 import Anthropic from '@anthropic-ai/sdk';
 import { withScope, liveAssessmentSql, NO_ACCESS } from './scope';
 import { buildAssessmentDataset } from './reports/dataset';
+import { buildSummary } from './reports/summary';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const PROMPT_VERSION = 'gridiq-consultant-2026.11.1';
@@ -54,10 +56,10 @@ Rules:
 - Answer in plain language first, then the evidence. Be concise.`;
 
 const dsCache = new Map<string, { at: number; ds: any }>();
-async function datasetFor(pool: Pool, a: any) {
+async function datasetFor(pool: Pool, a: any, maxAgeMs = 10 * 60_000) {
     const key = a.id;
     const hit = dsCache.get(key);
-    if (hit && Date.now() - hit.at < 10 * 60_000) return hit.ds;
+    if (hit && Date.now() - hit.at < maxAgeMs) return hit.ds;
     const end = Math.min(new Date(a.end_at).getTime(), a.closed_at ? new Date(a.closed_at).getTime() : Infinity, Date.now());
     const ds = await buildAssessmentDataset(pool, a.id, new Date(end), { provisional: Date.now() < new Date(a.end_at).getTime() });
     dsCache.set(key, { at: Date.now(), ds });
@@ -164,7 +166,7 @@ export function consultantRouter(pool: Pool, authenticateJwt: (req: any, res: an
         try {
             const a = await assessmentFor(req, req.params.id);
             if (!a) return res.status(403).json({ error: NO_ACCESS, code: 'no_active_assessment' });
-            const rows = (await pool.query(`SELECT role, content, created_at FROM ai_messages WHERE assessment_id = $1 AND user_id IS NOT DISTINCT FROM $2 ORDER BY created_at DESC LIMIT 40`,
+            const rows = (await pool.query(`SELECT role, content, provider, created_at FROM ai_messages WHERE assessment_id = $1 AND user_id IS NOT DISTINCT FROM $2 ORDER BY created_at DESC LIMIT 40`,
                 [a.id, req.scope.userId])).rows.reverse();
             res.json({ messages: rows, provider: providerConfig().provider });
         } catch (e) { console.error('[chat]', e); res.status(500).json({ error: 'Server error' }); }
@@ -189,7 +191,9 @@ export function consultantRouter(pool: Pool, authenticateJwt: (req: any, res: an
             let answer: string, evidence: string[] = [], inTok = 0, outTok = 0, model: string | null = null, provider = cfg.provider;
             const fallback = deterministicAnswer(ds, message);
             if (cfg.provider === 'none') {
-                answer = `${note ?? 'Automatic answer (no AI provider configured).'}\n\n${fallback.answer}`;
+                // Clients get the functional label (shown by the UI); the configuration detail is staff-only.
+                const prefix = note ?? (req.scope.isInternal ? 'Staff note: no AI provider is configured; this is the measured-data summary.' : null);
+                answer = prefix ? `${prefix}\n\n${fallback.answer}` : fallback.answer;
                 evidence = fallback.evidence;
             } else {
                 try {
@@ -216,6 +220,20 @@ export function consultantRouter(pool: Pool, authenticateJwt: (req: any, res: an
                          coverage: ds.points.map((p: any) => ({ point: p.name, fraction: p.coverage.fraction })) },
             });
         } catch (e) { console.error('[chat]', e); res.status(500).json({ error: 'Server error' }); }
+    });
+    // The summary page of a site (staff, or a client while live). Same dataset as the
+    // reports and the consultant; refreshed at most every 2 minutes.
+    r.get('/assessments/:id/summary', auth, async (req: any, res) => {
+        try {
+            const a = await assessmentFor(req, req.params.id);
+            if (!a) return res.status(403).json({ error: NO_ACCESS, code: 'no_active_assessment' });
+            const ds = await datasetFor(pool, a, 2 * 60_000);
+            const point = typeof req.query.point === 'string' && UUID.test(req.query.point) ? req.query.point : null;
+            const s = buildSummary(ds, point);
+            const p = ds.points.find((x: any) => x.id === s.context.point?.id);
+            res.json({ ...s, point_detail: p ? { power_quality: p.power_quality, demand: p.demand, instantaneous: p.instantaneous,
+                coverage: p.coverage, hourly_series: p.hourly_series, patterns: p.patterns, energy: p.energy, capability: p.capability } : null });
+        } catch (e) { console.error('[summary]', e); res.status(500).json({ error: 'Server error' }); }
     });
     return r;
 }

@@ -1,25 +1,31 @@
 "use client";
 
-// The assessment consultant (GridIQ prompt section 12). Available while the
-// caller holds a live assessment; the server picks the data (the assessment's
-// own dataset) and enforces access and budgets. Answers state their basis.
-// Other components open it with a question: window.dispatchEvent(new
-// CustomEvent("gridiq:ask", { detail: "..." })) (lib/portal.ts askConsultant).
+// The assessment consultant (engineering UI brief §9). A docked drawer bound
+// to the assessment of the site on screen: on a site page it can only talk
+// about that site; navigating to another site rebinds it, clears the
+// conversation view and drops any answer still in flight for the old one.
+// The server picks the data (the assessment's own dataset) and enforces access
+// and budgets. Other components open it with askConsultant(text) (lib/portal).
 
 import { useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
-import { MessageSquare, X, Send, Sparkles, Lock } from "lucide-react";
-import { apiGet, apiSend } from "@/lib/api";
+import { MessageSquare, X, Send, Lock } from "lucide-react";
+import { apiGet, apiSend, fmtDateTime, TZ_LABEL } from "@/lib/api";
 import { usePortalAssessments } from "@/components/portal/AssessmentBanner";
 
-interface Msg { role: "user" | "assistant"; content: string; basis?: string }
+interface Msg { role: "user" | "assistant"; content: string; provider?: string | null; basis?: string; evidence?: string[] }
 
 const SUGGESTIONS = [
-    "What caused the highest demand peak, and what evidence do we have?",
-    "Is the harmonic distortion concentrated in one phase or period?",
-    "Why is the power factor lower at night?",
+    "When does this site use the most power, and why might that be?",
+    "Is the voltage distortion concentrated in one phase or period?",
+    "What does the power factor tell us here?",
     "What should we tell the feasibility engineer?",
 ];
+const EVIDENCE_LABEL: Record<string, string> = {
+    demand: "Demand", energy: "Energy", coverage: "Data coverage", executive: "Summary", patterns: "Operating pattern",
+    "power_quality.thd_v": "Voltage THD", "power_quality.pf": "Power factor", "power_quality.voltage": "Voltage",
+    feasibility_readiness: "Feasibility handover",
+};
 
 export function ChatWidget() {
     const [open, setOpen] = useState(false);
@@ -29,91 +35,125 @@ export function ChatWidget() {
     const [pending, setPending] = useState<string | null>(null);
     const [sel, setSel] = useState<string | null>(null);
     const end = useRef<HTMLDivElement>(null);
+    const bound = useRef<string | null>(null);   // the assessment answers may be shown for
     const assessments = usePortalAssessments();
     const live = (assessments.data ?? []).filter((a) => a.live);
-    // Default to the assessment of the site on screen (/portal/projects/<id>/...).
+    // On a site page the consultant is bound to that site's assessment only.
     const pathname = usePathname();
-    const onScreen = /^\/portal\/projects\/([0-9a-f-]{36})/.exec(pathname ?? "")?.[1];
-    const current = live.find((a) => a.id === sel) ?? live.find((a) => a.project_id === onScreen) ?? live[0] ?? null;
+    const onScreen = /^\/portal\/projects\/([0-9a-f-]{36})/.exec(pathname ?? "")?.[1] ?? null;
+    const current = onScreen
+        ? live.find((a) => a.project_id === onScreen) ?? null
+        : live.find((a) => a.id === sel) ?? live[0] ?? null;
+
+    // Rebind: a new context starts a clean view; late answers for the old one are dropped.
+    useEffect(() => {
+        bound.current = current?.id ?? null;
+        setMsgs([]); setBusy(false);
+        if (!open || !current) return;
+        const id = current.id;
+        apiGet<{ messages: Msg[] }>(`/ingestion/assessments/${id}/chat`)
+            .then((r) => { if (bound.current === id) setMsgs(r.messages); })
+            .catch(() => { if (bound.current === id) setMsgs([]); });
+    }, [open, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
-        const onAsk = (e: Event) => { const q = (e as CustomEvent<string>).detail; if (q) { setOpen(true); setPending(q); } };
+        const onAsk = (e: Event) => { const q = (e as CustomEvent<string>).detail; setOpen(true); if (q) setPending(q); };
         window.addEventListener("gridiq:ask", onAsk);
         return () => window.removeEventListener("gridiq:ask", onAsk);
     }, []);
+    // Docked: the page makes room instead of being covered (globals.css, html[data-consultant]).
     useEffect(() => {
-        if (!open || !current) return;
-        apiGet<{ messages: Msg[] }>(`/ingestion/assessments/${current.id}/chat`).then((r) => setMsgs(r.messages)).catch(() => setMsgs([]));
-    }, [open, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-    useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs]);
+        document.documentElement.dataset.consultant = open ? "open" : "closed";
+        return () => { delete document.documentElement.dataset.consultant; };
+    }, [open]);
+    useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [msgs]);
     useEffect(() => { if (open && pending && current && !busy) { const q = pending; setPending(null); send(q); } }, [open, pending, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const send = async (text: string) => {
         if (!text.trim() || !current) return;
+        const id = current.id;
         setInput("");
         setMsgs((m) => [...m, { role: "user", content: text }, { role: "assistant", content: "" }]);
         setBusy(true);
         try {
             const r = await apiSend<{ answer: string; provider: string; basis: { period_from: string; period_to: string; provisional: boolean; coverage: { point: string; fraction: number | null }[] }; evidence: string[] }>(
-                "POST", `/ingestion/assessments/${current.id}/chat`, { message: text });
+                "POST", `/ingestion/assessments/${id}/chat`, { message: text });
+            if (bound.current !== id) return;   // the user moved to another site meanwhile
             const cov = r.basis.coverage.map((c) => `${c.point} ${c.fraction === null ? "–" : Math.round(c.fraction * 100) + " %"}`).join(", ");
-            const basis = `Data ${r.basis.period_from.slice(0, 10)} → ${r.basis.period_to.slice(0, 10)}${r.basis.provisional ? " (provisional)" : ""} · coverage ${cov}${r.evidence.length ? ` · sections: ${r.evidence.join(", ")}` : ""}${r.provider === "none" ? " · no AI model used" : ""}`;
-            setMsgs((m) => [...m.slice(0, -1), { role: "assistant", content: r.answer, basis }]);
+            const basis = `${fmtDateTime(r.basis.period_from)} → ${fmtDateTime(r.basis.period_to)} ${TZ_LABEL}${r.basis.provisional ? " · provisional" : ""} · data ${cov}`;
+            setMsgs((m) => [...m.slice(0, -1), { role: "assistant", content: r.answer, provider: r.provider, basis, evidence: r.evidence }]);
         } catch (e: any) {
+            if (bound.current !== id) return;
             setMsgs((m) => [...m.slice(0, -1), { role: "assistant", content: `Could not answer: ${e.message}` }]);
-        } finally { setBusy(false); }
+        } finally { if (bound.current === id) setBusy(false); }
     };
 
-    return (
-        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end print:hidden">
-            {open && (
-                <div className="w-[360px] sm:w-[440px] h-[560px] max-h-[80vh] bg-slate-900 border border-slate-700/60 rounded-2xl shadow-2xl flex flex-col mb-4 overflow-hidden">
-                    <div className="px-4 py-3 bg-gradient-to-r from-blue-900/50 to-indigo-900/50 border-b border-slate-700/60 flex items-center gap-2.5">
-                        <Sparkles className="w-4 h-4 text-blue-400" />
-                        <div className="flex-1 min-w-0">
-                            <h3 className="font-semibold text-white text-sm">GridIQ consultant</h3>
-                            {live.length > 1 ? (
-                                <select className="bg-transparent text-xs text-slate-300" value={current?.id ?? ""} onChange={(e) => setSel(e.target.value)}>
-                                    {live.map((a) => <option key={a.id} value={a.id} className="bg-slate-900">{a.reference} · {a.project_name}</option>)}
-                                </select>
-                            ) : <p className="text-xs text-slate-400 truncate">{current ? `${current.reference} · ${current.project_name}` : "No live assessment"}</p>}
-                        </div>
-                        <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
-                    </div>
-                    {!current ? (
-                        <div className="flex-1 p-6 text-sm text-slate-300 flex gap-3"><Lock className="w-5 h-5 text-slate-500 shrink-0" />
-                            The consultant answers questions about an assessment while it is running. You have no live assessment right now.</div>
-                    ) : (
-                        <>
-                            <div className="flex-1 overflow-y-auto p-4 space-y-3 text-sm">
-                                {msgs.length === 0 && (
-                                    <div className="space-y-2">
-                                        <p className="text-slate-400">Ask about this assessment's measurements. Answers cite the data they use; general explanations are labelled as such. Advisory only: never work on live equipment yourself.</p>
-                                        {SUGGESTIONS.map((s) => <button key={s} onClick={() => send(s)} className="block text-left w-full text-blue-300 hover:text-blue-200 text-xs border border-slate-700 rounded-lg px-3 py-2">{s}</button>)}
-                                    </div>
-                                )}
-                                {msgs.map((m, i) => (
-                                    <div key={i} className={m.role === "user" ? "text-right" : ""}>
-                                        <div className={`inline-block max-w-[90%] rounded-xl px-3 py-2 whitespace-pre-wrap text-left ${m.role === "user" ? "bg-blue-600 text-white" : "bg-slate-800 text-slate-100"}`}>
-                                            {m.content || <span className="text-slate-500">…</span>}
-                                        </div>
-                                        {m.basis && <p className="text-[11px] text-slate-500 mt-1">{m.basis}</p>}
-                                    </div>
-                                ))}
-                                <div ref={end} />
-                            </div>
-                            <form onSubmit={(e) => { e.preventDefault(); send(input); }} className="p-3 border-t border-slate-800 flex gap-2">
-                                <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask about this assessment…" disabled={busy}
-                                    className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                                <button disabled={busy || !input.trim()} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg px-3"><Send className="w-4 h-4" /></button>
-                            </form>
-                        </>
-                    )}
-                </div>
-            )}
-            <button onClick={() => setOpen((v) => !v)} className="w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-lg flex items-center justify-center" aria-label="Open the GridIQ consultant">
-                {open ? <X className="w-6 h-6" /> : <MessageSquare className="w-6 h-6" />}
+    if (!open) {
+        return (
+            <button onClick={() => setOpen(true)} aria-label="Open the GridIQ consultant"
+                className="fixed bottom-6 right-6 z-40 h-12 rounded-full bg-blue-600 px-4 text-white shadow-lg hover:bg-blue-500 flex items-center gap-2 print:hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-300">
+                <MessageSquare className="h-5 w-5" aria-hidden /><span className="text-sm font-medium">Consultant</span>
             </button>
-        </div>
+        );
+    }
+
+    return (
+        <aside aria-label="GridIQ consultant"
+            className="fixed z-50 inset-0 lg:inset-auto lg:top-0 lg:right-0 lg:h-screen lg:w-[400px] bg-slate-900 border-l border-slate-700/60 flex flex-col print:hidden">
+            <div className="px-4 py-3 border-b border-slate-800 flex items-start gap-2.5">
+                <div className="flex-1 min-w-0">
+                    <h2 className="font-semibold text-white text-sm">GridIQ consultant</h2>
+                    {!onScreen && live.length > 1 ? (
+                        <select aria-label="Assessment" className="mt-1 bg-slate-800 rounded px-1.5 py-0.5 text-xs text-slate-200" value={current?.id ?? ""} onChange={(e) => setSel(e.target.value)}>
+                            {live.map((a) => <option key={a.id} value={a.id}>{a.project_name} · {a.reference}</option>)}
+                        </select>
+                    ) : current ? (
+                        <p className="mt-1 inline-flex flex-wrap gap-1 text-[11px]">
+                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-200">{current.project_name}</span>
+                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300 tabular-nums">{current.reference}</span>
+                            <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-400">{fmtDateTime(current.start_at)} → now</span>
+                        </p>
+                    ) : null}
+                </div>
+                <button onClick={() => setOpen(false)} aria-label="Close the consultant" className="text-slate-400 hover:text-white p-1"><X className="w-4 h-4" /></button>
+            </div>
+            {!current ? (
+                <div className="flex-1 p-6 text-sm text-slate-300 flex gap-3"><Lock className="w-5 h-5 text-slate-500 shrink-0" aria-hidden />
+                    {onScreen ? "This site has no live assessment, so the consultant is not available here." : "The consultant answers questions about an assessment while it is running. You have no live assessment right now."}</div>
+            ) : (
+                <>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm" aria-live="polite">
+                        {msgs.length === 0 && (
+                            <div className="space-y-2">
+                                <p className="text-slate-400">Questions about this site&apos;s measurements. Answers state the period and data they use, and separate what was measured from possible explanations. Advisory only: never work on live equipment yourself.</p>
+                                {SUGGESTIONS.map((s) => <button key={s} onClick={() => send(s)} className="block text-left w-full text-blue-300 hover:text-blue-200 text-xs border border-slate-700 rounded-lg px-3 py-2">{s}</button>)}
+                            </div>
+                        )}
+                        {msgs.map((m, i) => m.role === "user" ? (
+                            <div key={i} className="text-right"><div className="inline-block max-w-[90%] rounded-xl px-3 py-2 bg-blue-600 text-white text-left whitespace-pre-wrap">{m.content}</div></div>
+                        ) : (
+                            <div key={i}>
+                                {m.content && <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">{m.provider === "none" ? "Measured-data summary" : m.provider ? "Consultant answer (AI, from the measured data)" : "Answer"}</p>}
+                                <div className="rounded-xl px-3 py-2 bg-slate-800 text-slate-100 whitespace-pre-wrap">{m.content || <span className="text-slate-500">Working…</span>}</div>
+                                {(m.basis || (m.evidence?.length ?? 0) > 0) && (
+                                    <details className="mt-1 text-[11px] text-slate-500">
+                                        <summary className="cursor-pointer">Evidence and basis</summary>
+                                        {m.basis && <p className="mt-1">{m.basis}</p>}
+                                        {!!m.evidence?.length && <p className="mt-1">Sections: {m.evidence.map((e) => EVIDENCE_LABEL[e] ?? e).join(", ")}</p>}
+                                    </details>
+                                )}
+                            </div>
+                        ))}
+                        <div ref={end} />
+                    </div>
+                    <form onSubmit={(e) => { e.preventDefault(); send(input); }} className="p-3 border-t border-slate-800 flex gap-2">
+                        <label htmlFor="consultant-input" className="sr-only">Question</label>
+                        <input id="consultant-input" value={input} onChange={(e) => setInput(e.target.value)} placeholder={`Ask about ${current.project_name}…`} disabled={busy}
+                            className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        <button disabled={busy || !input.trim()} aria-label="Send" className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg px-3"><Send className="w-4 h-4" /></button>
+                    </form>
+                </>
+            )}
+        </aside>
     );
 }

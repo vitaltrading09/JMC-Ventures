@@ -47,10 +47,30 @@ export function FleetMap({ fleet }: { fleet: FleetRow[] }) {
         return r.includes("red") ? "#ef4444" : r.includes("amber") ? "#f59e0b" : "#34d399";
     };
 
+    if (deployed.length === 0) return <p className="text-sm text-slate-400">No meter is deployed at the moment.</p>;
+    if (groups.length === 0) {
+        // No fictitious pins: say why the map is empty and list what is out there.
+        return (
+            <div className="space-y-2 text-sm">
+                <p className="text-slate-300">None of the {deployed.length} deployed meter(s) has recorded site coordinates, so there is nothing to place on a map.</p>
+                <p className="text-xs text-slate-500">Add the latitude and longitude on each project page (Site context). Locations are never guessed from an address or IP.</p>
+                <ul className="divide-y divide-slate-800">
+                    {missing.map((d) => (
+                        <li key={d.id} className="flex items-center gap-2 py-1.5">
+                            <RagDot rag={deviceHealth(d).rag} />
+                            <Link href={`/ops/fleet/${d.id}`} className="text-blue-300 hover:underline w-24 truncate">{d.code ?? d.name}</Link>
+                            <span className="text-slate-400 flex-1 truncate">{d.tenant_name} · {d.project_name}</span>
+                            {d.project_id && <Link href={`/ops/projects/${d.project_id}`} className="text-xs text-blue-300 hover:underline">add location</Link>}
+                        </li>
+                    ))}
+                </ul>
+            </div>
+        );
+    }
     return (
         <div className="space-y-3">
             <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto rounded-lg bg-slate-950 border border-slate-800" role="img"
-                aria-label={`Schematic map: ${deployed.length} deployed boxes at ${groups.length} recorded locations`}>
+                aria-label={`Schematic map: ${deployed.length} deployed meters at ${groups.length} recorded locations`}>
                 {/* graticule every 2° */}
                 {Array.from({ length: 9 }, (_, i) => LON0 + 2 + i * 2).map((lon) => <line key={`lo${lon}`} x1={x(lon)} x2={x(lon)} y1={0} y2={H} stroke="#1e293b" strokeWidth={1} />)}
                 {Array.from({ length: 7 }, (_, i) => -34 + i * 2).map((lat) => <line key={`la${lat}`} y1={y(lat)} y2={y(lat)} x1={0} x2={W} stroke="#1e293b" strokeWidth={1} />)}
@@ -62,13 +82,13 @@ export function FleetMap({ fleet }: { fleet: FleetRow[] }) {
                     <g key={g.key} onClick={() => setSelected(g.key === selected ? null : g.key)} className="cursor-pointer">
                         <circle cx={x(g.lon)} cy={y(g.lat)} r={g.rows.length > 1 ? 9 : 6} fill={worst(g.rows)} fillOpacity={0.85}
                             stroke={g.key === selected ? "#fff" : "#0f172a"} strokeWidth={2}>
-                            <title>{`${g.client ?? ""} · ${g.project}: ${g.rows.length} box(es)`}</title>
+                            <title>{`${g.client ?? ""} · ${g.project}: ${g.rows.length} meter(s)`}</title>
                         </circle>
                         {g.rows.length > 1 && <text x={x(g.lon)} y={y(g.lat) + 3.5} fontSize={10} fontWeight={700} textAnchor="middle" fill="#0f172a">{g.rows.length}</text>}
                     </g>
                 ))}
             </svg>
-            <p className="text-xs text-slate-500">Recorded installation coordinates of each project (not live tracking). Colour: worst box health at the location. Click a pin for its boxes.</p>
+            <p className="text-xs text-slate-500">Recorded installation coordinates of each project (not live tracking). Colour: worst meter health at the location. Click a pin for its meters.</p>
             {sel && (
                 <div className="text-sm rounded-lg border border-slate-800 p-3">
                     <p className="text-slate-200 font-medium">{sel.client} · {sel.project} <span className="text-xs text-slate-500">({sel.lat.toFixed(4)}, {sel.lon.toFixed(4)})</span></p>
@@ -82,7 +102,7 @@ export function FleetMap({ fleet }: { fleet: FleetRow[] }) {
             <details className="text-sm">
                 <summary className="cursor-pointer text-slate-400">Locations as a table ({groups.length} located, {missing.length} without coordinates)</summary>
                 <table className="w-full mt-2 text-xs">
-                    <thead><tr className="text-left text-slate-500"><th className="py-1">Client · site</th><th>Boxes</th><th>Location</th></tr></thead>
+                    <thead><tr className="text-left text-slate-500"><th className="py-1">Client · site</th><th>Meters</th><th>Location</th></tr></thead>
                     <tbody>
                         {groups.map((g) => <tr key={g.key} className="border-t border-slate-800"><td className="py-1 text-slate-300">{g.client} · {g.project}</td><td>{g.rows.map((d) => d.code ?? d.name).join(", ")}</td><td className="text-slate-500">{g.lat.toFixed(4)}, {g.lon.toFixed(4)}</td></tr>)}
                         {missing.map((d) => <tr key={d.id} className="border-t border-slate-800"><td className="py-1 text-slate-300">{d.tenant_name} · {d.project_name}</td><td>{d.code ?? d.name}</td><td className="text-amber-300">no coordinates recorded{d.project_address ? ` (${d.project_address})` : ""}</td></tr>)}

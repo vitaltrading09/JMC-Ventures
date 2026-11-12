@@ -24,8 +24,8 @@ export default function FleetPage() {
 
     return (
         <div>
-            <PageHeader title="Fleet" subtitle={`Every box, where it is and how it is doing. Coverage and drift over the last 24 h / hour; times ${TZ_LABEL}.`}
-                actions={<Button onClick={() => setAdding((v) => !v)}><Plus className="h-4 w-4" />New box</Button>} />
+            <PageHeader title="Fleet" subtitle={`Every meter asset, where it is and how it is doing. Coverage and drift over the last 24 h / hour; times ${TZ_LABEL}.`}
+                actions={<Button onClick={() => setAdding((v) => !v)}><Plus className="h-4 w-4" />New meter asset</Button>} />
             {adding && <NewDevice onDone={() => setAdding(false)} />}
             <div className="flex flex-wrap gap-2 mb-4">
                 {STATUSES.map((s) => (
@@ -81,7 +81,7 @@ function NewDevice({ onDone }: { onDone: () => void }) {
     });
     const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
     return (
-        <Panel title="New box" className="mb-4" subtitle="The code becomes the broker username (lower case) and the topic segment.">
+        <Panel title="New meter asset" className="mb-4" subtitle="The code becomes the broker username (lower case) and the topic segment.">
             {create.data ? (
                 <div className="space-y-2 text-sm">
                     <p className="text-emerald-300">Created {create.data.code}.</p>

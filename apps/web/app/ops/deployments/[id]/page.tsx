@@ -113,8 +113,8 @@ export default function DeploymentPage() {
                 </Panel>
 
                 {!d.removed_at && (
-                    <Panel title="Remove" subtitle="When the box is disconnected. Readings after this belong to no project until the next install.">
-                        <form className="grid grid-cols-2 gap-3" onSubmit={(e) => { e.preventDefault(); if (confirm("Record this box as removed?")) remove.mutate(); }}>
+                    <Panel title="Remove" subtitle="When the meter is disconnected. Readings after this belong to no project until the next install.">
+                        <form className="grid grid-cols-2 gap-3" onSubmit={(e) => { e.preventDefault(); if (confirm("Record this meter as removed?")) remove.mutate(); }}>
                             <Field label="Disconnected at (your local time)" hint="Empty = now"><input type="datetime-local" className={inputClass} value={rm.removed_at} onChange={(e) => setRm({ ...rm, removed_at: e.target.value })} /></Field>
                             <Field label="Box goes to">
                                 <select className={inputClass} value={rm.device_status} onChange={(e) => setRm({ ...rm, device_status: e.target.value })}>

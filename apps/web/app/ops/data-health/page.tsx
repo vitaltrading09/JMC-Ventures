@@ -40,14 +40,14 @@ export default function DataHealthPage() {
             </div>
 
             <div className="grid lg:grid-cols-2 gap-6">
-                <Panel title="Silent boxes" subtitle={`Deployed, but nothing for ${h.silent_minutes} min (or three reporting intervals, for a box that reports less often)`}>
-                    {h.silent.length === 0 ? <Empty>Every deployed box is reporting.</Empty> : (
+                <Panel title="Silent meters" subtitle={`Deployed, but nothing for ${h.silent_minutes} min (or three reporting intervals, for a meter that reports less often)`}>
+                    {h.silent.length === 0 ? <Empty>Every deployed meter is reporting.</Empty> : (
                         <Table head={["Box", "Where", "Last reading"]}>
                             {h.silent.map((d) => <tr key={d.id}><td className="py-2 pr-4">{box(d)}</td><td className="py-2 pr-4">{d.project_name} · {d.point_name}</td><td className="py-2">{fmtAgo(d.last_seen)}</td></tr>)}
                         </Table>
                     )}
                 </Panel>
-                <Panel title="Clock drift" subtitle="Median lag of the freshest reading per minute, last hour. Set NTP on the box.">
+                <Panel title="Clock drift" subtitle="Median lag of the freshest reading per minute, last hour. Set NTP on the meter.">
                     {h.clock_drift.length === 0 ? <Empty>All clocks within 5 s.</Empty> : (
                         <Table head={["Box", "Where", "Drift"]}>
                             {h.clock_drift.map((d) => <tr key={d.id}><td className="py-2 pr-4">{box(d)}</td><td className="py-2 pr-4">{d.project_name}</td><td className="py-2">{d.drift_s} s</td></tr>)}
@@ -68,7 +68,7 @@ export default function DataHealthPage() {
             </Panel>
 
             <div className="grid lg:grid-cols-2 gap-6">
-                <Panel title="Duplicate timestamps" subtitle="Readings rejected because the box already sent that timestamp (last 24 h)">
+                <Panel title="Duplicate timestamps" subtitle="Readings rejected because the meter already sent that timestamp (last 24 h)">
                     {h.conflicts.length === 0 ? <Empty>None.</Empty> : (
                         <Table head={["Box", "Conflicts", "Rows written"]}>
                             {h.conflicts.map((c) => <tr key={c.meter_id}><td className="py-2 pr-4">{box(c)}</td><td className="py-2 pr-4">{c.conflicts}</td><td className="py-2">{c.rows}</td></tr>)}
@@ -84,7 +84,7 @@ export default function DataHealthPage() {
                 </Panel>
             </div>
 
-            <Panel title="Dead letters" subtitle="Messages that could not be stored: unknown box, unreadable payload">
+            <Panel title="Dead letters" subtitle="Messages that could not be stored: unknown meter, unreadable payload">
                 {h.dead_letters.last_24h.length > 0 && (
                     <div className="flex flex-wrap gap-2 mb-3">
                         {h.dead_letters.last_24h.map((r) => <Badge key={r.error_msg} tone="amber">{r.error_msg}: {r.n}</Badge>)}

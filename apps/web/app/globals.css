@@ -25,3 +25,10 @@ body {
     )
     rgb(var(--background-start-rgb));
 }
+
+/* The consultant drawer is docked: on wide screens the page makes room for it
+   instead of being covered (components/dashboard/ChatWidget.tsx). */
+@media (min-width: 1024px) {
+  html[data-consultant="open"] .consultant-shift { margin-right: 400px; }
+}
+.consultant-shift { transition: margin-right 150ms ease; }

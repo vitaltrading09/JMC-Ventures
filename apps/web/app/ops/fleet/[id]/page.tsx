@@ -51,10 +51,10 @@ export default function DevicePage() {
                 actions={<>
                     <Badge tone={d.status === "deployed" ? "green" : d.status === "maintenance" ? "amber" : "grey"}>{d.status.replace("_", " ")}</Badge>
                     {open ? <Link href={`/ops/deployments/${open.id}`}><Button variant="secondary">Current deployment</Button></Link>
-                        : d.status !== "retired" && <Link href={`/ops/install?device=${d.id}`}><Button>Install</Button></Link>}
+                        : d.status !== "retired" && <Link href={`/ops/install?device=${d.id}`}><Button>Deploy</Button></Link>}
                 </>} />
 
-            <Panel title="Deployment history" subtitle={`Every place this box has measured. Times ${TZ_LABEL}.`}>
+            <Panel title="Deployment history" subtitle={`Every place this meter has measured. Times ${TZ_LABEL}.`}>
                 {d.deployments.length === 0 ? <Empty>Never deployed.</Empty> : (
                     <Table head={["Project", "Point", "Installed", "Removed", "Corrections", "Commissioning", ""]}>
                         {d.deployments.map((x) => (

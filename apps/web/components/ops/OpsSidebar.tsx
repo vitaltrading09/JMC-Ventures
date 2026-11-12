@@ -11,7 +11,7 @@ const LINKS = [
     { name: "Home",        href: "/ops",             icon: LayoutDashboard },
     { name: "Assessments", href: "/ops/assessments", icon: CalendarClock },
     { name: "Fleet",       href: "/ops/fleet",       icon: Radio },
-    { name: "Install",     href: "/ops/install",     icon: Wrench },
+    { name: "Deploy meter", href: "/ops/install",    icon: Wrench },
     { name: "Review",      href: "/ops/review",      icon: ClipboardCheck },
     { name: "Projects",    href: "/ops/projects",    icon: FolderKanban },
     { name: "Data health", href: "/ops/data-health", icon: HeartPulse },

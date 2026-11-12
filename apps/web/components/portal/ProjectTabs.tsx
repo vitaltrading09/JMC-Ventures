@@ -22,6 +22,31 @@ import { Panel, Loading, ErrorBox, Empty, Badge, Button, Field, inputClass, Tabl
 
 const DAY = 86_400_000;
 
+/** Range options: 0 = the assessment to date (the default), else the last N days inside it. */
+function RangeSelect({ value, onChange, options }: { value: number; onChange: (d: number) => void; options: number[] }) {
+    return (
+        <select aria-label="Observation window" className={`${inputClass} w-44`} value={value} onChange={(e) => onChange(Number(e.target.value))}>
+            <option value={0}>Assessment to date</option>
+            {options.map((d) => <option key={d} value={d}>Last {d} days</option>)}
+        </select>
+    );
+}
+/** Whole days to request for "assessment to date" (the server clamps to the window). */
+const sinceDays = (since?: string | null) => (since ? Math.max(1, Math.ceil((Date.now() - new Date(since).getTime()) / DAY)) : 30);
+/** The range a response actually covers. */
+const actual = (d: any) => (d?.from && d?.to ? `${fmtDateTime(d.from)} – ${fmtDateTime(d.to)} ${TZ_LABEL}` : "");
+
+/** Energy and demand (brief §4): demand, load profile and energy balance, assessment to date by default. */
+export function EnergyDemandTab({ project, since, pointId }: { project: PortalProjectDetail; since?: string | null; pointId?: string | null }) {
+    return (
+        <div className="space-y-6">
+            <DemandTab project={project} since={since} pointId={pointId} />
+            <LoadProfileTab project={project} since={since} pointId={pointId} />
+            <BalanceTab project={project} since={since} />
+        </div>
+    );
+}
+
 /** Pick one metered point for the per-point tabs. */
 function PointPicker({ points, value, onChange }: { points: PortalPoint[]; value: string; onChange: (id: string) => void }) {
     const metered = points.filter((p) => p.metered);
@@ -121,9 +146,9 @@ export function LayoutTab({ project }: { project: PortalProjectDetail }) {
 }
 
 // ── Energy balance ──────────────────────────────────────────────────────────
-export function BalanceTab({ project }: { project: PortalProjectDetail }) {
-    const [days, setDays] = useState(30);
-    const range = useMemo(() => { const to = new Date(); return { from: new Date(to.getTime() - days * DAY), to }; }, [days]);
+export function BalanceTab({ project, since }: { project: PortalProjectDetail; since?: string | null }) {
+    const [days, setDays] = useState(since ? 0 : 30);
+    const range = useMemo(() => { const to = new Date(); return { from: days === 0 && since ? new Date(since) : new Date(to.getTime() - (days || 30) * DAY), to }; }, [days, since]);
     const q = useQuery({
         queryKey: ["balance", project.id, days],
         queryFn: () => apiGet<Balance>(`/ingestion/projects/${project.id}/energy-balance?from=${range.from.toISOString()}&to=${range.to.toISOString()}`),
@@ -131,9 +156,7 @@ export function BalanceTab({ project }: { project: PortalProjectDetail }) {
     return (
         <Panel title="Energy balance"
             subtitle={`${fmtDateTime(range.from)} – ${fmtDateTime(range.to)} ${TZ_LABEL}. From the kWh registers (power-integrated where a meter has none). Consumption = grid import − export + PV + battery discharge − charge.`}
-            actions={<select className={`${inputClass} w-36`} value={days} onChange={(e) => setDays(Number(e.target.value))}>
-                {[7, 30, 90].map((d) => <option key={d} value={d}>Last {d} days</option>)}
-            </select>}>
+            actions={<RangeSelect value={days} onChange={setDays} options={[1, 7]} />}>
             {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : q.data && <BalanceView b={q.data} />}
         </Panel>
     );
@@ -142,19 +165,19 @@ export function BalanceTab({ project }: { project: PortalProjectDetail }) {
 // ── Load profile ────────────────────────────────────────────────────────────
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-export function LoadProfileTab({ project }: { project: PortalProjectDetail }) {
-    const [pointId, setPointId] = usePoint(project);
-    const [days, setDays] = useState(28);
-    const q = useQuery({ queryKey: ["load-profile", pointId, days], enabled: !!pointId, queryFn: () => apiGet<any>(`/ingestion/points/${pointId}/load-profile?days=${days}`) });
+export function LoadProfileTab({ project, since, pointId: forced }: { project: PortalProjectDetail; since?: string | null; pointId?: string | null }) {
+    const [own, setPointId] = usePoint(project);
+    const pointId = forced ?? own;
+    const [days, setDays] = useState(since ? 0 : 28);
+    const ask = days === 0 ? Math.max(7, sinceDays(since)) : days;
+    const q = useQuery({ queryKey: ["load-profile", pointId, ask], enabled: !!pointId, queryFn: () => apiGet<any>(`/ingestion/points/${pointId}/load-profile?days=${ask}`) });
     const max = Math.max(1, ...(q.data?.cells ?? []).map((c: any) => c.kw));
     const cell = (wd: number, h: number) => q.data?.cells.find((c: any) => c.weekday === wd && c.hour === h);
     return (
-        <Panel title="Load profile" subtitle={q.data ? `${q.data.basis}; last ${days} days; ${TZ_LABEL}` : undefined}
+        <Panel title="Load profile by weekday and hour" subtitle={q.data ? `${actual(q.data)}. ${q.data.basis}.` : undefined}
             actions={<div className="flex gap-2">
-                <PointPicker points={project.points} value={pointId} onChange={setPointId} />
-                <select className={`${inputClass} w-32`} value={days} onChange={(e) => setDays(Number(e.target.value))}>
-                    {[7, 28, 90].map((d) => <option key={d} value={d}>{d} days</option>)}
-                </select>
+                {!forced && <PointPicker points={project.points} value={pointId} onChange={setPointId} />}
+                <RangeSelect value={days} onChange={setDays} options={[7]} />
             </div>}>
             {!pointId ? <Empty>No metered point.</Empty> : q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : (
                 <div className="space-y-4">
@@ -188,23 +211,23 @@ export function LoadProfileTab({ project }: { project: PortalProjectDetail }) {
 }
 
 // ── Demand ──────────────────────────────────────────────────────────────────
-export function DemandTab({ project }: { project: PortalProjectDetail }) {
-    const [pointId, setPointId] = usePoint(project);
-    const [days, setDays] = useState(30);
-    const q = useQuery({ queryKey: ["demand", pointId, days], enabled: !!pointId, queryFn: () => apiGet<any>(`/ingestion/points/${pointId}/demand?days=${days}`) });
+export function DemandTab({ project, since, pointId: forced }: { project: PortalProjectDetail; since?: string | null; pointId?: string | null }) {
+    const [own, setPointId] = usePoint(project);
+    const pointId = forced ?? own;
+    const [days, setDays] = useState(since ? 0 : 30);
+    const ask = days === 0 ? sinceDays(since) : days;
+    const q = useQuery({ queryKey: ["demand", pointId, ask], enabled: !!pointId, queryFn: () => apiGet<any>(`/ingestion/points/${pointId}/demand?days=${ask}`) });
     const d = q.data;
     return (
-        <Panel title="Maximum demand" subtitle={d ? `${d.basis}; ${TZ_LABEL}` : undefined}
+        <Panel title="Maximum demand" subtitle={d ? `${actual(d)}. ${d.basis}.` : undefined}
             actions={<div className="flex gap-2">
-                <PointPicker points={project.points} value={pointId} onChange={setPointId} />
-                <select className={`${inputClass} w-32`} value={days} onChange={(e) => setDays(Number(e.target.value))}>
-                    {[7, 30, 90].map((x) => <option key={x} value={x}>{x} days</option>)}
-                </select>
+                {!forced && <PointPicker points={project.points} value={pointId} onChange={setPointId} />}
+                <RangeSelect value={days} onChange={setDays} options={[1, 7]} />
             </div>}>
             {!pointId ? <Empty>No metered point.</Empty> : q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : (
                 <div className="space-y-4">
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                        <Stat label="Maximum demand" value={d.max_kva != null ? `${num(d.max_kva, 1)} kVA` : "–"} hint={d.max_at ? fmtDateTime(d.max_at) : undefined} />
+                        <Stat label="Maximum 30-minute demand" value={d.max_kva != null ? `${num(d.max_kva, 1)} kVA` : "–"} hint={d.max_at ? fmtDateTime(d.max_at) : undefined} />
                         <Stat label="At that interval" value={d.max_kw != null ? `${num(d.max_kw, 1)} kW` : "–"} />
                         <Stat label="Contracted MDI" value={d.contracted_mdi_kva != null ? `${num(d.contracted_mdi_kva)} kVA` : "not set"} />
                         <Stat label="Utilisation" value={d.utilisation_pct != null ? `${d.utilisation_pct} %` : "–"}
@@ -229,6 +252,7 @@ export function DemandTab({ project }: { project: PortalProjectDetail }) {
                             </ResponsiveContainer>
                         </div>
                     )}
+                    {d.max_at && <Button variant="secondary" onClick={() => askConsultant(`Explain the demand peak of ${num(d.max_kva, 1)} kVA at ${fmtDateTime(d.max_at)} ${TZ_LABEL}: what coincided with it and what should we verify?`)}>Explain this peak</Button>}
                     {d.top_intervals.length > 0 && (
                         <Table head={["Highest intervals", "kVA", "kW"]}>
                             {d.top_intervals.map((x: any) => (

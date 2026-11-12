@@ -144,9 +144,9 @@ function Points({ projectId, points, onChange }: { projectId: string; points: Po
     };
     const byId = new Map(points.map((x) => [x.id, x]));
     return (
-        <Panel title="Measurement points" subtitle="Places on the site. The box at each comes from its active deployment."
+        <Panel title="Measurement points" subtitle="Places on the site. The meter at each comes from its active deployment."
             actions={<div className="flex gap-2">
-                <Link href="/ops/install"><Button variant="secondary">Install a box</Button></Link>
+                <Link href="/ops/install"><Button variant="secondary">Deploy meter</Button></Link>
                 <Button onClick={() => { setAdding(!adding); setEdit(null); setF(blank); }}><Plus className="h-4 w-4" />Point</Button>
             </div>}>
             {adding && (

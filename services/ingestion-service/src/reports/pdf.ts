@@ -10,18 +10,22 @@
 //   handover        for the external feasibility consultant: the data supplied,
 //                   units, topology, limits; no system sizing
 //
-// Layout: A4, readable labels, page numbers, units on every axis and value,
-// SAST stated, technical appendix with the dataset hash and versions.
+// Layout (engineering UI brief sections 10-11): A4, ~20 mm margins, 10.5 pt
+// body, cover with contents, an executive assessment page, finding-led
+// headings, small tables kept whole and long ones repeating their header,
+// headings kept with their content, PDF bookmarks, "page X of Y", numbered
+// figures with captions, methods in the appendix.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import PDFDocument from 'pdfkit';
+import { buildSummary } from './summary';
 
 type Doc = InstanceType<typeof PDFDocument>;
 type Kind = 'overview' | 'power_quality' | 'handover';
 
 const C = { ink: '#0f172a', mute: '#475569', faint: '#94a3b8', line: '#cbd5e1', blue: '#1d4ed8', green: '#047857', amber: '#b45309', red: '#b91c1c',
     phase: ['#b91c1c', '#ca8a04', '#1d4ed8'] };
-const M = 50; // margin
+const M = 57; // margin, ~20 mm
 const SAST = 2 * 3_600_000;
 
 const fmtT = (iso: string | Date | null | undefined) => {
@@ -51,11 +55,14 @@ export function renderReportPdf(kind: Kind, ds: any, meta: { revision: number; s
         doc.on('end', () => resolve(Buffer.concat(chunks)));
         doc.on('error', reject);
         try {
+            heads = []; figure = 0; contentsAt = null;
             cover(doc, kind, ds, meta);
+            if (kind !== 'handover') executive(doc, ds);
             if (kind === 'overview') overview(doc, ds);
             if (kind === 'power_quality') powerQuality(doc, ds);
             if (kind === 'handover') handover(doc, ds);
             appendix(doc, ds, meta);
+            contents(doc);
             footers(doc, ds, kind, meta);
             doc.end();
         } catch (e) { reject(e); }
@@ -64,19 +71,38 @@ export function renderReportPdf(kind: Kind, ds: any, meta: { revision: number; s
 
 // ── Building blocks ─────────────────────────────────────────────────────────
 const width = (doc: Doc) => doc.page.width - 2 * M;
-function ensure(doc: Doc, h: number) { if (doc.y + h > doc.page.height - M - 30) doc.addPage(); }
-function h1(doc: Doc, t: string) { ensure(doc, 60); doc.moveDown(0.6).font('Helvetica-Bold').fontSize(15).fillColor(C.ink).text(t, M); doc.moveDown(0.3); }
-function h2(doc: Doc, t: string) { ensure(doc, 40); doc.moveDown(0.4).font('Helvetica-Bold').fontSize(11.5).fillColor(C.ink).text(t, M); doc.moveDown(0.2); }
-function p(doc: Doc, t: string, o: { color?: string; size?: number } = {}) {
-    ensure(doc, 24); doc.font('Helvetica').fontSize(o.size ?? 9.5).fillColor(o.color ?? C.ink).text(t, M, doc.y, { width: width(doc), lineGap: 1.5 }); doc.moveDown(0.35);
+const BODY = 10.5;
+const limit = (doc: Doc) => doc.page.height - M - 24;
+const pageNo = (doc: Doc) => { const r = doc.bufferedPageRange(); return r.start + r.count - 1; };
+function ensure(doc: Doc, h: number) { if (doc.y + h > limit(doc)) doc.addPage(); }
+/** Headings collected for the contents panel; each is also a PDF bookmark. */
+let heads: { title: string; page: number }[] = [];
+let figure = 0;
+let contentsAt: { page: number; y: number } | null = null;
+// A heading is kept with roughly its first block of content.
+function h1(doc: Doc, t: string) {
+    ensure(doc, 120);
+    doc.moveDown(0.8).font('Helvetica-Bold').fontSize(17).fillColor(C.ink).text(t, M);
+    doc.moveDown(0.35);
+    heads.push({ title: t, page: pageNo(doc) });
+    (doc as any).outline?.addItem(winAnsi(t));
 }
-function note(doc: Doc, t: string) { p(doc, t, { color: C.mute, size: 8 }); }
+function h2(doc: Doc, t: string) { ensure(doc, 90); doc.moveDown(0.5).font('Helvetica-Bold').fontSize(12.5).fillColor(C.ink).text(t, M); doc.moveDown(0.25); }
+function p(doc: Doc, t: string, o: { color?: string; size?: number } = {}) {
+    const size = o.size ?? BODY;
+    const h = doc.font('Helvetica').fontSize(size).heightOfString(winAnsi(t), { width: width(doc), lineGap: 2 });
+    ensure(doc, Math.min(h, 60));
+    doc.font('Helvetica').fontSize(size).fillColor(o.color ?? C.ink).text(t, M, doc.y, { width: width(doc), lineGap: 2 });
+    doc.moveDown(0.4);
+}
+function note(doc: Doc, t: string) { p(doc, t, { color: C.mute, size: 9 }); }
 function bullet(doc: Doc, t: string, color = C.ink) {
-    ensure(doc, 18);
+    const h = doc.font('Helvetica').fontSize(BODY).heightOfString(winAnsi(t), { width: width(doc) - 14, lineGap: 2 });
+    ensure(doc, Math.min(h, 60) + 4);
     const y = doc.y;
-    doc.circle(M + 3, y + 5, 1.6).fill(color);
-    doc.font('Helvetica').fontSize(9.5).fillColor(C.ink).text(t, M + 12, y, { width: width(doc) - 12, lineGap: 1.5 });
-    doc.moveDown(0.25);
+    doc.circle(M + 3, y + 6, 1.8).fill(color);
+    doc.font('Helvetica').fontSize(BODY).fillColor(C.ink).text(t, M + 14, y, { width: width(doc) - 14, lineGap: 2 });
+    doc.moveDown(0.3);
 }
 /** Key/value grid in two columns. */
 function kv(doc: Doc, rows: [string, string][]) {
@@ -86,37 +112,49 @@ function kv(doc: Doc, rows: [string, string][]) {
         const y = doc.y;
         for (let j = 0; j < 2 && i + j < rows.length; j++) {
             const [k, v] = rows[i + j];
-            doc.font('Helvetica').fontSize(8).fillColor(C.mute).text(k, M + j * colW, y, { width: colW - 10 });
-            doc.font('Helvetica-Bold').fontSize(9.5).fillColor(C.ink).text(v, M + j * colW, y + 10, { width: colW - 10 });
+            doc.font('Helvetica').fontSize(9).fillColor(C.mute).text(k, M + j * colW, y, { width: colW - 10 });
+            doc.font('Helvetica-Bold').fontSize(10.5).fillColor(C.ink).text(v, M + j * colW, y + 12, { width: colW - 10 });
         }
-        doc.y = y + 28;
+        doc.y = y + 32;
     }
 }
-/** A simple table with a header row; column widths as fractions. */
+/**
+ * A table with a header row; column widths as fractions. Tables of up to 10
+ * rows are kept on one page (no stranded phase row); longer tables break
+ * between rows and repeat the header on the next page.
+ */
 function table(doc: Doc, head: string[], rows: string[][], widths?: number[]) {
     const w = widths ?? head.map(() => 1 / head.length);
-    const W = width(doc);
-    const row = (cells: string[], bold: boolean) => {
-        const heights = cells.map((c, i) => doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5).heightOfString(c, { width: w[i] * W - 6 }));
-        const h = Math.max(...heights) + 6;
-        ensure(doc, h + 2);
+    const W = width(doc), FS = 9;
+    const heightOf = (cells: string[], bold: boolean) =>
+        Math.max(...cells.map((c, i) => doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(FS).heightOfString(winAnsi(c), { width: w[i] * W - 8 }))) + 8;
+    const draw = (cells: string[], bold: boolean, h: number) => {
         const y = doc.y;
+        if (bold) doc.rect(M, y, W, h).fill('#f1f5f9');
         let x = M;
-        cells.forEach((c, i) => { doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5).fillColor(bold ? C.mute : C.ink).text(c, x + 3, y + 3, { width: w[i] * W - 6 }); x += w[i] * W; });
+        cells.forEach((c, i) => { doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(FS).fillColor(bold ? C.mute : C.ink).text(c, x + 4, y + 4, { width: w[i] * W - 8 }); x += w[i] * W; });
         doc.moveTo(M, y + h).lineTo(M + W, y + h).lineWidth(0.4).strokeColor(C.line).stroke();
         doc.y = y + h;
     };
-    row(head, true);
-    for (const r of rows) row(r, false);
-    doc.moveDown(0.5);
+    const hh = heightOf(head, true);
+    const hs = rows.map((r) => heightOf(r, false));
+    const total = hh + hs.reduce((a, b) => a + b, 0);
+    ensure(doc, rows.length <= 10 ? Math.min(total, limit(doc) - M) : hh + (hs[0] ?? 0) + (hs[1] ?? 0));
+    draw(head, true, hh);
+    rows.forEach((r, i) => {
+        if (doc.y + hs[i] > limit(doc)) { doc.addPage(); draw(head, true, hh); }
+        draw(r, false, hs[i]);
+    });
+    doc.moveDown(0.6);
 }
 
 /** Line chart: x = index or time, several series; never connects across nulls. */
-function lineChart(doc: Doc, o: { title: string; yUnit: string; labels: string[]; series: { name: string; color: string; values: (number | null)[] }[]; refLines?: { y: number; label: string }[]; height?: number }) {
-    const H = o.height ?? 150, W = width(doc), left = M + 34, right = M + W - 6, top0 = 18;
-    ensure(doc, H + 40);
+function lineChart(doc: Doc, o: { title: string; yUnit: string; labels: string[]; series: { name: string; color: string; values: (number | null)[]; dash?: number }[]; refLines?: { y: number; label: string }[]; height?: number; caption?: string }) {
+    const H = o.height ?? 180, W = width(doc), left = M + 38, right = M + W - 6, top0 = 32;
+    ensure(doc, H + 60);
+    figure++;
     const y0 = doc.y;
-    doc.font('Helvetica-Bold').fontSize(9).fillColor(C.ink).text(o.title, M, y0);
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(C.ink).text(`Figure ${figure}. ${o.title}`, M, y0);
     const all = [...o.series.flatMap((s) => s.values), ...(o.refLines ?? []).map((r) => r.y)].filter((v): v is number => v !== null && Number.isFinite(v));
     if (!all.length) { doc.font('Helvetica').fontSize(8.5).fillColor(C.mute).text('No data in this period.', M, y0 + 16); doc.y = y0 + 34; return; }
     let lo = Math.min(...all), hi = Math.max(...all);
@@ -131,58 +169,68 @@ function lineChart(doc: Doc, o: { title: string; yUnit: string; labels: string[]
     for (let k = 0; k <= 4; k++) {
         const v = lo + ((hi - lo) * k) / 4, yy = Y(v);
         doc.moveTo(left, yy).lineTo(right, yy).stroke();
-        doc.font('Helvetica').fontSize(7).fillColor(C.faint).text(v.toFixed(Math.abs(hi - lo) < 5 ? 2 : 0), M, yy - 4, { width: 30, align: 'right' });
+        doc.font('Helvetica').fontSize(8).fillColor(C.mute).text(v.toFixed(Math.abs(hi - lo) < 5 ? 2 : 0), M, yy - 4, { width: 34, align: 'right' });
     }
-    doc.font('Helvetica').fontSize(7).fillColor(C.mute).text(o.yUnit, M, top - 10, { width: 40 });
+    doc.font('Helvetica').fontSize(8).fillColor(C.mute).text(o.yUnit, M, top - 11, { width: 40 });
     const step = Math.max(1, Math.ceil(o.labels.length / 8));
-    o.labels.forEach((l, i) => { if (i % step === 0) doc.font('Helvetica').fontSize(6.5).fillColor(C.faint).text(l, X(i) - 20, bottom + 3, { width: 40, align: 'center' }); });
+    o.labels.forEach((l, i) => { if (i % step === 0) doc.font('Helvetica').fontSize(8).fillColor(C.mute).text(l, X(i) - 24, bottom + 3, { width: 48, align: 'center' }); });
     for (const r of o.refLines ?? []) {
         if (r.y < lo || r.y > hi) continue;
         doc.save().dash(3, { space: 2 }).lineWidth(0.7).strokeColor(C.red).moveTo(left, Y(r.y)).lineTo(right, Y(r.y)).stroke().undash().restore();
-        doc.font('Helvetica').fontSize(6.5).fillColor(C.red).text(r.label, right - 120, Y(r.y) - 9, { width: 118, align: 'right' });
+        doc.font('Helvetica').fontSize(8).fillColor(C.red).text(r.label, right - 160, Y(r.y) - 10, { width: 158, align: 'right' });
     }
     for (const s of o.series) {
-        doc.lineWidth(1).strokeColor(s.color);
+        doc.save();
+        if (s.dash) doc.dash(s.dash, { space: s.dash * 0.6 });
+        doc.lineWidth(1.3).strokeColor(s.color);
         let pen = false;
         s.values.forEach((v, i) => {
             if (v === null || !Number.isFinite(v)) { pen = false; return; }
             if (!pen) { doc.moveTo(X(i), Y(v)); pen = true; } else doc.lineTo(X(i), Y(v));
         });
         doc.stroke();
+        doc.undash().restore();
     }
-    // legend
+    // Legend: colour and dash, so it also reads in grayscale.
     let lx = left;
     for (const s of o.series) {
-        doc.rect(lx, bottom + 14, 8, 3).fill(s.color);
-        doc.font('Helvetica').fontSize(7).fillColor(C.mute).text(s.name, lx + 11, bottom + 11, { width: 90 });
-        lx += 14 + doc.widthOfString(s.name) + 10;
+        doc.save();
+        if (s.dash) doc.dash(s.dash, { space: s.dash * 0.6 });
+        doc.lineWidth(1.6).strokeColor(s.color).moveTo(lx, bottom + 22).lineTo(lx + 16, bottom + 22).stroke();
+        doc.undash().restore();
+        doc.font('Helvetica').fontSize(8).fillColor(C.mute).text(s.name, lx + 20, bottom + 18, { width: 160, lineBreak: false });
+        lx += 30 + doc.widthOfString(s.name) + 10;
     }
-    doc.y = bottom + 26;
+    doc.y = bottom + 32;
+    if (o.caption) note(doc, o.caption);
 }
+/** Phase styling shared with the website (apps/web lib/summary.ts PHASE): colour and dash. */
+const PH = [{ name: 'L1 (A)', color: C.phase[0] }, { name: 'L2 (B)', color: C.phase[1], dash: 5 }, { name: 'L3 (C)', color: C.phase[2], dash: 2 }];
 
 /** Bar chart of one series. */
 function barChart(doc: Doc, o: { title: string; yUnit: string; labels: string[]; values: (number | null)[]; color?: string; height?: number }) {
-    const H = o.height ?? 130, W = width(doc), left = M + 34, right = M + W - 6;
-    ensure(doc, H + 30);
+    const H = o.height ?? 150, W = width(doc), left = M + 38, right = M + W - 6;
+    ensure(doc, H + 40);
+    figure++;
     const y0 = doc.y;
-    doc.font('Helvetica-Bold').fontSize(9).fillColor(C.ink).text(o.title, M, y0);
+    doc.font('Helvetica-Bold').fontSize(10).fillColor(C.ink).text(`Figure ${figure}. ${o.title}`, M, y0);
     const vals = o.values.filter((v): v is number => v !== null);
     if (!vals.length) { doc.font('Helvetica').fontSize(8.5).fillColor(C.mute).text('No data in this period.', M, y0 + 16); doc.y = y0 + 34; return; }
-    const hi = Math.max(...vals) * 1.1 || 1, top = y0 + 18, bottom = y0 + H;
+    const hi = Math.max(...vals) * 1.1 || 1, top = y0 + 30, bottom = y0 + H;
     const bw = (right - left) / o.values.length;
     doc.lineWidth(0.4).strokeColor(C.line);
     for (let k = 0; k <= 4; k++) {
         const v = (hi * k) / 4, yy = bottom - (v / hi) * (bottom - top);
         doc.moveTo(left, yy).lineTo(right, yy).stroke();
-        doc.font('Helvetica').fontSize(7).fillColor(C.faint).text(v.toFixed(0), M, yy - 4, { width: 30, align: 'right' });
+        doc.font('Helvetica').fontSize(8).fillColor(C.mute).text(v.toFixed(0), M, yy - 4, { width: 34, align: 'right' });
     }
-    doc.font('Helvetica').fontSize(7).fillColor(C.mute).text(o.yUnit, M, top - 10, { width: 40 });
+    doc.font('Helvetica').fontSize(8).fillColor(C.mute).text(o.yUnit, M, top - 11, { width: 40 });
     const step = Math.max(1, Math.ceil(o.labels.length / 10));
     o.values.forEach((v, i) => {
         if (v !== null) { const hh = (v / hi) * (bottom - top); doc.rect(left + i * bw + 1, bottom - hh, Math.max(1, bw - 2), hh).fill(o.color ?? C.blue); }
-        if (i % step === 0) doc.font('Helvetica').fontSize(6.5).fillColor(C.faint).text(o.labels[i], left + i * bw - 10, bottom + 3, { width: bw + 20, align: 'center' });
+        if (i % step === 0) doc.font('Helvetica').fontSize(8).fillColor(C.mute).text(o.labels[i], left + i * bw - 14, bottom + 3, { width: bw + 28, align: 'center' });
     });
-    doc.y = bottom + 16;
+    doc.y = bottom + 20;
 }
 
 // ── Sections ────────────────────────────────────────────────────────────────
@@ -208,20 +256,63 @@ function cover(doc: Doc, kind: Kind, ds: any, meta: { revision: number; status: 
         ['Measurement points', ds.points.map((x: any) => `${x.name} (${x.role})`).join(', ') || '–'],
     ]);
     if (meta.revision > 1 && meta.reason) note(doc, `This revision replaces revision ${meta.revision - 1}: ${meta.reason}`);
+    note(doc, 'Prepared by GridIQ from measured data. No engineer’s sign-off is implied unless a named reviewer appears on this page.');
+    contentsAt = { page: pageNo(doc), y: doc.y + 12 };
+}
+
+/** A compact contents panel on the cover, written once the page numbers are known. */
+function contents(doc: Doc) {
+    if (!contentsAt || !heads.length) return;
+    doc.switchToPage(contentsAt.page);
+    const bottom = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
+    let y = contentsAt.y;
+    doc.font('Helvetica-Bold').fontSize(12.5).fillColor(C.ink).text('Contents', M, y, { lineBreak: false });
+    y += 22;
+    for (const hd of heads) {
+        if (y > doc.page.height - M - 40) break;
+        doc.font('Helvetica').fontSize(10.5).fillColor(C.ink).text(hd.title, M, y, { width: width(doc) - 50, lineBreak: false });
+        doc.text(String(hd.page + 1), M + width(doc) - 40, y, { width: 40, align: 'right', lineBreak: false });
+        doc.moveTo(M, y + 15).lineTo(M + width(doc), y + 15).lineWidth(0.3).strokeColor(C.line).stroke();
+        y += 20;
+    }
+    doc.page.margins.bottom = bottom;
+}
+
+/** Executive assessment (brief section 10): main messages, key numbers, priorities, limits. */
+function executive(doc: Doc, ds: any) {
+    doc.addPage();
+    const s = buildSummary(ds);
+    h1(doc, 'Executive assessment');
+    if (s.context.point) note(doc, `Main measurement point: ${s.context.point.name}. Period ${fmtT(s.context.period_from)} to ${fmtT(s.context.period_to)} SAST.`);
+    for (const g of s.glance) p(doc, g, { size: 12 });
+    h2(doc, 'Key numbers');
+    kv(doc, s.metrics.map((m) => [m.label, m.value === null ? '–' : `${m.key === 'energy' ? m.value.toLocaleString('en-ZA', { maximumFractionDigits: 0 }) : m.value} ${m.unit}`] as [string, string]));
+    note(doc, s.metrics.map((m) => `${m.label}: ${m.definition}`).join(' '));
+    h2(doc, 'Assessment by area');
+    table(doc, ['Area', 'Status', 'Basis'], s.categories.map((c) => [c.title, c.label, c.reason]), [0.24, 0.2, 0.56]);
+    h2(doc, 'Immediate priorities');
+    if (!s.findings.length) p(doc, 'No observation needs follow-up from the measurements so far.');
+    s.findings.forEach((x: any, i: number) => bullet(doc, `${i + 1}. ${x.text} Next: ${x.next} (${x.who}; ${x.confidence} confidence)`, SEV[x.severity][1]));
+    h2(doc, 'Important measurement limits');
+    for (const l of ds.limitations.filter((x: string) => !/^PROVISIONAL/.test(x)).slice(0, 3)) bullet(doc, l, C.mute);
 }
 
 function coverageTable(doc: Doc, ds: any) {
-    table(doc, ['Point', 'Coverage', 'Samples', 'Reporting interval', 'Gaps ≥ 30 min', 'Meter'],
-        ds.points.map((x: any) => [x.name, x.coverage.fraction === null ? '–' : `${(x.coverage.fraction * 100).toFixed(1)} %`, f(x.coverage.samples),
-            `${f(x.coverage.median_spacing_s, 's')}`, String(x.coverage.gaps.length), x.deployments.map((d: any) => d.device ?? 'device').join(', ')]),
-        [0.24, 0.13, 0.13, 0.17, 0.13, 0.2]);
-    note(doc, 'Coverage = samples received × the meter’s median reporting interval ÷ the observation window. Missing data is never filled or shown as zero.');
+    table(doc, ['Point', 'Coverage', '10-min slots measured', 'Samples', 'Reporting interval', 'Gaps ≥ 30 min'],
+        ds.points.map((x: any) => [x.name, x.coverage.fraction === null ? '–' : `${(x.coverage.fraction * 100).toFixed(1)} %`,
+            x.coverage.expected_slots !== undefined ? `${f(x.coverage.slots_with_data)} of ${f(x.coverage.expected_slots)}` : f(x.coverage.ten_minute_values),
+            f(x.coverage.samples),
+            x.coverage.mixed_cadence ? `mixed: ${x.coverage.cadences.map((c: any) => `~${c.approx_interval_s} s`).join(', ')}` : f(x.coverage.median_spacing_s, 's'),
+            String(x.coverage.gaps.length)]),
+        [0.22, 0.12, 0.18, 0.12, 0.22, 0.14]);
+    note(doc, `Coverage: ${ds.points[0]?.coverage.basis ?? 'samples received against the observation window'}. Missing data is never filled or shown as zero.`);
 }
 
 const SEV: Record<string, [string, string]> = { act: ['Act', C.red], investigate: ['Investigate', C.amber], note: ['Note', C.mute] };
 
 function overview(doc: Doc, ds: any) {
-    h1(doc, '1. Executive findings');
+    h1(doc, '1. Findings by point');
     if (!ds.executive.length) p(doc, 'Nothing significant was found in this period: demand, power factor, voltage and distortion stayed within the screening thresholds at every point with sufficient data.');
     for (const e of ds.executive) bullet(doc, `${SEV[e.severity][0]} (${e.point}, confidence ${e.confidence}; for: ${e.who}): ${e.text}`, SEV[e.severity][1]);
 
@@ -244,8 +335,14 @@ function overview(doc: Doc, ds: any) {
             ['Baseload (10th percentile)', f(x.patterns.baseload_kw, 'kW')],
             ['Operating-hours average', f(x.patterns.operating_avg_kw, 'kW')], ['Outside operating hours', f(x.patterns.outside_avg_kw, 'kW')],
         ]);
-        lineChart(doc, { title: 'Average day (active power by hour, SAST)', yUnit: 'kW', labels: Array.from({ length: 24 }, (_, h) => `${h}:00`),
-            series: [{ name: 'Weekday', color: C.blue, values: x.patterns.weekday_kw_by_hour }, { name: 'Weekend', color: C.green, values: x.patterns.weekend_kw_by_hour }] });
+        const tw = x.patterns.typical_weekday, te = x.patterns.typical_weekend;
+        lineChart(doc, { title: 'Operating fingerprint: typical day (hourly kW, SAST)', yUnit: 'kW', labels: Array.from({ length: 24 }, (_, h) => `${h}:00`),
+            series: tw ? [
+                { name: `Weekday median (${tw.days} d)`, color: C.blue, values: tw.hours.map((h: any) => h.median) },
+                ...(tw.band ? [{ name: 'Weekday P10', color: C.faint, values: tw.hours.map((h: any) => h.p10), dash: 2 }, { name: 'Weekday P90', color: C.faint, values: tw.hours.map((h: any) => h.p90), dash: 2 }] : []),
+                ...(te && te.days ? [{ name: `Weekend median (${te.days} d)`, color: C.green, values: te.hours.map((h: any) => h.median), dash: 5 }] : []),
+            ] : [{ name: 'Weekday', color: C.blue, values: x.patterns.weekday_kw_by_hour }, { name: 'Weekend', color: C.green, values: x.patterns.weekend_kw_by_hour, dash: 5 }],
+            caption: tw ? tw.basis : undefined });
         barChart(doc, { title: 'Daily maximum active power (SAST days)', yUnit: 'kW', labels: x.daily.map((d: any) => d.date.slice(5)), values: x.daily.map((d: any) => d.max_kw) });
         note(doc, `${x.patterns.basis}. Instantaneous peaks are shown separately from billed (30-minute) demand.`);
     }
@@ -281,7 +378,7 @@ function powerQuality(doc: Doc, ds: any) {
     coverageTable(doc, ds);
     for (const x of ds.points) {
         const pq = x.power_quality;
-        h1(doc, `${x.name}`);
+        h1(doc, `2. ${x.name}`);
         p(doc, `Verdict type: ${pq.verdict.type === 'formal' ? 'formal NRS 048-2 assessment' : 'screening only'}. ${pq.verdict.reason}`, { color: pq.verdict.type === 'formal' ? C.green : C.amber });
 
         h2(doc, 'Voltage (observed)');
@@ -290,19 +387,19 @@ function powerQuality(doc: Doc, ds: any) {
         const ser = x.hourly_series;
         const lbl = ser.t.map((t: string) => fmtT(t).slice(5, 10));
         lineChart(doc, { title: 'Phase voltage, hourly averages (SAST)', yUnit: 'V', labels: lbl,
-            series: [{ name: 'L1', color: C.phase[0], values: ser.v_a }, { name: 'L2', color: C.phase[1], values: ser.v_b }, { name: 'L3', color: C.phase[2], values: ser.v_c }],
+            series: [{ ...PH[0], values: ser.v_a }, { ...PH[1], values: ser.v_b }, { ...PH[2], values: ser.v_c }], caption: 'Hourly averages for readability; the table uses 10-minute values, so short excursions look smaller here.',
             refLines: [{ y: pq.nominal_v * 0.9, label: `−10 % (${(pq.nominal_v * 0.9).toFixed(0)} V)` }, { y: pq.nominal_v * 1.1, label: `+10 % (${(pq.nominal_v * 1.1).toFixed(0)} V)` }] });
 
         // Harmonic section: depth follows the evidence and the meter's capability.
         const thdIssue = (pq.thd_v ?? []).some((t: any) => t.p95 !== null && t.p95 > ds.conventions.screening.thd_v_pct);
-        h2(doc, thdIssue ? 'Harmonic distortion: a finding' : 'Harmonic distortion');
+        h2(doc, thdIssue ? 'Voltage distortion warrants investigation' : 'Voltage distortion within the screening reference');
         if (!pq.thd_v) p(doc, 'THD of voltage was not measured at this point.');
         else {
             table(doc, ['Phase', 'THD-V P95 (%)', 'THD-V max (%)', `10-min values > ${ds.conventions.screening.thd_v_pct} %`, 'Worst hours (SAST)'],
                 pq.thd_v.map((t: any) => [t.phase, f(t.p95, '', 2), f(t.max, '', 2), `${f(t.over_limit_pct, '%', 1)}`, t.worst_hours.map((h: number) => `${h}:00`).join(', ')]));
             if (thdIssue || pq.thd_v.some((t: any) => (t.p95 ?? 0) > 5)) {
                 lineChart(doc, { title: 'Voltage THD per phase, hourly averages (SAST)', yUnit: '%', labels: lbl,
-                    series: [{ name: 'L1', color: C.phase[0], values: ser.thd_v_a }, { name: 'L2', color: C.phase[1], values: ser.thd_v_b }, { name: 'L3', color: C.phase[2], values: ser.thd_v_c }],
+                    series: [{ ...PH[0], values: ser.thd_v_a }, { ...PH[1], values: ser.thd_v_b }, { ...PH[2], values: ser.thd_v_c }], caption: 'Hourly averages; the exceedance shares in the table are counted on 10-minute values, not on these hourly points.',
                     refLines: [{ y: ds.conventions.screening.thd_v_pct, label: `NRS 048-2 screening ${ds.conventions.screening.thd_v_pct} %` }] });
             }
             if (pq.thd_i) p(doc, `Current THD (P95): ${pq.thd_i.map((t: any) => `${t.phase} ${f(t.p95, '%', 1)}`).join(', ')}. THD-I is relative to the present current, not TDD: no IEEE 519 conclusion is drawn without the demand current and fault level.`);

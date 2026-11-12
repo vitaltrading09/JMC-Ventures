@@ -31,8 +31,11 @@ test('rules: each condition produces its finding with the numbers used', () => {
     assert.deepStrictEqual(types({ sag_intervals: 12, v_min: 190 }), ['RULE_VOLTAGE_SAGS']);
     assert.deepStrictEqual(types({ night_kw: 240, day_kw: 300 }), ['RULE_HIGH_BASELOAD']);
     const base = evaluateRules({ ...healthy, night_kw: 240, day_kw: 300 })[0];
-    assert.strictEqual(base.saving_zar, 0);                  // conditional: stated in the text only
-    assert.match(base.solution, /around the clock/);
+    assert.strictEqual(base.saving_zar, 0);                  // no rand estimate without an approved avoidable portion
+    assert.match(base.solution, /24\/7 operation/);
+    assert.doesNotMatch(base.solution, /R \d/);
+    const thd = evaluateRules({ ...healthy, thd_v_p95: 9.4 })[0];
+    assert.doesNotMatch(thd.solution, /detuned|should be/);  // no sizing or prescription from THD alone
 
     const pf = evaluateRules({ ...healthy, pf_avg_loaded: 0.76, pf_low_share: 0.64 })[0];
     assert.strictEqual(pf.priority, 1);                      // below 0.85

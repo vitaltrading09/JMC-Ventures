@@ -40,26 +40,31 @@ export default function OpsHome() {
         .sort((a, b) => new Date(a.calibration_due_on!).getTime() - new Date(b.calibration_due_on!).getTime());
     const reportsOpen = (reports.data ?? []).filter((r) => r.status !== "published");
     const findings = (drafts.data?.length ?? 0) + (inReview.data?.length ?? 0);
+    const quiet = [
+        ...(!assessments.isLoading && endingSoon.length === 0 && deletionSoon.length === 0 ? ["nothing ends in the next 48 h"] : []),
+        ...(!fleet.isLoading && exceptions.length + commissioning.length === 0 ? ["every deployed meter is reporting normally"] : []),
+        ...(!fleet.isLoading && calDue.length === 0 ? ["no maintenance or calibration due within 30 days"] : []),
+    ];
 
     return (
         <div className="space-y-6">
             <PageHeader title="GridIQ operations" subtitle={`Assessments, fleet and deliverables. Times in ${TZ_LABEL}.`}
                 actions={<>
                     <Link href="/ops/assessments?new=1"><Button>New assessment</Button></Link>
-                    <Link href="/ops/install"><Button variant="secondary">Install a box</Button></Link>
+                    <Link href="/ops/install"><Button variant="secondary">Deploy meter</Button></Link>
                 </>} />
 
             <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
                 <Stat label="Clients with live assessments" value={assessments.isLoading ? "…" : clients.size} hint={`${live.length} live assessment(s)`} />
                 <Stat label="Ending within 48 h" value={assessments.isLoading ? "…" : endingSoon.length} tone={endingSoon.length ? "amber" : undefined} />
                 <Stat label="Waiting to start" value={assessments.isLoading ? "…" : toStart.length} hint={`${unpaid.length} awaiting payment`} />
-                <Stat label="Boxes deployed / available" value={fleet.isLoading ? "…" : `${byStatus("deployed")} / ${byStatus("available")}`}
+                <Stat label="Meter assets deployed / available" value={fleet.isLoading ? "…" : `${byStatus("deployed")} / ${byStatus("available")}`}
                     hint={`${byStatus("reserved")} reserved · ${byStatus("in_transit")} in transit · ${byStatus("maintenance")} maintenance`} />
                 <Stat label="Data / commissioning exceptions" value={fleet.isLoading ? "…" : exceptions.length + commissioning.length} tone={exceptions.length + commissioning.length ? "amber" : "green"} />
                 <Stat label="To review" value={drafts.isLoading ? "…" : findings + reportsOpen.length} hint={`${findings} findings · ${reportsOpen.length} reports`} tone={findings + reportsOpen.length ? "amber" : "green"} />
             </div>
 
-            <div className="grid lg:grid-cols-5 gap-6">
+            <div className="grid lg:grid-cols-5 gap-6 items-start">
                 <Panel title="Clients and assessments" className="lg:col-span-3" actions={<Link href="/ops/assessments" className="text-xs text-blue-300 hover:underline">all assessments</Link>}>
                     {assessments.isLoading ? <Loading /> : assessments.error ? <ErrorBox error={assessments.error} /> :
                         live.length + toStart.length === 0 ? <Empty>No live or upcoming assessments. <Link className="text-blue-300 hover:underline" href="/ops/assessments?new=1">Create one</Link>.</Empty> : (
@@ -80,8 +85,10 @@ export default function OpsHome() {
                 </Panel>
             </div>
 
-            <div className="grid lg:grid-cols-3 gap-6">
-                <Panel title="Ending soon" subtitle="Access stops exactly at the end time">
+            {/* Content-sized queues: an empty queue is one line below, not half a screen. */}
+            {quiet.length > 0 && <p className="text-sm text-slate-400">All clear: {quiet.join(" · ")}.</p>}
+            <div className="grid lg:grid-cols-3 gap-6 items-start">
+                {(endingSoon.length > 0 || deletionSoon.length > 0) && <Panel title="Ending soon" subtitle="Access stops exactly at the end time">
                     {endingSoon.length === 0 ? <Empty>Nothing ends in the next 48 hours.</Empty> : (
                         <ul className="text-sm space-y-1.5">{endingSoon.map((a) => (
                             <li key={a.id} className="flex gap-2"><Link className="text-blue-300 hover:underline" href={`/ops/assessments/${a.id}`}>{a.reference}</Link>
@@ -94,9 +101,9 @@ export default function OpsHome() {
                             <li key={a.id}><Link className="text-blue-300 hover:underline" href={`/ops/assessments/${a.id}`}>{a.reference}</Link> <span className="text-slate-400">{fmtDate(a.retention_until)}</span></li>
                         ))}</ul>
                     </>}
-                </Panel>
-                <Panel title="Data and commissioning exceptions" actions={<Link href="/ops/data-health" className="text-xs text-blue-300 hover:underline">data health</Link>}>
-                    {fleet.isLoading ? <Loading /> : exceptions.length + commissioning.length === 0 ? <Empty>Every deployed box is reporting normally.</Empty> : (
+                </Panel>}
+                {(fleet.isLoading || exceptions.length + commissioning.length > 0) && <Panel title="Data and commissioning exceptions" actions={<Link href="/ops/data-health" className="text-xs text-blue-300 hover:underline">data health</Link>}>
+                    {fleet.isLoading ? <Loading /> : exceptions.length + commissioning.length === 0 ? <Empty>Every deployed meter is reporting normally.</Empty> : (
                         <ul className="divide-y divide-slate-800">
                             {[...exceptions.map((x) => ({ d: x.d, rag: x.h.rag, why: x.h.reasons.join(", ") })),
                               ...commissioning.filter((d) => !exceptions.some((x) => x.d.id === d.id)).map((d) => ({ d, rag: "amber" as const, why: `commissioning ${d.commissioning}` }))]
@@ -111,8 +118,8 @@ export default function OpsHome() {
                         </ul>
                     )}
                     {health.data && <p className="text-xs text-slate-500 mt-3">Dead letters 24 h: {health.data.dead_letters.last_24h.reduce((a: number, r: any) => a + r.n, 0)} · unmapped channels: {health.data.unknown_params.length} · register resets: {health.data.registers.length}</p>}
-                </Panel>
-                <Panel title="Maintenance and calibration due" subtitle="Within 30 days or overdue">
+                </Panel>}
+                {(fleet.isLoading || calDue.length > 0) && <Panel title="Maintenance and calibration due" subtitle="Within 30 days or overdue">
                     {fleet.isLoading ? <Loading /> : calDue.length === 0 ? <Empty>Nothing due.</Empty> : (
                         <ul className="text-sm space-y-1.5">{calDue.slice(0, 10).map((d) => {
                             const overdue = new Date(d.calibration_due_on!).getTime() < now;
@@ -120,7 +127,7 @@ export default function OpsHome() {
                                 <span className="text-slate-400 flex-1">{d.status}</span><span className={overdue ? "text-red-400 text-xs" : "text-amber-300 text-xs"}>{overdue ? "overdue " : ""}{fmtDate(d.calibration_due_on)}</span></li>;
                         })}</ul>
                     )}
-                </Panel>
+                </Panel>}
             </div>
 
             <Panel title="Awaiting review" actions={<Link href="/ops/review" className="text-xs text-blue-300 hover:underline">review</Link>}>

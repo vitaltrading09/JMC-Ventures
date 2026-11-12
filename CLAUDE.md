@@ -309,6 +309,26 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     on the ops project page; portal assessment banner, no-access/ended states, deliverables in Reports;
     `/delivery/[token]` (public, files only); `/login` email-code flow.
   - API v1: `/v1/assessments`, `/v1/assessments/{id}/package`. Handover guide: `docs/gridiq/API-HANDOVER.md`.
+- **Engineering UI and reports (2026-11-12, branch `engineering-ui`; brief `GridIQ-Engineering-UI-and-Reports-Claude-Prompt.md`)**:
+  - Site summary: `src/reports/summary.ts` `buildSummary(ds, pointId?)` (glance sentences, four metrics with definitions,
+    four categories ok | investigate | insufficient with the rule that decided them, ≤ 3 findings with `next`, fingerprint,
+    feasibility readiness). No overall score. Served by `GET /assessments/:id/summary?point=` (consultant router, same
+    access as the chat; dataset cached 2 min) and used by the PDF executive page.
+  - Dataset (calc/rules `2026.11.2`): coverage per unique 10-minute slot at each slot's own cadence (`slotCoverage`;
+    mixed cadences disclosed, never summed past the window); `patterns.typical_weekday/weekend` (`typicalDay`: hourly
+    median, P10–P90 when ≥ 3 days); limitations in SAST.
+  - Portal site workspace (`app/portal/projects/[id]`): context strip `components/portal/SiteHeader.tsx`; tabs Summary
+    (`SummaryTab.tsx`), Energy and demand (assessment to date by default, actual range in every subtitle), Power quality
+    (`PowerQualityView.tsx`, from the dataset; replaces the old health-check view), Findings and actions, Reports and
+    data, Site details. Phase styling (colour + dash) in `lib/summary.ts` `PHASE`, mirrored in `pdf.ts` `PH`.
+  - Consultant: docked drawer (`html[data-consultant]` + `.consultant-shift` in `globals.css`); on a site page it is bound
+    to that site's live assessment only; navigation rebinds and drops late answers. Clients see "Measured-data summary"
+    when no model is used; the "no provider configured" note is staff-only.
+  - Rule finding texts follow the brief's recommendation rules (no capacitor/filter sizing, no rand estimate for baseload).
+  - PDFs: ~20 mm margins, 10.5 pt body, cover contents with page numbers, bookmarks, executive assessment page, numbered
+    figures with captions, small tables kept whole, long ones repeat their header.
+  - Ops: "Meter assets" / "Deploy meter" wording, content-sized queues, map explains zero located meters.
+  - Capability checklist: `docs/gridiq/CAPABILITY-MATRIX.md` (columns 1–3 unverified until the hardware pilot).
 
 ---
 
