@@ -181,7 +181,7 @@ export default function BrokerPortfolioPage() {
                         <Building2 className="h-12 w-12 text-slate-600 mx-auto mb-4" />
                         <p className="text-slate-300 font-medium">No clients yet</p>
                         <p className="text-sm text-slate-500 mt-1">
-                            Client access is granted by the Grid-IQ team. Once granted, they appear here.
+                            Client access is granted by the GridIQ team. Once granted, they appear here.
                         </p>
                     </div>
                 )}

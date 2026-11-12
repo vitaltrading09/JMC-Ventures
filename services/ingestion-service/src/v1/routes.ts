@@ -253,7 +253,7 @@ export function v1Routes(pool: Pool): ApiRoute[] {
         {
             method: 'get', path: '/v1/projects/:id/findings', openapiPath: '/v1/projects/{id}/findings', scope: 'findings:read',
             summary: 'Published findings of a project',
-            description: 'Findings Grid-IQ has reviewed and published, with their evidence window.',
+            description: 'Findings GridIQ has reviewed and published, with their evidence window.',
             params: [uuidPath('id', 'Project')],
             responses: { 200: { description: 'Findings', content: json({ type: 'array', items: { type: 'object' } }) }, 404: { description: 'Not found' } },
             handler: async (req, res) => {
@@ -289,7 +289,7 @@ export function v1Routes(pool: Pool): ApiRoute[] {
         {
             method: 'get', path: '/v1/reports/:file', openapiPath: '/v1/reports/{id}.pdf', scope: 'reports:read',
             summary: 'The PDF of a published report',
-            description: 'The PDF Grid-IQ attached when publishing the report. 404 while none is attached.',
+            description: 'The PDF GridIQ attached when publishing the report. 404 while none is attached.',
             params: [uuidPath('id', 'Report')],
             responses: { 200: { description: 'PDF', content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } } }, 404: { description: 'Not found, or no PDF attached' } },
             handler: async (req, res) => {
@@ -444,7 +444,7 @@ export function openapi(routes: ApiRoute[], serverUrl = '/api') {
     return {
         openapi: '3.1.0',
         info: {
-            title: 'Grid-IQ API', version: '1.0.0',
+            title: 'GridIQ API', version: '1.0.0',
             description: [
                 'Read-only access to your projects, measurement points, readings, energy balance, findings and reports.',
                 '',
@@ -508,7 +508,7 @@ export function v1Router(pool: Pool, authenticateJwt: (req: any, res: any, next:
     const ui = path.dirname(require.resolve('swagger-ui-dist/package.json'));
     r.get(['/v1/docs', '/v1/docs/'], (req, res) => {
         if (!req.path.endsWith('/')) return res.redirect(301, 'docs/'); // relative: /api/docs -> /api/docs/
-        res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Grid-IQ API</title>
+        res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>GridIQ API</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="swagger-ui.css"></head>
 <body><div id="swagger-ui"></div><script src="swagger-ui-bundle.js"></script><script src="docs-init.js"></script></body></html>`);
     });

@@ -24,7 +24,7 @@ export function askConsultant(text: string) {
     if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("gridiq:ask", { detail: text }));
 }
 
-/** A finding the client sees before Grid-IQ has reviewed it. */
+/** A finding the client sees before GridIQ has reviewed it. */
 export const isDraftFinding = (reviewStatus: string | null | undefined) => reviewStatus === "draft" || reviewStatus === "in_review";
 /** Where a finding came from: the rule engine (type RULE_*) or the AI engine. */
 export const findingSource = (type: string | null | undefined) => (type?.startsWith("RULE_") ? "Automated finding" : "AI finding");

@@ -88,7 +88,7 @@ export function ExportsTab({ project }: { project: PortalProjectDetail }) {
                 )}
             </Panel>
 
-            <Panel title="From your own systems" subtitle="The same readings through the Grid-IQ API, with an API key (Settings → API keys).">
+            <Panel title="From your own systems" subtitle="The same readings through the GridIQ API, with an API key (Settings → API keys).">
                 <pre className="text-xs bg-canvas border border-line rounded p-3 overflow-x-auto text-ink-3">{`curl -H "Authorization: Bearer $GRIDIQ_API_KEY" \\\n  "${example}"`}</pre>
                 <p className="mt-2 text-xs text-faint">
                     Timestamps are UTC and period-ending; every row has its sample count, coverage and flags. <a className="text-accent hover:underline" href={apiUrl("/docs/")} target="_blank" rel="noreferrer">API documentation</a>

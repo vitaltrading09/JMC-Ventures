@@ -75,18 +75,20 @@ export function contextOf(ds: any) {
     };
 }
 
-/** A factual answer without a model: the relevant dataset section, in words. */
+const sast = (iso: string | Date) => new Date(new Date(iso).getTime() + 2 * 3_600_000).toISOString().slice(0, 16).replace('T', ' ');
+
+/** A factual answer without a model: the relevant dataset section, in words (times SAST). */
 export function deterministicAnswer(ds: any, q: string): { answer: string; evidence: string[] } {
     const s = q.toLowerCase();
     const p0 = ds.points[0];
-    const period = `${ds.assessment.period_from.slice(0, 16)} to ${ds.assessment.period_to.slice(0, 16)} UTC`;
+    const period = `${sast(ds.assessment.period_from)} to ${sast(ds.assessment.period_to)} SAST`;
     const lines: string[] = [];
     const ev: string[] = [];
     if (!p0) return { answer: 'This assessment has no measurement point yet.', evidence: [] };
     for (const p of ds.points) {
         if (/peak|demand|mdi|kva|maximum/.test(s)) {
             ev.push('demand');
-            lines.push(`${p.name}: highest billed demand ${p.demand.max_kva ?? '–'} kVA at ${p.demand.max_kva_at ? new Date(p.demand.max_kva_at).toISOString().slice(0, 16) : '–'} UTC (30-minute basis)${p.demand.contracted_mdi_kva ? `, contracted ${p.demand.contracted_mdi_kva} kVA` : ''}; highest instantaneous ${p.instantaneous.max_kw ?? '–'} kW.`);
+            lines.push(`${p.name}: highest billed demand ${p.demand.max_kva ?? '–'} kVA at ${p.demand.max_kva_at ? sast(p.demand.max_kva_at) : '–'} SAST (30-minute basis)${p.demand.contracted_mdi_kva ? `, contracted ${p.demand.contracted_mdi_kva} kVA` : ''}; highest instantaneous ${p.instantaneous.max_kw ?? '–'} kW.`);
         }
         if (/harmonic|thd|distortion/.test(s)) {
             ev.push('power_quality.thd_v');

@@ -624,13 +624,13 @@ export default function HealthCheckReport({
             <div className="mt-10 pt-4 border-t border-slate-300 flex items-end justify-between text-xs text-slate-500">
                 <div>
                     <p className="font-semibold text-slate-700">
-                        {brand?.brand_name || "Grid-IQ"} Power Quality Intelligence
+                        {brand?.brand_name || "GridIQ"} Power Quality Intelligence
                     </p>
                     <p>
                         {brand?.brand_footer || "grid-iq.co.za"} · Confidential — prepared for {report.site_name}
                     </p>
                     {brand?.brand_name && (
-                        <p className="text-[10px] text-slate-400 mt-0.5">Analysis powered by Grid-IQ</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Analysis powered by GridIQ</p>
                     )}
                 </div>
                 <p>Continuous monitoring · next assessment in {report.period_days} days</p>

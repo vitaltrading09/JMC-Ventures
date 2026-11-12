@@ -432,6 +432,15 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         const member = await made.json();
         assert.strictEqual(member.tenant_id, A.tenant);
         assert.strictEqual((await authCall(A.adminToken, 'POST', '/users', { email: `eng.${run}@t.local`, password: 'pw-123456', role: 'engineer' })).status, 403);
+        // Without a password the user is invited: passwordless, with an invitation in the outbox.
+        const inv = await authCall(A.adminToken, 'POST', '/users', { email: `Invitee.${run}@t.local`, role: 'client_viewer' });
+        assert.strictEqual(inv.status, 201);
+        const invited = await inv.json();
+        assert.strictEqual(invited.invited, true);
+        assert.strictEqual(invited.email, `invitee.${run}@t.local`);
+        assert.strictEqual((await q(`SELECT password_hash FROM users WHERE id = $1`, [invited.id]))[0].password_hash, '!passwordless');
+        assert.strictEqual((await q(`SELECT count(*)::int AS n FROM email_outbox WHERE dedupe_key = $1 AND purpose = 'invite'`, [`invite:${invited.id}`]))[0].n, 1);
+        assert.strictEqual((await authCall(A.adminToken, 'POST', '/users', { email: `short.${run}@t.local`, password: 'short', role: 'client_viewer' })).status, 400);
         // Changing and removing: own tenant only; not itself.
         assert.strictEqual((await authCall(A.adminToken, 'PATCH', `/users/${member.id}`, { role: 'client_admin' })).status, 200);
         const bUser = (await q(`SELECT id FROM users WHERE tenant_id = $1 LIMIT 1`, [B.tenant]))[0].id;

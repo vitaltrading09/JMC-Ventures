@@ -1365,7 +1365,7 @@ app.get('/meters/:id/compliance/history', authenticateToken, meterParam(pool, { 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Value ledger — what Grid-IQ has caught for this client. Shown when the
+// Value ledger — what GridIQ has caught for this client. Shown when the
 // invoice lands: the running record of monitoring actually earning its keep.
 // ─────────────────────────────────────────────────────────────────────────────
 // ── Maximum demand, on the basis the utility actually bills ──────────────────

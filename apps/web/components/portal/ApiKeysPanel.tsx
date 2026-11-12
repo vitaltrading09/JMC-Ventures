@@ -1,7 +1,7 @@
 "use client";
 
 // Portal Settings → API keys (Phase 9). A client admin creates keys for its
-// own systems (BMS, BI tools). The key is shown once; Grid-IQ keeps a hash.
+// own systems (BMS, BI tools). The key is shown once; GridIQ keeps a hash.
 // Each key has scopes and may be limited to some projects. Revoking takes
 // effect within a minute (the gateway caches a check for 60 s).
 
@@ -46,11 +46,11 @@ export function ApiKeysPanel() {
     const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
 
     return (
-        <Panel title="API keys" subtitle="For your own systems to read your data through the Grid-IQ API."
+        <Panel title="API keys" subtitle="For your own systems to read your data through the GridIQ API."
             actions={<a className="text-sm text-accent hover:underline" href={apiUrl("/docs/")} target="_blank" rel="noreferrer">API documentation</a>}>
             {created && (
                 <div className="mb-4 rounded border border-amber-500/40 bg-amber-500/10 p-3 space-y-2">
-                    <p className="text-sm text-amber-200">Copy the key for “{created.name}” now. It is shown only once; Grid-IQ keeps only a fingerprint of it.</p>
+                    <p className="text-sm text-amber-200">Copy the key for “{created.name}” now. It is shown only once; GridIQ keeps only a fingerprint of it.</p>
                     <div className="flex gap-2">
                         <code className="flex-1 break-all rounded bg-canvas px-2 py-1 text-xs text-ink-2">{created.key}</code>
                         <Button variant="secondary" onClick={() => { navigator.clipboard?.writeText(created.key).then(() => setCopied(true)).catch(() => {}); }}>{copied ? "Copied" : "Copy"}</Button>

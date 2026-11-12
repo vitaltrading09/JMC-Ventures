@@ -29,7 +29,7 @@ export default function ReviewPage() {
     const [tab, setTab] = useState<"findings" | "reports">("findings");
     return (
         <div>
-            <PageHeader title="Review" subtitle="Nothing reaches a client until it is published here. Internal notes never leave Grid-IQ." />
+            <PageHeader title="Review" subtitle="Nothing reaches a client until it is published here. Internal notes never leave GridIQ." />
             <div className="flex gap-2 mb-5">
                 {(["findings", "reports"] as const).map((t) => (
                     <button key={t} onClick={() => setTab(t)}

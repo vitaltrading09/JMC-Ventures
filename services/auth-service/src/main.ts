@@ -319,8 +319,13 @@ app.post('/users', requireUserAdmin, async (req: any, res) => {
     return res.status(403).json({ error: 'A client admin can create client_admin or client_viewer users only' });
   }
 
-  if (!email || !password || !tenant_id) {
-    return res.status(400).json({ error: 'Email, password, and tenant_id are required' });
+  // Without a password the user is invited: they sign in with an emailed code
+  // (passwordless, like assessment recipients). A password stays optional for staff tooling.
+  if (!email || !tenant_id) {
+    return res.status(400).json({ error: 'Email and tenant_id are required' });
+  }
+  if (password !== undefined && password !== null && password !== '' && String(password).length < 8) {
+    return res.status(400).json({ error: 'A password needs at least 8 characters (or leave it out to send an invitation)' });
   }
   if (!role) {
     return res.status(400).json({ error: `role must be one of ${[...INTERNAL_ROLES, ...CLIENT_ROLES].join(', ')}` });
@@ -344,15 +349,14 @@ app.post('/users', requireUserAdmin, async (req: any, res) => {
     }
 
     // Check if user exists
-    const existing = await client.query('SELECT id FROM users WHERE email = $1', [email]);
+    const existing = await client.query('SELECT id FROM users WHERE lower(email) = lower($1)', [email]);
     if (existing.rows.length > 0) {
       client.release();
       return res.status(409).json({ error: 'Email already exists' });
     }
 
-    // Hash Password
-    const saltRounds = 10;
-    const password_hash = await bcrypt.hash(password, saltRounds);
+    const invited = !password;
+    const password_hash = invited ? '!passwordless' : await bcrypt.hash(String(password), 10);
 
     const query = `
       -- (users has no full_name column; inserting one made this endpoint always fail)
@@ -360,10 +364,26 @@ app.post('/users', requireUserAdmin, async (req: any, res) => {
       VALUES ($1, $2, $3, $4)
       RETURNING id, email, role, tenant_id, created_at
     `;
-    const result = await client.query(query, [email, password_hash, role, tenant_id]);
+    const result = await client.query(query, [String(email).trim().toLowerCase(), password_hash, role, tenant_id]);
+    const user = result.rows[0];
+    if (invited) {
+      // Sent by the jobs role from the shared outbox (EMAIL_PROVIDER).
+      const appUrl = (process.env.FRONTEND_URL || 'https://localhost').replace(/\/$/, '');
+      const by = await client.query(`SELECT u.email, COALESCE(t.brand_name, t.name) AS org FROM users u JOIN tenants t ON t.id = $2 WHERE u.id = $1`, [a.userId ?? null, tenant_id]);
+      const org = by.rows[0]?.org ?? 'your organisation';
+      await client.query(`INSERT INTO email_outbox (dedupe_key, to_email, subject, body_text, purpose)
+                          VALUES ($1, $2, $3, $4, 'invite') ON CONFLICT (dedupe_key) DO NOTHING`,
+        [`invite:${user.id}`, user.email, `You have been invited to GridIQ (${org})`,
+         `${by.rows[0]?.email ?? 'An administrator'} has added you to GridIQ for ${org}.
 
+`
+         + `Sign in at ${appUrl}/login with this email address; GridIQ emails you a one-time code each time, so there is no password to remember.
+
+`
+         + `You see a site's measurements while you have access to its assessment.`]);
+    }
     client.release();
-    res.status(201).json(result.rows[0]);
+    res.status(201).json({ ...user, invited });
   } catch (err) {
     console.error('Error creating user:', err);
     res.status(500).json({ error: 'Internal server error' });

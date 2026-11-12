@@ -39,7 +39,10 @@ export const CLOCK_DRIFT_MAX_S = 120;
 const PHASES: Array<['a' | 'b' | 'c', string]> = [['a', 'L1'], ['b', 'L2'], ['c', 'L3']];
 
 const num = (v: unknown): number | null => (v === null || v === undefined || v === '' ? null : Number(v));
-const hhmm = (d: Date) => d.toISOString().slice(11, 16);
+/** Times in alert text are site time (SAST, UTC+2, no DST); keys and data stay UTC. */
+const SAST_MS = 2 * 3_600_000;
+const hhmm = (d: Date) => new Date(d.getTime() + SAST_MS).toISOString().slice(11, 16);
+const sastDateTime = (d: Date) => new Date(d.getTime() + SAST_MS).toISOString().slice(0, 16).replace('T', ' ');
 const hourKey = (d: Date) => d.toISOString().slice(0, 13);
 
 // ── Pure evaluation (unit-tested) ───────────────────────────────────────────
@@ -60,7 +63,7 @@ export function evaluateTenMinute(row: TenMinuteRow): AlertCandidate[] {
     // An interval containing an interruption is not a voltage-quality value.
     if (Number(row.n_interrupt) > 0) return out;
     const start = new Date(row.bucket);
-    const span = `${hhmm(start)}–${hhmm(new Date(start.getTime() + 600_000))} UTC`;
+    const span = `${hhmm(start)}–${hhmm(new Date(start.getTime() + 600_000))} SAST`;
     const minV = num(row.alert_min_v) ?? NRS048_DEFAULTS.minV;
     const maxV = num(row.alert_max_v) ?? NRS048_DEFAULTS.maxV;
     const maxThd = num(row.alert_max_thd) ?? DEFAULT_THD_V_LIMIT;
@@ -114,7 +117,7 @@ export function evaluateDemand(row: DemandRow): AlertCandidate[] {
     // Under 80 % of the interval covered: the average is not the billed figure.
     if (Number(row.minutes) < 24) return out;
     const start = new Date(row.bucket);
-    const span = `${hhmm(start)}–${hhmm(new Date(start.getTime() + 1_800_000))} UTC`;
+    const span = `${hhmm(start)}–${hhmm(new Date(start.getTime() + 1_800_000))} SAST`;
     const base = { tenantId: row.tenant_id, meterId: row.meter_id, dedupeKey: start.toISOString() };
     const kva = num(row.kva_demand), mdi = num(row.contracted_mdi_kva);
     if (kva !== null && mdi !== null && mdi > 0) {
@@ -149,7 +152,7 @@ export function evaluateInstantMdi(row: InstantRow): AlertCandidate[] {
     return [{
         tenantId: row.tenant_id, meterId: row.meter_id, type: 'MDI_INSTANT', severity: 'WARNING',
         dedupeKey: hourKey(start),
-        message: `Instantaneous load reached ${kva.toFixed(1)} kVA at ${hhmm(start)} UTC (highest 1-second reading in that minute) — above the ${mdi} kVA contracted MDI (${((kva / mdi) * 100).toFixed(0)}%). `
+        message: `Instantaneous load reached ${kva.toFixed(1)} kVA at ${hhmm(start)} SAST (highest 1-second reading in that minute) — above the ${mdi} kVA contracted MDI (${((kva / mdi) * 100).toFixed(0)}%). `
             + `Billed demand is the highest 30-minute average, so check whether this was sustained.`,
     }];
 }
@@ -180,7 +183,7 @@ export function evaluateEvent(row: EventRow, defaultMinS: number): AlertCandidat
         // An ongoing event that later ends is still the same event: one alert.
         dedupeKey: row.id,
         message: `${EVENT_LABEL[row.type] ?? row.type} on ${CHANNEL_LABEL[row.channel] ?? row.channel} ${ongoing ? 'ongoing for' : 'lasting'} ${formatDuration(dur)} `
-            + `from ${hhmm(new Date(row.started_at))} UTC: ${low ? 'lowest' : 'highest'} ${Number(row.extreme_value).toFixed(unit === 'Hz' ? 2 : 1)} ${unit} `
+            + `from ${hhmm(new Date(row.started_at))} SAST: ${low ? 'lowest' : 'highest'} ${Number(row.extreme_value).toFixed(unit === 'Hz' ? 2 : 1)} ${unit} `
             + `against the ${Number(row.threshold)} ${unit} limit (event duration from 1-second readings; sub-second dips are not resolved).`,
     }];
 }
@@ -290,7 +293,7 @@ export function evaluateHealth(row: HealthRow, now: Date, silentMinutes: number)
         out.push({ ...base, type: 'METER_SILENT', severity: 'WARNING',
             // One alert per silence: keyed on the last reading before it.
             dedupeKey: `silent:${last.toISOString()}`,
-            message: `${row.meter_name} has sent no readings for ${formatDuration(mins * 60)} (last reading ${last.toISOString().slice(0, 16).replace('T', ' ')} UTC). `
+            message: `${row.meter_name} has sent no readings for ${formatDuration(mins * 60)} (last reading ${sastDateTime(last)} SAST). `
                 + `Check the meter's power, network/SIM and MQTT credentials.` });
         return out; // coverage and drift say nothing new about a silent meter
     }
@@ -301,7 +304,7 @@ export function evaluateHealth(row: HealthRow, now: Date, silentMinutes: number)
         const coverage = samples / expected;
         if (coverage < COVERAGE_MIN && expected >= 10) {
             out.push({ ...base, type: 'LOW_COVERAGE', severity: 'WARNING', dedupeKey: hourKey(lastHour),
-                message: `${row.meter_name}: ${(coverage * 100).toFixed(0)}% data coverage in the hour from ${hhmm(lastHour)} UTC `
+                message: `${row.meter_name}: ${(coverage * 100).toFixed(0)}% data coverage in the hour from ${hhmm(lastHour)} SAST `
                     + `(${Math.round(samples)} of about ${Math.round(expected)} readings at its usual ${spacing.toFixed(spacing < 10 ? 1 : 0)} s interval). `
                     + `Gaps reduce the accuracy of demand and compliance figures.` });
         }
@@ -318,7 +321,7 @@ export function evaluateHealth(row: HealthRow, now: Date, silentMinutes: number)
     const c = num(row.conflicts) ?? 0, cPrev = num(row.conflicts_prev) ?? 0;
     if (c >= 60 && c > 2 * cPrev) {
         out.push({ ...base, type: 'CONFLICTS_RISING', severity: 'WARNING', dedupeKey: hourKey(lastHour),
-            message: `${row.meter_name}: ${c} readings in the hour from ${hhmm(lastHour)} UTC were discarded as duplicate timestamps (previous hour: ${cPrev}). `
+            message: `${row.meter_name}: ${c} readings in the hour from ${hhmm(lastHour)} SAST were discarded as duplicate timestamps (previous hour: ${cPrev}). `
                 + `Expected after a store-and-forward replay; if it keeps rising, the meter clock may be frozen.` });
     }
     return out;

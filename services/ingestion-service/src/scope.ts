@@ -98,7 +98,7 @@ export const canWrite = (s: Scope) => s.isInternal || s.role === 'client_admin';
 
 /**
  * Non-GET routes a client_viewer may still call: asking about a report,
- * marking an alert read, asking Grid-IQ to follow up a recommendation,
+ * marking an alert read, asking GridIQ to follow up a recommendation,
  * requesting a data export (it only reads; an API key's token is a viewer's).
  */
 const VIEWER_ALLOWED = [

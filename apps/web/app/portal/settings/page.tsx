@@ -52,16 +52,17 @@ function Branding({ editable }: { editable: boolean }) {
 function Users({ editable }: { editable: boolean }) {
     const qc = useQueryClient();
     const q = useQuery({ queryKey: ["users"], enabled: editable, queryFn: () => apiGet<User[]>("/auth/users") });
-    const [f, setF] = useState({ email: "", password: "", role: "client_viewer" });
+    const [f, setF] = useState({ email: "", role: "client_viewer" });
+    const [sent, setSent] = useState<string | null>(null);
     const refresh = () => qc.invalidateQueries({ queryKey: ["users"] });
-    const add = useMutation({ mutationFn: () => apiSend("POST", "/auth/users", f), onSuccess: () => { setF({ email: "", password: "", role: "client_viewer" }); refresh(); } });
+    const add = useMutation({ mutationFn: () => apiSend("POST", "/auth/users", f), onSuccess: () => { setSent(f.email); setF({ email: "", role: "client_viewer" }); refresh(); } });
     const change = useMutation({ mutationFn: ({ id, role }: { id: string; role: string }) => apiSend("PATCH", `/auth/users/${id}`, { role }), onSuccess: refresh });
     const remove = useMutation({ mutationFn: (id: string) => apiSend("DELETE", `/auth/users/${id}`), onSuccess: refresh });
     const me = (() => { try { return JSON.parse(localStorage.getItem("user") || "null")?.id; } catch { return null; } })();
 
     if (!editable) return <Panel title="Users"><Empty>Your team's users are managed by an admin on your team.</Empty></Panel>;
     return (
-        <Panel title="Users" subtitle="Admins can change settings and create share links; viewers can look but not change anything.">
+        <Panel title="Users" subtitle="Admins can change settings, track findings and create share links; viewers can look but not change anything. Everyone signs in with a one-time code sent to their email.">
             {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : (
                 <Table head={["Email", "Role", "Added", ""]}>
                     {q.data!.map((u) => (
@@ -82,16 +83,16 @@ function Users({ editable }: { editable: boolean }) {
                     ))}
                 </Table>
             )}
-            <form className="grid md:grid-cols-4 gap-3 items-end mt-4 pt-4 border-t border-line" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
+            <form className="grid md:grid-cols-3 gap-3 items-end mt-4 pt-4 border-t border-line" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
                 <Field label="Email"><input type="email" className={inputClass} value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} required /></Field>
-                <Field label="Temporary password" hint="Share it with them privately"><input type="password" autoComplete="new-password" className={inputClass} value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} required minLength={8} /></Field>
                 <Field label="Role">
                     <select className={inputClass} value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
                         {Object.entries(ROLE_NAME).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                     </select>
                 </Field>
-                <Button type="submit" disabled={add.isPending}>Add user</Button>
-                <div className="md:col-span-4"><ErrorBox error={add.error ?? change.error ?? remove.error} /></div>
+                <Button type="submit" disabled={add.isPending}>Send invitation</Button>
+                {sent && <p className="md:col-span-3 text-sm text-ok" role="status">Invitation sent to {sent}. They sign in with a one-time code; they see a site's data while they have access to its assessment.</p>}
+                <div className="md:col-span-3"><ErrorBox error={add.error ?? change.error ?? remove.error} /></div>
             </form>
         </Panel>
     );

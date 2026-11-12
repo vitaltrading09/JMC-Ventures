@@ -85,7 +85,7 @@ export function apiKeyRouter(pool: Pool, requireUserAdmin: (req: any, res: any, 
                 RETURNING id, tenant_id, name, prefix, scopes, project_ids, created_at`,
                 [tenantId, name, prefix, sha256(key), scopes, projects && projects.length ? projects : null, a.userId])).rows[0];
             await audit(a, 'api_key.create', row.id, { name, prefix, scopes, project_ids: row.project_ids });
-            res.status(201).json({ ...row, key, note: 'Shown once. Store it now; Grid-IQ keeps only a hash.' });
+            res.status(201).json({ ...row, key, note: 'Shown once. Store it now; GridIQ keeps only a hash.' });
         } catch (e) {
             console.error('Create key error:', e);
             res.status(500).json({ error: 'Internal server error' });
