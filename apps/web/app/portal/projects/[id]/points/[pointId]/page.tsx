@@ -7,7 +7,7 @@ import Link from "next/link";
 import { useCallback } from "react";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, FileBarChart } from "lucide-react";
 import { apiGet, fmtDate } from "@/lib/api";
 import { ROLE_LABEL } from "@/lib/ops";
 import type { PortalProjectDetail } from "@/lib/portal";
@@ -32,13 +32,21 @@ export default function PortalPointPage() {
 
     return (
         <div className="space-y-5">
-            <Link href={`/portal/projects/${id}`} className="inline-flex items-center text-sm text-slate-400 hover:text-white"><ArrowLeft className="h-4 w-4 mr-1" />{project.data.name}</Link>
+            <Link href={`/portal/projects/${id}`} className="inline-flex items-center text-sm text-muted hover:text-ink"><ArrowLeft className="h-4 w-4 mr-1" />{project.data.name}</Link>
             <PageHeader title={point.name}
                 subtitle={`${ROLE_LABEL[point.role] ?? point.role}${point.nominal_voltage_v ? ` · ${point.nominal_voltage_v} V nominal` : ""}${point.ct_primary_a ? ` · CT ${point.ct_primary_a} A` : ""}${point.metered_since ? ` · metered since ${fmtDate(point.metered_since)}` : ""}`}
-                actions={point.metered ? <Badge tone="green">metered</Badge> : <Badge>not metered</Badge>} />
+                actions={<div className="flex items-center gap-2">
+                    {point.metered && project.data.telemetry_visible && (
+                        <Link href={`/portal/projects/${id}/points/${pointId}/report`}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 px-3 py-1.5 text-sm font-medium text-white">
+                            <FileBarChart className="h-4 w-4" />Metering report
+                        </Link>
+                    )}
+                    {point.metered ? <Badge tone="green">metered</Badge> : <Badge>not metered</Badge>}
+                </div>} />
             {project.data.telemetry_visible
                 ? <MeasurementChart title={point.name} load={load} />
-                : <ErrorBox error="Live data for this project is shared through published reports." />}
+                : <ErrorBox error="No live assessment: readings for this point are available only during your assessment period." />}
         </div>
     );
 }

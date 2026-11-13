@@ -49,7 +49,7 @@ function Wizard() {
         queryFn: () => apiGet<{ points: Point[] }>(`/ingestion/projects/${projectId}`),
     });
 
-    const available = (devices.data ?? []).filter((d) => d.status === "in_stock" || d.status === "maintenance" || d.id === deviceId);
+    const available = (devices.data ?? []).filter((d) => d.status === "available" || d.status === "reserved" || d.status === "maintenance" || d.id === deviceId);
     const device = available.find((d) => d.id === deviceId);
     const freePoints = (project.data?.points ?? []).filter((p) => !p.archived_at && !p.deployment_id);
     const step = !deviceId ? 0 : !tenantId ? 1 : !projectId ? 2 : !pointId ? 3 : 4;
@@ -79,7 +79,7 @@ function Wizard() {
 
     return (
         <div className="max-w-3xl">
-            <PageHeader title="Install a box" subtitle="Record where a box is connected. Readings are attributed from the install time; the commissioning checklist runs for 15 minutes." />
+            <PageHeader title="Deploy a meter" subtitle="Record where a meter is connected. Readings are attributed from the install time; the commissioning checklist runs for 15 minutes." />
             <ol className="flex flex-wrap gap-2 mb-6">
                 {STEPS.map((s, i) => (
                     <li key={s} className={`flex items-center gap-1.5 text-sm px-3 py-1 rounded-full border ${
@@ -91,7 +91,7 @@ function Wizard() {
 
             <div className="space-y-4">
                 <Panel title="1. Box">
-                    {devices.isLoading ? <Loading /> : available.length === 0 ? <Empty>No box in stock. Add one on the Fleet page.</Empty> : (
+                    {devices.isLoading ? <Loading /> : available.length === 0 ? <Empty>No meter in stock. Add one on the Fleet page.</Empty> : (
                         <select className={inputClass} value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
                             <option value="">Choose a box…</option>
                             {available.map((d) => <option key={d.id} value={d.id}>{d.code ?? d.name} {d.model ? `· ${d.model}` : ""} ({d.status.replace("_", " ")})</option>)}
@@ -128,7 +128,7 @@ function Wizard() {
                 )}
 
                 {projectId && (
-                    <Panel title="4. Measurement point" subtitle="Where on the site the box is connected. A point holds one box at a time.">
+                    <Panel title="4. Measurement point" subtitle="Where on the site the meter is connected. A point holds one meter at a time.">
                         {projectId !== "new" && (
                             <select className={inputClass} value={pointId} onChange={(e) => setPointId(e.target.value)}>
                                 <option value="">Choose a point…</option>

@@ -34,6 +34,32 @@ x-ingestion-env: &ingestion-env
   COMPRESS_AFTER_DAYS: ${COMPRESS_AFTER_DAYS:-15}
   # Broker portfolio routes and the renewal sweep (kept, off by default).
   FEATURE_BROKER: ${FEATURE_BROKER:-false}
+  # Clients also see draft (unreviewed) findings, labelled as drafts (owner's
+  # decision 2026-11). false = published findings only, the strict review gate.
+  CLIENT_SEES_DRAFT_FINDINGS: ${CLIENT_SEES_DRAFT_FINDINGS:-true}
+  # GridIQ assessments (2026-11-11). Links in emails point at the web app.
+  FRONTEND_URL: https://${APP_DOMAIN}
+  ASSESSMENT_LATE_DATA_HOURS: ${ASSESSMENT_LATE_DATA_HOURS:-2}
+  # Email: smtp (SMTP_URL, EMAIL_FROM) | file (dev: .eml files in EMAIL_DIR) | unset = not
+  # configured (messages fail visibly in the ops console).
+  EMAIL_PROVIDER: ${EMAIL_PROVIDER:-}
+  EMAIL_FROM: ${EMAIL_FROM:-}
+  OPS_NOTIFY_EMAIL: ${OPS_NOTIFY_EMAIL:-}
+  SMTP_URL: ${SMTP_URL:-}
+  EMAIL_DIR: /data/outbox
+  # Consultant: anthropic | openai | none (default: whichever key is set).
+  AI_PROVIDER: ${AI_PROVIDER:-}
+  AI_MODEL: ${AI_MODEL:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  AI_MESSAGES_PER_HOUR: ${AI_MESSAGES_PER_HOUR:-30}
+  # PV / battery sizing in the metering report (outside the GridIQ product; off).
+  FEATURE_TOOLS: ${FEATURE_TOOLS:-false}
+  # Report PDFs, data packages, exports: local (UPLOAD_DIR/EXPORT_DIR) or r2.
+  FILE_STORE: ${FILE_STORE:-local}
+  R2_ENDPOINT: ${R2_ENDPOINT:-}
+  R2_BUCKET: ${R2_BUCKET:-}
+  R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
 
 services:
   caddy:
@@ -68,7 +94,9 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         # Baked into the client bundle; the browser calls the API via Caddy.
-        NEXT_PUBLIC_API_URL: https://${APP_DOMAIN}/api
+        # WEB_API_URL=/api (relative, same origin) lets one build serve any
+        # host name, e.g. a quick tunnel's random address (profile "tunnel").
+        NEXT_PUBLIC_API_URL: ${WEB_API_URL:-https://${APP_DOMAIN}/api}
         # The broker host shown to installers on the Add Meter screen.
         NEXT_PUBLIC_MQTT_HOST: ${MQTT_DOMAIN}
         NEXT_PUBLIC_FEATURE_BROKER: ${FEATURE_BROKER:-false}
@@ -106,6 +134,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       # Served over HTTPS by Caddy, so the auth cookie is Secure.
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      # Sign-in codes link back to the web app; staff must use TOTP when true.
+      FRONTEND_URL: https://${APP_DOMAIN}
+      STAFF_MFA_REQUIRED: ${STAFF_MFA_REQUIRED:-false}
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -176,6 +207,9 @@ services:
       EVENT_ALERT_MIN_SECONDS: ${EVENT_ALERT_MIN_SECONDS:-10}
     volumes:
       - ${DATA_DIR:-./.data}/exports:/data/exports
+      # Close-out writes report PDFs (uploads) and the dev email adapter writes .eml files.
+      - ${DATA_DIR:-./.data}/uploads:/data/uploads
+      - ${DATA_DIR:-./.data}/outbox:/data/outbox
     depends_on:
       timescaledb:
         condition: service_healthy
@@ -199,6 +233,46 @@ services:
     depends_on:
       timescaledb:
         condition: service_healthy
+
+  # Live demo feed (profile "demo", local dev only): the five demo meters
+  # publish over MQTT every few seconds, through the real ingest path
+  # (src/demo-feed.ts). Needs DEMO_FEED_ALLOW=true and the demo-feed broker
+  # user (CLAUDE.md, "Live demo feed"). Never on a server.
+  demo-feed:
+    <<: *ingestion-image
+    profiles: [demo]
+    restart: unless-stopped
+    command: ["node", "dist/demo-feed.js"]
+    healthcheck:
+      disable: true
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB}
+      # Its own opt-in, separate from the seed scripts' ALLOW_DEMO_SEED.
+      ALLOW_DEMO_SEED: ${DEMO_FEED_ALLOW:-false}
+      MQTT_BROKER_URL: mqtts://${MQTT_DOMAIN}:8883
+      MQTT_CA_CERT: ${MQTT_CA_CERT:-}
+      MQTT_TLS_REJECT_UNAUTHORIZED: ${MQTT_TLS_REJECT_UNAUTHORIZED:-true}
+      DEMO_FEED_MQTT_USERNAME: ${DEMO_FEED_MQTT_USERNAME:-demo-feed}
+      DEMO_FEED_MQTT_PASSWORD: ${DEMO_FEED_MQTT_PASSWORD:-}
+      DEMO_FEED_INTERVAL_S: ${DEMO_FEED_INTERVAL_S:-5}
+    volumes:
+      - ${DATA_DIR:-./.data}/mqtt-certs:/mqtt-certs:ro
+    depends_on:
+      - mosquitto
+      - ingest
+
+  # Cloudflare quick tunnel (profile "tunnel", local testing only): a temporary
+  # public https://<random>.trycloudflare.com address for this stack, with no
+  # Cloudflare account, domain or open port. Web only; meters cannot use it.
+  # Needs WEB_API_URL=/api in .env and a rebuilt web image. The address is in
+  # the logs and changes on every start:
+  #   docker compose --profile tunnel up -d tunnel && bash deploy/tunnel-url.sh
+  tunnel:
+    image: cloudflare/cloudflared:2025.11.1
+    profiles: [tunnel]
+    command: tunnel --no-autoupdate --url http://caddy:8080
+    depends_on:
+      - caddy
 
   # Tools (profile "tools": never started by `up`). The S3 client that
   # deploy/scripts/backup.sh and restore-drill.sh run with `compose run`.

@@ -1,17 +1,33 @@
-{$APP_DOMAIN} {
+{
+	# The quick-tunnel listener below sits behind cloudflared on the compose
+	# network: keep the X-Forwarded-Proto/For it sends (https, the visitor's IP)
+	# so Next.js redirects stay on https and on the tunnel's host name.
+	servers :8080 {
+		trusted_proxies static private_ranges
+	}
+}
+
+(app) {
 	encode zstd gzip
 
-	# The Next.js AI chat route lives under /api too; it belongs to web, not
-	# the gateway. Must come before the /api/* block.
-	handle /api/chat* {
-		reverse_proxy web:3000
-	}
-
+	# Every /api path is the gateway (the consultant is /api/ingestion/assessments/:id/chat).
 	handle_path /api/* {
 		reverse_proxy gateway:8081
 	}
 
 	reverse_proxy web:3000
+}
+
+{$APP_DOMAIN} {
+	import app
+}
+
+# Origin for a Cloudflare quick tunnel (compose profile "tunnel", local
+# testing only). Plain HTTP on the compose network, never published: the
+# public side is cloudflared's https://<random>.trycloudflare.com, whatever
+# host name it brings. Needs the web image built with WEB_API_URL=/api.
+http://:8080 {
+	import app
 }
 
 # Exists only so Caddy obtains and renews the certificate Mosquitto uses

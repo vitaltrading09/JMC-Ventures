@@ -16,8 +16,10 @@ import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
 import { randomBytes } from 'crypto';
-import { requireInternal, tenantSql, forClient, withScope } from './scope';
+import { requireInternal, tenantSql, forClient, withScope, deliverySql } from './scope';
 import { uploadDir, resolveStoredUploadPath } from './roles';
+import { onAssessmentReportIssued } from './reports/closeout';
+import { store, pdfKey } from './storage';
 
 export type ReviewStatus = 'draft' | 'in_review' | 'published' | 'dismissed';
 const REVIEW_STATUSES: ReviewStatus[] = ['draft', 'in_review', 'published', 'dismissed'];
@@ -137,7 +139,7 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
     r.get('/reports', authenticate, handle(async (req, res) => {
         const params: unknown[] = [];
         const where = [tenantSql(req.scope, 'p.tenant_id', params)];
-        if (!req.scope.isInternal) where.push(`rp.status = 'published'`);
+        if (!req.scope.isInternal) where.push(`rp.status = 'published'`, deliverySql(req.scope, 'p'));
         if (req.query.project_id) {
             if (!UUID.test(String(req.query.project_id))) return res.json([]);
             params.push(req.query.project_id);
@@ -151,7 +153,7 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         if (!UUID.test(req.params.id)) return res.status(404).json({ error: 'Not found' });
         const params: unknown[] = [req.params.id];
         const where = [`rp.id = $1`, tenantSql(req.scope, 'p.tenant_id', params)];
-        if (!req.scope.isInternal) where.push(`rp.status = 'published'`);
+        if (!req.scope.isInternal) where.push(`rp.status = 'published'`, deliverySql(req.scope, 'p'));
         const row = (await pool.query(`${reportSelect} WHERE ${where.join(' AND ')}`, params)).rows[0];
         if (!row) return res.status(404).json({ error: 'Not found' });
         res.json(forClient(req.scope, row));
@@ -228,6 +230,7 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         if (head.toString('latin1') !== '%PDF-') { fs.rmSync(req.file.path, { force: true }); return res.status(400).json({ error: 'Not a PDF file' }); }
         const stored = `report-pdfs/${req.params.id}.pdf`;
         fs.renameSync(req.file.path, path.join(pdfDir, `${req.params.id}.pdf`));
+        await store().putFile('uploads', stored, path.join(pdfDir, `${req.params.id}.pdf`), 'application/pdf');
         const row = (await pool.query(`UPDATE reports SET pdf_path = $2 WHERE id = $1 RETURNING *`, [req.params.id, stored])).rows[0];
         await audit(pool, req.scope, 'report.attach_pdf', 'report', row.id, { pdf_path: cur.pdf_path }, { pdf_path: stored, bytes: req.file.size });
         res.json(row);
@@ -237,13 +240,13 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
         if (!UUID.test(req.params.id)) return res.status(404).json({ error: 'Not found' });
         const params: unknown[] = [req.params.id];
         const where = [`rp.id = $1`, tenantSql(req.scope, 'p.tenant_id', params)];
-        if (!req.scope.isInternal) where.push(`rp.status = 'published'`);
+        if (!req.scope.isInternal) where.push(`rp.status = 'published'`, deliverySql(req.scope, 'p'));
         const row = (await pool.query(`${reportSelect} WHERE ${where.join(' AND ')}`, params)).rows[0];
-        const file = row?.pdf_path ? resolveStoredUploadPath(row.pdf_path) : null;
-        if (!row || !file || !fs.existsSync(file)) return res.status(404).json({ error: 'No PDF attached to this report' });
+        const body = row?.pdf_path ? await store().stream('uploads', pdfKey(row.pdf_path)) : null;
+        if (!row || !body) return res.status(404).json({ error: 'No PDF attached to this report' });
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="report-${row.id}.pdf"`);
-        fs.createReadStream(file).pipe(res);
+        body.pipe(res);
     }));
 
     for (const action of ['approve', 'publish', 'withdraw'] as ReportAction[]) {
@@ -257,6 +260,10 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
                     SELECT rp.* FROM reports rp JOIN projects p ON p.id = rp.project_id
                     WHERE rp.id = $1 AND ${tenantSql(req.scope, 'p.tenant_id', params)} FOR UPDATE OF rp`, params)).rows[0];
                 if (!before) { await c.query('ROLLBACK'); return res.status(404).json({ error: 'Not found' }); }
+                if (action === 'withdraw' && before.dataset_sha256 && before.published_at) {
+                    await c.query('ROLLBACK');
+                    return res.status(409).json({ error: 'An issued assessment report cannot be withdrawn; issue a corrected revision instead' });
+                }
                 const to = reportTransition(before.status, action);
                 if (!to) { await c.query('ROLLBACK'); return res.status(409).json({ error: `Cannot ${action} a ${before.status} report` }); }
                 const set = action === 'approve' ? `, approved_by = $3, approved_at = NOW()`
@@ -268,6 +275,9 @@ export function reviewRouter(pool: Pool, authenticateJwt: (req: any, res: any, n
                 await audit(c, req.scope, `report.${action}`, 'report', after.id,
                     { status: before.status }, { status: to }, req.body?.reason ?? null);
                 await c.query('COMMIT');
+                // An assessment report issued after review: supersede the previous
+                // revision, refresh the package and send it to the recipients.
+                if (action === 'publish' && after.assessment_id) await onAssessmentReportIssued(pool, after).catch((e) => console.error('[review] delivery after publish failed:', e));
                 res.json(after);
             } catch (e) {
                 await c.query('ROLLBACK').catch(() => {});

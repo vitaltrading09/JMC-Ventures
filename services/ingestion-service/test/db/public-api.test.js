@@ -77,8 +77,9 @@ test('public API v1', { skip: !url && 'TEST_DATABASE_URL not set', timeout: 300_
     const C = await tenant('C'), D = await tenant('D'), I = await tenant('I', 'internal');
     const user = async (tid, role) => (await q(`INSERT INTO users (tenant_id, email, password_hash, role) VALUES ($1, $2, 'x', $3) RETURNING id`,
         [tid, `${role}.${crypto.randomBytes(3).toString('hex')}.${run}@test.local`, role]))[0].id;
-    const cAdmin = jwt.sign({ userId: await user(C, 'client_admin'), tenantId: C, role: 'client_admin' }, SECRET);
-    const cViewer = jwt.sign({ userId: await user(C, 'client_viewer'), tenantId: C, role: 'client_viewer' }, SECRET);
+    const cAdminId = await user(C, 'client_admin'), cViewerId = await user(C, 'client_viewer');
+    const cAdmin = jwt.sign({ userId: cAdminId, tenantId: C, role: 'client_admin' }, SECRET);
+    const cViewer = jwt.sign({ userId: cViewerId, tenantId: C, role: 'client_viewer' }, SECRET);
     const dAdmin = jwt.sign({ userId: await user(D, 'client_admin'), tenantId: D, role: 'client_admin' }, SECRET);
     const ops = jwt.sign({ userId: await user(I, 'super_admin'), tenantId: I, role: 'super_admin' }, SECRET);
 
@@ -101,6 +102,12 @@ test('public API v1', { skip: !url && 'TEST_DATABASE_URL not set', timeout: 300_
             [new Date(ts), box, 1000 + (20 * (ts - t0)) / H]);
     }
     await refreshAggregates(pool, new Date(t0 - 86_400_000), new Date(t0 + 86_400_000));
+
+    // GridIQ: C's plant has a live assessment from the install, granted to both
+    // C users. API keys inherit it (they read only while it is live).
+    const assessment = (await q(`INSERT INTO assessments (tenant_id, project_id, title, status, duration_days, start_at, end_at, payment_state)
+                                 VALUES ($1, $2, 't', 'active', 7, $3, $4, 'paid') RETURNING id`, [C, p1, new Date(t0 - H), new Date(t0 - H + 7 * 86_400_000)]))[0].id;
+    for (const u of [cAdminId, cViewerId]) await q(`INSERT INTO assessment_grants (assessment_id, user_id, email) VALUES ($1, $2, $3)`, [assessment, u, `g.${u}@t.local`]);
 
     // Findings and reports: one published, one draft each.
     const rec = (title, status) => q(`INSERT INTO recommendations (site_id, tenant_id, type, title, status, review_status, internal_notes)
@@ -192,8 +199,11 @@ test('public API v1', { skip: !url && 'TEST_DATABASE_URL not set', timeout: 300_
         }
         assert.ok(Math.abs(rows[1].energy_import_kwh - 20) < 0.01, `import from the export register: ${rows[1].energy_import_kwh}`);
         assert.ok(Math.abs(rows[2].energy_import_kwh - 20) < 0.01);
-        // Daily rows are SAST days: the whole sample lands in one.
-        const d = await call(key, 'GET', `/v1/points/${pt1}/readings?interval=1d&from=${new Date(t0 - 2 * 86_400_000).toISOString()}&to=${new Date(t0 + 2 * 86_400_000).toISOString()}`);
+        // Daily rows are SAST days: the whole sample lands in one. A key reads only
+        // whole days inside its assessment (none yet: it started hours ago); staff see all.
+        const asked = `/v1/points/${pt1}/readings?interval=1d&from=${new Date(t0 - 2 * 86_400_000).toISOString()}&to=${new Date(t0 + 2 * 86_400_000).toISOString()}`;
+        assert.strictEqual((await call(key, 'GET', asked)).status, 400);
+        const d = await call(ops, 'GET', asked);
         assert.strictEqual(d.status, 200, d.text);
         assert.ok(d.json.rows.every((x) => /T22:00:00\.000Z$/.test(x.period_start)), 'SAST midnight');
         assert.strictEqual(d.json.rows.reduce((s, x) => s + x.n, 0), 180);
@@ -229,7 +239,9 @@ test('public API v1', { skip: !url && 'TEST_DATABASE_URL not set', timeout: 300_
         const from = new Date(Math.floor((t0 + 2 * H) / 86_400_000) * 86_400_000 - 2 * H - 86_400_000);
         const r = await call(key, 'GET', `/v1/projects/${p1}/energy-balance?interval=day&from=${from.toISOString()}&to=${new Date(from.getTime() + 3 * 86_400_000).toISOString()}`);
         assert.strictEqual(r.status, 200, r.text);
-        assert.strictEqual(r.json.balances.length, 3);
+        // Clamped to the assessment (from the install, t0 − 1 h, to now).
+        assert.ok(r.json.balances.length >= 1 && r.json.balances.length <= 2, JSON.stringify(r.json.balances.map((b) => b.period_start)));
+        assert.strictEqual(r.json.balances[0].period_start, new Date(t0 - H).toISOString());
         const total = r.json.balances.reduce((s, b) => s + (b.grid_import_kwh ?? 0), 0);
         assert.ok(total > 55 && total < 61, `about 60 kWh imported: ${total}`);
     });

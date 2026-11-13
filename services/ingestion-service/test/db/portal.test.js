@@ -5,7 +5,7 @@
 //   - project tiles (current incomer kW, today's kWh, coverage);
 //   - load profile, demand and power quality per point, the latter from the
 //     current deployment only;
-//   - a project that hides live data answers 403 for its points.
+//   - a project without a live assessment answers 403 for its points.
 //
 //   TEST_DATABASE_URL=postgres://... node --test test/db/portal.test.js
 
@@ -78,8 +78,18 @@ test('client portal API', { skip: !url && 'TEST_DATABASE_URL not set' }, async (
             return { status: r.status, body: await r.json(), source: r.headers.get('x-readings-source') };
         };
     };
-    const asA = await serve({ role: 'client_admin', tenantId: tenantA, userId: null });
-    const asB = await serve({ role: 'client_viewer', tenantId: tenantB, userId: null });
+    // GridIQ assessments: each client holds a live assessment of its site that
+    // covers the data; the hidden project has none (so its points answer 403).
+    const userOf = async (tenant, role) => (await q(`INSERT INTO users (tenant_id, email, password_hash, role) VALUES ($1, $2, 'x', $3) RETURNING id`,
+        [tenant, `${role}.${tenant}@t.local`, role]))[0].id;
+    const uA = await userOf(tenantA, 'client_admin'), uB = await userOf(tenantB, 'client_viewer');
+    for (const [tenant, proj, user] of [[tenantA, pA, uA], [tenantB, pB, uB]]) {
+        const a = (await q(`INSERT INTO assessments (tenant_id, project_id, title, status, duration_days, start_at, end_at, payment_state)
+                            VALUES ($1, $2, 't', 'active', 7, $3, $4, 'paid') RETURNING id`, [tenant, proj, new Date(t0 - H), new Date(t0 - H + 7 * 86_400_000)]))[0].id;
+        await q(`INSERT INTO assessment_grants (assessment_id, user_id, email) VALUES ($1, $2, $3)`, [a, user, `u.${user}@t.local`]);
+    }
+    const asA = await serve({ role: 'client_admin', tenantId: tenantA, userId: uA });
+    const asB = await serve({ role: 'client_viewer', tenantId: tenantB, userId: uB });
     const range = `from=${new Date(t0 - H).toISOString()}&to=${new Date(now).toISOString()}`;
 
     await t.test('each client sees only its own window of the moved box, corrected', async () => {
@@ -131,12 +141,14 @@ test('client portal API', { skip: !url && 'TEST_DATABASE_URL not set' }, async (
         const lp = (await asA(`/points/${ptA}/load-profile?days=7`)).body;
         assert.ok(lp.cells.length >= 3 && lp.cells.every((c) => c.kw === 10), JSON.stringify(lp.cells));
         assert.strictEqual(lp.timezone, 'Africa/Johannesburg');
+        // The device-keyed assessment would reach back a whole day, into A's time
+        // with the box: a client gets it only after a full day of its own.
         const pq = (await asB(`/points/${ptB}/power-quality?days=30`)).body;
-        assert.strictEqual(pq.days, 1); // clipped to the current deployment
-        assert.ok(pq.report);
+        assert.strictEqual(pq.reason, 'insufficient_data');
+        assert.strictEqual(pq.report, null);
     });
 
-    await t.test('a project that hides live data answers 403 for its points', async () => {
+    await t.test('a project without a live assessment answers 403 for its points', async () => {
         assert.strictEqual((await asB(`/points/${ptHidden}/readings?${range}`)).status, 403);
         assert.strictEqual((await asB(`/points/${ptHidden}/load-profile`)).status, 403);
         const d = (await asB(`/portal/projects/${pHidden}`)).body;

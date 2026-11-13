@@ -8,8 +8,8 @@ import { apiGet, apiSend, fmtAgo, fmtDate, TZ_LABEL } from "@/lib/api";
 import { FleetRow, deviceHealth, fmtBytes, pct, ROLE_LABEL } from "@/lib/ops";
 import { PageHeader, Panel, Table, RagDot, Badge, Loading, ErrorBox, Empty, Button, Field, inputClass } from "@/components/ops/ui";
 
-const STATUSES = ["all", "deployed", "in_stock", "maintenance", "retired"] as const;
-const STATUS_LABEL: Record<string, string> = { deployed: "Deployed", in_stock: "In stock", maintenance: "Maintenance", retired: "Retired" };
+const STATUSES = ["all", "deployed", "available", "reserved", "in_transit", "maintenance", "retired"] as const;
+const STATUS_LABEL: Record<string, string> = { deployed: "Deployed", available: "Available", reserved: "Reserved", in_transit: "In transit", maintenance: "Maintenance", retired: "Retired" };
 
 export default function FleetPage() {
     const [status, setStatus] = useState<(typeof STATUSES)[number]>("all");
@@ -24,8 +24,8 @@ export default function FleetPage() {
 
     return (
         <div>
-            <PageHeader title="Fleet" subtitle={`Every box, where it is and how it is doing. Coverage and drift over the last 24 h / hour; times ${TZ_LABEL}.`}
-                actions={<Button onClick={() => setAdding((v) => !v)}><Plus className="h-4 w-4" />New box</Button>} />
+            <PageHeader title="Fleet" subtitle={`Every meter asset, where it is and how it is doing. Coverage and drift over the last 24 h / hour; times ${TZ_LABEL}.`}
+                actions={<Button onClick={() => setAdding((v) => !v)}><Plus className="h-4 w-4" />New meter asset</Button>} />
             {adding && <NewDevice onDone={() => setAdding(false)} />}
             <div className="flex flex-wrap gap-2 mb-4">
                 {STATUSES.map((s) => (
@@ -81,7 +81,7 @@ function NewDevice({ onDone }: { onDone: () => void }) {
     });
     const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
     return (
-        <Panel title="New box" className="mb-4" subtitle="The code becomes the broker username (lower case) and the topic segment.">
+        <Panel title="New meter asset" className="mb-4" subtitle="The code becomes the broker username (lower case) and the topic segment.">
             {create.data ? (
                 <div className="space-y-2 text-sm">
                     <p className="text-emerald-300">Created {create.data.code}.</p>

@@ -36,9 +36,9 @@ function MeterNodeImpl({ data, selected }: NodeProps<MeterNodeData>) {
     if (!selected) {
         return (
             <div
-                className={`relative rounded-md border bg-slate-900/95 backdrop-blur-sm text-white shadow-lg transition-all
+                className={`relative rounded-md border bg-surface/95 backdrop-blur-sm text-ink shadow-lg transition-all
                     w-6 h-6 flex flex-col items-center justify-center
-                    border-slate-700 hover:border-blue-400 hover:scale-125 cursor-pointer
+                    border-line-strong hover:border-blue-400 hover:scale-125 cursor-pointer
                     ${ringClass}
                     ${data.isEditing ? "cursor-move" : ""}`}
                 title={data.label}
@@ -53,7 +53,7 @@ function MeterNodeImpl({ data, selected }: NodeProps<MeterNodeData>) {
                     </span>
                 )}
                 {/* Tiny label under the pin so users can identify pins at a glance */}
-                <span className="absolute top-full mt-0.5 text-[8px] font-medium text-slate-300 whitespace-nowrap drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] pointer-events-none">
+                <span className="absolute top-full mt-0.5 text-[8px] font-medium text-ink-3 whitespace-nowrap drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] pointer-events-none">
                     {data.label}
                 </span>
             </div>
@@ -63,7 +63,7 @@ function MeterNodeImpl({ data, selected }: NodeProps<MeterNodeData>) {
     // Expanded card (when selected) — full live readout.
     return (
         <div
-            className={`relative rounded-xl border bg-slate-900/95 backdrop-blur-sm text-white px-3 py-2 min-w-[160px] shadow-2xl transition-all
+            className={`relative rounded-xl border bg-surface/95 backdrop-blur-sm text-ink px-3 py-2 min-w-[160px] shadow-2xl transition-all
                 border-blue-400 ring-2 ring-blue-500/30
                 ${ringClass}
                 ${data.isEditing ? "cursor-move" : ""}`}
@@ -76,7 +76,7 @@ function MeterNodeImpl({ data, selected }: NodeProps<MeterNodeData>) {
                 <span className={`inline-block w-2 h-2 rounded-full ${liveDot}`} />
                 <p className="text-xs font-semibold truncate flex-1">{data.label}</p>
                 {data.alertSeverity && (
-                    <div className="flex items-center gap-0.5 text-amber-300">
+                    <div className="flex items-center gap-0.5 text-warn">
                         <AlertTriangle className="w-3 h-3" />
                         {data.alertCount && data.alertCount > 1 && (
                             <span className="text-[10px] font-bold">{data.alertCount}</span>
@@ -87,26 +87,26 @@ function MeterNodeImpl({ data, selected }: NodeProps<MeterNodeData>) {
 
             <div className="mt-1.5 flex items-baseline gap-3 text-[11px] font-mono">
                 {data.powerKw != null ? (
-                    <span className="flex items-center gap-1 text-blue-300">
+                    <span className="flex items-center gap-1 text-accent">
                         <Zap className="w-2.5 h-2.5" />
-                        {data.powerKw.toFixed(1)}<span className="text-slate-500">kW</span>
+                        {data.powerKw.toFixed(1)}<span className="text-faint">kW</span>
                     </span>
                 ) : (
-                    <span className="text-slate-600 italic">no data</span>
+                    <span className="text-faint italic">no data</span>
                 )}
                 {data.pf != null && (
-                    <span className={data.pf < 0.85 ? "text-red-300" : "text-emerald-300"}>
+                    <span className={data.pf < 0.85 ? "text-bad" : "text-ok"}>
                         pf {data.pf.toFixed(2)}
                     </span>
                 )}
             </div>
 
             {data.voltage != null && (
-                <div className="mt-0.5 text-[10px] text-slate-500 font-mono">
+                <div className="mt-0.5 text-[10px] text-faint font-mono">
                     V<sub>L-N</sub> {data.voltage.toFixed(0)} V
                 </div>
             )}
-            <p className="mt-1 text-[9px] text-slate-600 italic">click elsewhere to collapse</p>
+            <p className="mt-1 text-[9px] text-faint italic">click elsewhere to collapse</p>
         </div>
     );
 }

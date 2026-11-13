@@ -49,7 +49,7 @@ export default function DeploymentPage() {
         }),
         onSuccess: () => { setCorr({ power_sign: "", scale_correction: "", ct_ratio_configured: "", pt_ratio_configured: "", reason: "" }); refresh(); },
     });
-    const [rm, setRm] = useState({ removed_at: "", device_status: "in_stock", reason: "" });
+    const [rm, setRm] = useState({ removed_at: "", device_status: "available", reason: "" });
     const remove = useMutation({
         mutationFn: () => apiSend("POST", `/ingestion/deployments/${id}/remove`, {
             device_status: rm.device_status, reason: rm.reason || undefined,
@@ -113,12 +113,12 @@ export default function DeploymentPage() {
                 </Panel>
 
                 {!d.removed_at && (
-                    <Panel title="Remove" subtitle="When the box is disconnected. Readings after this belong to no project until the next install.">
-                        <form className="grid grid-cols-2 gap-3" onSubmit={(e) => { e.preventDefault(); if (confirm("Record this box as removed?")) remove.mutate(); }}>
+                    <Panel title="Remove" subtitle="When the meter is disconnected. Readings after this belong to no project until the next install.">
+                        <form className="grid grid-cols-2 gap-3" onSubmit={(e) => { e.preventDefault(); if (confirm("Record this meter as removed?")) remove.mutate(); }}>
                             <Field label="Disconnected at (your local time)" hint="Empty = now"><input type="datetime-local" className={inputClass} value={rm.removed_at} onChange={(e) => setRm({ ...rm, removed_at: e.target.value })} /></Field>
                             <Field label="Box goes to">
                                 <select className={inputClass} value={rm.device_status} onChange={(e) => setRm({ ...rm, device_status: e.target.value })}>
-                                    <option value="in_stock">Stock</option><option value="maintenance">Maintenance</option>
+                                    <option value="available">Available (depot)</option><option value="in_transit">In transit</option><option value="maintenance">Maintenance</option>
                                 </select>
                             </Field>
                             <div className="col-span-2"><Field label="Note"><input className={inputClass} value={rm.reason} onChange={(e) => setRm({ ...rm, reason: e.target.value })} /></Field></div>

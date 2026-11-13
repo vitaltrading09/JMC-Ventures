@@ -16,11 +16,13 @@ import type { Pool } from 'pg';
 import fs from 'fs';
 import path from 'path';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { withScope, findSite, findPoint, tenantSql, telemetrySql, hasApiScope, projectAllowed, forClient, Scope } from '../scope';
+import { withScope, findSite, findPoint, tenantSql, telemetrySql, hasApiScope, projectAllowed, forClient, Scope, NO_ACCESS,
+    clampToAccess, alignInward, exportEntitledSql, deliverySql, AccessWindow, liveAssessmentSql } from '../scope';
 import { projectEnergyBalance } from '../fleet/balance';
 import { loadSeries, toCsv, datasetId, conventions, INTERVALS, Interval, MAX_RANGE_DAYS, COLUMNS } from './series';
 import { resolveStoredUploadPath } from '../roles';
-import { exportDir } from './exports-job';
+import { store, pdfKey } from '../storage';
+import { packagePrefix } from '../reports/closeout';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DAY = 86_400_000;
@@ -75,8 +77,16 @@ export function v1Routes(pool: Pool): ApiRoute[] {
     const point = async (s: Scope, id: string) => {
         const p = await findPoint(pool, s, id);
         if (!p || !projectAllowed(s, p.project_id)) throw new ApiError(404, 'Point not found');
-        if (!p.telemetry_visible) throw new ApiError(403, 'Live data for this project is shared through published reports');
+        if (!p.telemetry_visible) throw new ApiError(403, NO_ACCESS);
         return p;
+    };
+    /** A range clamped to the caller's assessment window, aligned to whole intervals. */
+    const WIDTH: Record<Interval, number> = { raw: 1000, '1m': 60_000, '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000, '1d': DAY };
+    const inWindow = (from: Date, to: Date, interval: Interval, w: AccessWindow) => {
+        const c = clampToAccess(from, to, w);
+        const r = c && alignInward(c, WIDTH[interval], w, interval === '1d' ? 2 * 3_600_000 : 0);
+        if (!r) throw new ApiError(400, 'No part of this range lies inside the assessment period');
+        return r;
     };
     const rangeOf = (q: any, interval: Interval) => {
         const to = q.to ? dateParam(q.to, 'to') : new Date();
@@ -98,6 +108,47 @@ export function v1Routes(pool: Pool): ApiRoute[] {
     const json = (schema: object) => ({ 'application/json': { schema } });
 
     return [
+        {
+            method: 'get', path: '/v1/assessments', openapiPath: '/v1/assessments', scope: 'projects:read',
+            summary: 'Assessments',
+            description: "Your tenant's assessments: the purchased measurement periods with their exact window [start_at, end_at), the points they cover, whether live access is open now, and the deletion date. Readings and exports are available only inside a live assessment's window.",
+            responses: { 200: { description: 'Assessments', content: json({ type: 'array', items: { type: 'object' } }) } },
+            handler: async (req, res) => {
+                needScope(req.scope, 'projects:read');
+                const params: unknown[] = [];
+                const q = await pool.query(`
+                    SELECT a.id, a.reference, a.title, a.project_id, a.status, a.duration_days, a.start_at, a.end_at, a.closed_at, a.timezone,
+                           a.report_status, a.retention_months, a.retention_until, a.retention_status,
+                           ${liveAssessmentSql({ ...req.scope, apiKey: req.scope.apiKey ?? { id: 'session', scopes: [], projectIds: null } }, 'a')} AS live,
+                           COALESCE((SELECT json_agg(ap.measurement_point_id) FROM assessment_points ap WHERE ap.assessment_id = a.id), '[]') AS point_ids
+                    FROM assessments a
+                    WHERE a.status NOT IN ('draft', 'cancelled') AND ${tenantSql(req.scope, 'a.tenant_id', params)}
+                    ORDER BY a.start_at DESC NULLS LAST`, params);
+                res.json(q.rows.filter((a) => projectAllowed(req.scope, a.project_id)));
+            },
+        },
+        {
+            method: 'get', path: '/v1/assessments/:id/package', openapiPath: '/v1/assessments/{id}/package', scope: 'reports:read',
+            summary: 'The data package of an assessment',
+            description: 'The frozen deliverables once the assessment is closed out: report PDFs, load_profile_30min.csv, readings_1min.csv, daily_energy.csv, findings.csv and manifest.json (units, conventions, SHA-256 per file). Available while the assessment is live or within its final-delivery window.',
+            params: [uuidPath('id', 'Assessment')],
+            responses: { 200: { description: 'File list with download paths', content: json({ type: 'object' }) }, 404: { description: 'Not found or not deliverable' } },
+            handler: async (req, res) => {
+                needScope(req.scope, 'reports:read');
+                if (!UUID.test(req.params.id)) throw new ApiError(404, 'Not found');
+                const params: unknown[] = [req.params.id];
+                const a = (await pool.query(`
+                    SELECT a.id, a.reference, a.project_id, a.package_path FROM assessments a JOIN projects p ON p.id = a.project_id
+                    WHERE a.id = $1 AND ${tenantSql(req.scope, 'a.tenant_id', params)} AND ${deliverySql(req.scope, 'p')}`, params)).rows[0];
+                if (!a || !projectAllowed(req.scope, a.project_id)) throw new ApiError(404, 'Not found');
+                const prefix = packagePrefix(a.package_path);
+                const mbuf = prefix ? await store().read('exports', `${prefix}/manifest.json`) : null;
+                if (!mbuf) return res.json({ assessment_id: a.id, ready: false, files: [] });
+                const manifest = JSON.parse(mbuf.toString('utf8'));
+                res.json({ assessment_id: a.id, reference: a.reference, ready: true, manifest,
+                           note: 'Download the files from the portal or the delivery link; the manifest lists their checksums.' });
+            },
+        },
         {
             method: 'get', path: '/v1/projects', openapiPath: '/v1/projects', scope: 'projects:read',
             summary: 'List projects',
@@ -153,7 +204,8 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 needScope(req.scope, 'readings:read');
                 const p = await point(req.scope, req.params.id);
                 const interval = intervalOf(req.query.interval, req.scope);
-                const { from, to } = rangeOf(req.query, interval);
+                const asked = rangeOf(req.query, interval);
+                const { from, to } = inWindow(asked.from, asked.to, interval, p);
                 const rows = await loadSeries(pool, p.id, interval, from, to);
                 const id = datasetId(p.id, interval, from, to);
                 if (String(req.query.format ?? 'json') === 'csv') {
@@ -182,9 +234,10 @@ export function v1Routes(pool: Pool): ApiRoute[] {
             handler: async (req, res) => {
                 needScope(req.scope, 'energy:read');
                 const p = await project(req.scope, req.params.id);
-                if (!p.telemetry_visible) throw new ApiError(403, 'Live data for this project is shared through published reports');
-                const from = dateParam(req.query.from, 'from'), to = dateParam(req.query.to, 'to');
-                if (from >= to) throw new ApiError(400, 'from must be before to');
+                if (!p.telemetry_visible) throw new ApiError(403, NO_ACCESS);
+                const asked = { from: dateParam(req.query.from, 'from'), to: dateParam(req.query.to, 'to') };
+                if (asked.from >= asked.to) throw new ApiError(400, 'from must be before to');
+                const { from, to } = inWindow(asked.from, asked.to, 'raw', p);
                 const interval = String(req.query.interval ?? 'total');
                 if (!['total', 'day', 'month'].includes(interval)) throw new ApiError(400, 'interval: total, day or month');
                 const periods = splitPeriods(from, to, interval as any);
@@ -200,12 +253,13 @@ export function v1Routes(pool: Pool): ApiRoute[] {
         {
             method: 'get', path: '/v1/projects/:id/findings', openapiPath: '/v1/projects/{id}/findings', scope: 'findings:read',
             summary: 'Published findings of a project',
-            description: 'Findings Grid-IQ has reviewed and published, with their evidence window.',
+            description: 'Findings GridIQ has reviewed and published, with their evidence window.',
             params: [uuidPath('id', 'Project')],
             responses: { 200: { description: 'Findings', content: json({ type: 'array', items: { type: 'object' } }) }, 404: { description: 'Not found' } },
             handler: async (req, res) => {
                 needScope(req.scope, 'findings:read');
                 const p = await project(req.scope, req.params.id);
+                if (!p.telemetry_visible) throw new ApiError(403, NO_ACCESS);
                 const q = await pool.query(`
                     SELECT id, meter_id, type, priority, title, problem, solution, estimated_monthly_saving_zar,
                            estimated_implementation_cost_zar, payback_months, confidence, standard_reference, evidence,
@@ -225,15 +279,17 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 needScope(req.scope, 'reports:read');
                 const p = await project(req.scope, req.params.id);
                 const q = await pool.query(`
-                    SELECT id, title, period_start, period_end, published_at, (pdf_path IS NOT NULL) AS has_pdf
-                    FROM reports WHERE project_id = $1 AND status = 'published' ORDER BY period_end DESC`, [p.id]);
+                    SELECT rp.id, rp.title, rp.period_start, rp.period_end, rp.published_at, (rp.pdf_path IS NOT NULL) AS has_pdf
+                    FROM reports rp JOIN projects pj ON pj.id = rp.project_id
+                    WHERE rp.project_id = $1 AND rp.status = 'published' AND ${deliverySql(req.scope, 'pj')}
+                    ORDER BY rp.period_end DESC`, [p.id]);
                 res.json(q.rows.map((r) => ({ ...r, pdf_url: r.has_pdf ? `/api/v1/reports/${r.id}.pdf` : null })));
             },
         },
         {
             method: 'get', path: '/v1/reports/:file', openapiPath: '/v1/reports/{id}.pdf', scope: 'reports:read',
             summary: 'The PDF of a published report',
-            description: 'The PDF Grid-IQ attached when publishing the report. 404 while none is attached.',
+            description: 'The PDF GridIQ attached when publishing the report. 404 while none is attached.',
             params: [uuidPath('id', 'Report')],
             responses: { 200: { description: 'PDF', content: { 'application/pdf': { schema: { type: 'string', format: 'binary' } } } }, 404: { description: 'Not found, or no PDF attached' } },
             handler: async (req, res) => {
@@ -243,13 +299,14 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 const params: unknown[] = [m[1]];
                 const r = (await pool.query(`
                     SELECT rp.id, rp.project_id, rp.pdf_path, rp.title FROM reports rp JOIN projects p ON p.id = rp.project_id
-                    WHERE rp.id = $1 AND rp.status = 'published' AND ${tenantSql(req.scope, 'p.tenant_id', params)}`, params)).rows[0];
+                    WHERE rp.id = $1 AND rp.status = 'published' AND ${tenantSql(req.scope, 'p.tenant_id', params)}
+                      AND ${deliverySql(req.scope, 'p')}`, params)).rows[0];
                 if (!r || !projectAllowed(req.scope, r.project_id)) throw new ApiError(404, 'Not found');
-                const file = r.pdf_path ? resolveStoredUploadPath(r.pdf_path) : null;
-                if (!file || !fs.existsSync(file)) throw new ApiError(404, 'No PDF attached to this report');
+                const body = r.pdf_path ? await store().stream('uploads', pdfKey(r.pdf_path)) : null;
+                if (!body) throw new ApiError(404, 'No PDF attached to this report');
                 res.setHeader('Content-Type', 'application/pdf');
                 res.setHeader('Content-Disposition', `inline; filename="report-${r.id}.pdf"`);
-                fs.createReadStream(file).pipe(res);
+                body.pipe(res);
             },
         },
         {
@@ -266,8 +323,9 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 const b = req.body ?? {};
                 const p = await point(req.scope, String(b.point_id ?? ''));
                 const interval = intervalOf(b.interval, req.scope);
-                const from = dateParam(b.from, 'from'), to = dateParam(b.to, 'to');
-                if (from >= to) throw new ApiError(400, 'from must be before to');
+                const asked = { from: dateParam(b.from, 'from'), to: dateParam(b.to, 'to') };
+                if (asked.from >= asked.to) throw new ApiError(400, 'from must be before to');
+                const { from, to } = inWindow(asked.from, asked.to, interval, p);
                 const maxDays = interval === 'raw' ? 31 : interval === '1m' ? 366 : 3660;
                 if (to.getTime() - from.getTime() > maxDays * DAY) throw new ApiError(400, `At most ${maxDays} days at interval ${interval}`);
                 const row = (await pool.query(`
@@ -326,12 +384,13 @@ export function v1Routes(pool: Pool): ApiRoute[] {
                 if (!UUID.test(req.params.id) || !checkDownload(req.params.id, Number(req.query.expires), String(req.query.sig ?? ''))) {
                     throw new ApiError(403, 'This download link is invalid or has expired');
                 }
-                const row = (await pool.query(`SELECT id, status FROM exports WHERE id = $1`, [req.params.id])).rows[0];
-                const file = path.join(exportDir(), `${req.params.id}.csv.gz`);
-                if (!row || row.status !== 'done' || !fs.existsSync(file)) throw new ApiError(404, 'Export not available');
+                // Re-checked at download: an export never outlives the assessment it came from.
+                const row = (await pool.query(`SELECT e.id, e.status FROM exports e WHERE e.id = $1 AND ${exportEntitledSql('e')}`, [req.params.id])).rows[0];
+                const body = row && row.status === 'done' ? await store().stream('exports', `${req.params.id}.csv.gz`) : null;
+                if (!body) throw new ApiError(404, 'Export not available');
                 res.setHeader('Content-Type', 'application/gzip');
                 res.setHeader('Content-Disposition', `attachment; filename="gridiq-export-${row.id}.csv.gz"`);
-                fs.createReadStream(file).pipe(res);
+                body.pipe(res);
             },
         },
     ];
@@ -385,7 +444,7 @@ export function openapi(routes: ApiRoute[], serverUrl = '/api') {
     return {
         openapi: '3.1.0',
         info: {
-            title: 'Grid-IQ API', version: '1.0.0',
+            title: 'GridIQ API', version: '1.0.0',
             description: [
                 'Read-only access to your projects, measurement points, readings, energy balance, findings and reports.',
                 '',
@@ -449,7 +508,7 @@ export function v1Router(pool: Pool, authenticateJwt: (req: any, res: any, next:
     const ui = path.dirname(require.resolve('swagger-ui-dist/package.json'));
     r.get(['/v1/docs', '/v1/docs/'], (req, res) => {
         if (!req.path.endsWith('/')) return res.redirect(301, 'docs/'); // relative: /api/docs -> /api/docs/
-        res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Grid-IQ API</title>
+        res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>GridIQ API</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="swagger-ui.css"></head>
 <body><div id="swagger-ui"></div><script src="swagger-ui-bundle.js"></script><script src="docs-init.js"></script></body></html>`);
     });

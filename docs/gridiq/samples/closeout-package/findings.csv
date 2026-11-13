@@ -1,0 +1,6 @@
+# GridIQ assessment GQ-A-0004 (8f62a425-86c8-4b98-98a2-2ceb7264b0d3), Demo Corporation · Durban Distribution Ctr
+# period [2026-11-02T19:00:36.240Z, 2026-11-09T19:00:36.240Z) UTC; site time zone Africa/Johannesburg
+# rows are period-ending: period_start <= t < period_end; empty cell = not measured (never zero)
+# import positive; deployment sign and scale corrections applied (corrected = true)
+point_id,point_name,type,priority,title,observed,recommended_verification,review_status,engine
+b3a3ffc8-855a-451d-b738-897b01ad1949,Warehouse Main,RULE_CURRENT_IMBALANCE,2,Phase currents out of balance (30 % average),"Current unbalance averaged 30 % across 10-minute values (last 7 days, 25.3 h metered). One phase carries noticeably more load, which heats that phase's cables and breaker, raises neutral current and limits usable capacity.","Redistribute single-phase loads across the three phases at the distribution boards, starting with the most loaded phase.",draft,rules

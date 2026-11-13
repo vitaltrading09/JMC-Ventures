@@ -8,6 +8,7 @@
 // written to audit_log (who, when, why, before and after).
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { QUESTIONS, normaliseContext, briefing, describeContext, siteHint } from '../point-context';
 import { Router } from 'express';
 import type { Pool, PoolClient } from 'pg';
 import { projectEnergyBalance } from './balance';
@@ -20,7 +21,7 @@ export const isInternal = (user: any) => !!user && INTERNAL_ROLES.has(user.role)
 
 const PROJECT_STATUSES = ['planned', 'active', 'completed', 'archived'];
 const POINT_ROLES = ['incomer', 'sub_load', 'pv', 'bess', 'generator', 'other'];
-const DEVICE_STATUSES = ['in_stock', 'deployed', 'maintenance', 'retired'];
+const DEVICE_STATUSES = ['available', 'reserved', 'in_transit', 'deployed', 'maintenance', 'retired'];
 
 export class InputError extends Error {}
 
@@ -87,6 +88,12 @@ const PROJECT_FIELDS: FieldSpec = {
     status: (v) => oneOf(v, PROJECT_STATUSES, 'status'),
     starts_on: date('starts_on'), ends_on: date('ends_on'),
     live_data_visible: bool('live_data_visible'),
+    // Site context for site-specific analysis: nominal voltage, wiring, supply,
+    // operating hours, major loads (VSDs, capacitors, PV, generators), symptoms.
+    site_context: (v) => {
+        if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new InputError('site_context: an object');
+        return JSON.stringify(v);
+    },
 };
 const POINT_FIELDS: FieldSpec = {
     name: text,
@@ -98,12 +105,20 @@ const POINT_FIELDS: FieldSpec = {
     declared_capacity_kva: (v) => optNum(v, 'declared_capacity_kva', { positive: true }),
     contracted_mdi_kva: (v) => optNum(v, 'contracted_mdi_kva', { positive: true }),
     sort_order: (v) => optNum(v, 'sort_order'),
+    // The consultant's briefing about this point (point-context.ts): validated answers only.
+    context: (v) => { try { return JSON.stringify(normaliseContext(v)); } catch (e: any) { throw new InputError(e.message); } },
 };
 const DEVICE_FIELDS: FieldSpec = {
     name: text, serial_number: text, model: text, comms_module: text, firmware: text,
     router_model: text, sim_iccid: text, notes: text,
     calibration_due_on: date('calibration_due_on'),
     status: (v) => oneOf(v, DEVICE_STATUSES.filter((s) => s !== 'deployed'), 'status'),
+    // What this asset can measure, confirmed per unit (nothing assumed from the model name):
+    // e.g. { "cadence_s": 1, "harmonic_orders": [3,5,7], "thd": true, "events": false, "waveform": false }.
+    capability_profile: (v) => {
+        if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new InputError('capability_profile: an object');
+        return JSON.stringify(v);
+    },
 };
 export const CORRECTION_FIELDS: FieldSpec = {
     power_sign: (v) => {
@@ -268,6 +283,21 @@ export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, ne
         res.status(201).json(q.rows[0]);
     }));
 
+    // The consultant's briefing for one point: the questions that apply, the answers so far,
+    // what they come to in words, and what they change for each kind of finding.
+    r.get('/points/:id/briefing', ...guard, handle(async (req, res) => {
+        const q = await pool.query(`SELECT id, name, role, context FROM measurement_points WHERE id = $1`, [req.params.id]);
+        if (!q.rows.length) return res.status(404).json({ error: 'Not found' });
+        const ctx = q.rows[0].context ?? {};
+        const b = briefing(ctx);
+        res.json({
+            point: { id: q.rows[0].id, name: q.rows[0].name, role: q.rows[0].role }, context: ctx, ...b,
+            questions: QUESTIONS.filter((x) => b.asked.includes(x.id)).map(({ when, ...x }) => x),
+            summary: describeContext(ctx),
+            hints: (['sags', 'thd', 'pf', 'demand', 'imbalance', 'baseload'] as const).map((k) => ({ kind: k, text: siteHint(k, ctx) })).filter((h) => h.text),
+        });
+    }));
+
     r.patch('/points/:id', ...guard, handle(async (req, res) => {
         const f = pickFields(req.body, POINT_FIELDS);
         if (!Object.keys(f).length) throw new InputError('Nothing to update');
@@ -418,7 +448,7 @@ export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, ne
 
     r.post('/deployments/:id/remove', ...guard, handle(async (req, res) => {
         const removedAt = optDate(req.body?.removed_at, 'removed_at') ?? new Date();
-        const nextStatus = oneOf(req.body?.device_status ?? 'in_stock', ['in_stock', 'maintenance'], 'device_status');
+        const nextStatus = oneOf(req.body?.device_status ?? 'available', ['available', 'in_transit', 'maintenance'], 'device_status');
         const out = await tx(async (c) => {
             const before = await c.query(`SELECT * FROM deployments WHERE id = $1 FOR UPDATE`, [req.params.id]);
             if (!before.rows.length) return { status: 404, body: { error: 'Not found' } };
@@ -474,7 +504,7 @@ export function fleetRouter(pool: Pool, authenticateJwt: (req: any, res: any, ne
                    dv.calibration_due_on, dv.firmware, dv.comms_module,
                    dep.id AS deployment_id, dep.installed_at, dep.commissioning->>'overall' AS commissioning,
                    mp.id AS point_id, mp.name AS point_name, mp.role AS point_role,
-                   pr.id AS project_id, pr.name AS project_name, t.name AS tenant_name,
+                   pr.id AS project_id, pr.name AS project_name, t.name AS tenant_name, pr.gps_lat, pr.gps_lon, pr.address AS project_address,
                    (SELECT max(time) FROM meter_readings r WHERE r.meter_id = dv.id AND r.time >= NOW() - INTERVAL '30 days') AS last_seen,
                    -- Against the box's own reporting interval, since the later of 24 h ago and the install.
                    ROUND(device_coverage(dv.id, GREATEST(NOW() - INTERVAL '24 hours', COALESCE(dep.installed_at, NOW() - INTERVAL '24 hours')))::numeric, 3) AS coverage_24h,

@@ -59,3 +59,4 @@ local/
 
 # Public API exports in npm run dev (EXPORT_DIR=./exports)
 services/ingestion-service/exports/
+screenshots/

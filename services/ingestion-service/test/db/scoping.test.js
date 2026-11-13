@@ -6,8 +6,8 @@
 //     aimed at tenant B's ids (path, body and ?tenant_id=), returns nothing of
 //     B and changes nothing of B.
 //   - A client never sees drafts, internal notes or unpublished reports.
-//   - client_viewer is read-only; live_data_visible hides telemetry until a
-//     report is published; a device that served another client is not
+//   - client_viewer is read-only; telemetry follows a live assessment grant
+//     (GridIQ, 2026-11-11) and stops at end_at without any job; a device that served another client is not
 //     reachable through the legacy meter routes; share links serve published
 //     reports only; the SLD upload checks the site before touching the disk.
 //   - The auth service lets only super_admin manage tenants and users.
@@ -65,6 +65,11 @@ function routes() {
     scan('ops.ts', 'r');
     scan('portal.ts', 'r');
     scan('v1/routes.ts', 'r');
+    scan('assessments/routes.ts', 'r');
+    scan('reports/closeout.ts', 'r');
+    scan('consultant.ts', 'r');
+    scan('investigate.ts', 'r0');
+    scan('sharing.ts', 'r');
     // The public API declares its routes as objects: { method: 'get', path: '/v1/...' }.
     const v1 = fs.readFileSync(path.join(ROOT, 'src', 'v1', 'routes.ts'), 'utf8');
     for (const m of v1.matchAll(/method: '(get|post)', path: '([^']+)'/g)) out.push([m[1].toUpperCase(), m[2]]);
@@ -132,8 +137,22 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         await q(`INSERT INTO site_diagrams (site_id, layout) VALUES ($1, $2)`, [x.site, JSON.stringify({ nodes: [{ id: `${x.mark}-diagram` }], edges: [] })]);
         const user = async (role) => (await q(`INSERT INTO users (tenant_id, email, password_hash, role) VALUES ($1, $2, 'x', $3) RETURNING id`,
             [x.tenant, `${role}.${x.mark}@test.local`, role]))[0].id;
-        x.adminToken = jwt.sign({ userId: await user('client_admin'), tenantId: x.tenant, role: 'client_admin' }, SECRET);
-        x.viewerToken = jwt.sign({ userId: await user('client_viewer'), tenantId: x.tenant, role: 'client_viewer' }, SECRET);
+        x.adminId = await user('client_admin');
+        x.viewerId = await user('client_viewer');
+        x.adminToken = jwt.sign({ userId: x.adminId, tenantId: x.tenant, role: 'client_admin' }, SECRET);
+        x.viewerToken = jwt.sign({ userId: x.viewerId, tenantId: x.tenant, role: 'client_viewer' }, SECRET);
+        // A live assessment of the site, granted to both users.
+        x.assessment = (await q(`
+            INSERT INTO assessments (tenant_id, project_id, title, status, duration_days, start_at, end_at, payment_state, internal_notes)
+            VALUES ($1, $2, $3, 'active', 7, NOW() - INTERVAL '2 days', NOW() + INTERVAL '5 days', 'paid', $4) RETURNING id`,
+            [x.tenant, x.site, `${x.mark}-assessment`, `${x.mark}-INTERNAL-assessment-note`]))[0].id;
+        await q(`INSERT INTO assessment_points (assessment_id, measurement_point_id) VALUES ($1, $2)`, [x.assessment, x.point]);
+        for (const [uid, role] of [[x.adminId, 'client_admin'], [x.viewerId, 'client_viewer']]) {
+            x.grant = (await q(`INSERT INTO assessment_grants (assessment_id, user_id, email) VALUES ($1, $2, $3) RETURNING id`,
+                [x.assessment, uid, `${role}.${x.mark}@test.local`.toLowerCase()]))[0].id;
+        }
+        x.evidence = (await q(`INSERT INTO evidence_refs (assessment_id, measurement_point_id, from_at, to_at, title) VALUES ($1, $2, NOW() - INTERVAL '1 day', NOW() - INTERVAL '23 hours', $3) RETURNING id`,
+            [x.assessment, x.point, `${x.mark}-evidence`]))[0].id;
         x.legacyToken = jwt.sign({ userId: null, tenantId: x.tenant, role: 'admin' }, SECRET); // a pre-Phase-7 token
         return x;
     };
@@ -162,15 +181,17 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         sites: x.site, meters: x.meter, alerts: x.alert, shares: x.share, recommendations: x.rec, leads: x.lead,
         projects: x.site, points: x.point, devices: x.meter, deployments: x.deployment, reports: x.report,
         clients: x.tenant, 'broker-access': crypto.randomUUID(), exports: x.export,
+        evidence: x.evidence,
+        assessments: x.assessment, grants: x.grant, 'assessment-packages': crypto.randomUUID(),
     });
     const fill = (p, x) => {
         const map = ids(x);
         return p.split('/').map((seg, i, all) => (seg.startsWith(':') ? (seg === ':token' ? 'x' : seg === ':file' ? `${map[all[i - 1]]}.pdf` : map[all[i - 1]] ?? crypto.randomUUID()) : seg)).join('/');
     };
-    const ROUTES = routes().filter(([, p]) => !['/health', '/health/deep', '/public/report/:token'].includes(p));
+    const ROUTES = routes().filter(([, p]) => !['/health', '/health/deep', '/public/report/:token', '/public/preview/:token'].includes(p));
     assert.ok(ROUTES.length > 60, `only ${ROUTES.length} routes found`);
 
-    const bSecrets = [B.mark, B.tenant, B.site, B.meter, B.alert, B.share, B.rec, B.draft, B.lead, B.report, B.unpublished, B.deployment, B.export];
+    const bSecrets = [B.mark, B.tenant, B.site, B.meter, B.alert, B.share, B.rec, B.draft, B.lead, B.report, B.unpublished, B.deployment, B.export, B.assessment, B.evidence];
     const leaks = (text) => bSecrets.filter((s) => text.includes(s));
 
     await t.test('tenant A, aimed at tenant B, gets nothing of B from any route', async () => {
@@ -213,6 +234,131 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         assert.strictEqual((await q(`SELECT count(*)::int AS n FROM deployments d JOIN measurement_points p ON p.id = d.measurement_point_id WHERE p.project_id = $1`, [B.site]))[0].n, 1);
     });
 
+    await t.test('investigation: evidence windows and finding cases follow the grant and the role', async () => {
+        assert.strictEqual((await q(`SELECT removed_at FROM evidence_refs WHERE id = $1`, [B.evidence]))[0].removed_at, null);
+        assert.strictEqual((await q(`SELECT count(*)::int AS n FROM finding_cases WHERE recommendation_id = $1`, [B.rec]))[0].n, 0);
+        const from = iso(now - 3 * 3_600_000), to = iso(now - 2 * 3_600_000);
+        const body = { point_id: A.point, from, to, title: 'Afternoon peak', channels: ['kw', 'thd_v'] };
+        assert.strictEqual((await call(A.viewerToken, 'POST', `/assessments/${A.assessment}/evidence`, body)).status, 403); // read-only
+        assert.strictEqual((await call(A.adminToken, 'POST', `/assessments/${A.assessment}/evidence`, { ...body, point_id: B.point })).status, 400);
+        assert.strictEqual((await call(A.adminToken, 'POST', `/assessments/${A.assessment}/evidence`, { ...body, from: iso(now - 5 * 86_400_000) })).status, 400); // before the start
+        const made = await call(A.adminToken, 'POST', `/assessments/${A.assessment}/evidence`, body);
+        assert.strictEqual(made.status, 201);
+        const list = JSON.parse((await call(A.viewerToken, 'GET', `/assessments/${A.assessment}/evidence`)).text);
+        assert.ok(list.some((e) => e.title === 'Afternoon peak'));
+        assert.deepStrictEqual(leaks(JSON.stringify(list)), []);
+        // Data explorer: raw readings with corrections, own points only, limits enforced.
+        // (The seeded readings predate the legacy auto-deployment; readings before an install are
+        // never attributed, so move A's install back to cover them.)
+        await q(`UPDATE deployments SET installed_at = NOW() - INTERVAL '2 hours' WHERE id = $1`, [A.deployment]);
+        const ex = await call(A.viewerToken, 'GET', `/points/${A.point}/explore?from=${iso(now - 3_600_000)}&to=${iso(now)}&interval=raw&channels=voltage_a,power_active_total,thd_current_b`);
+        assert.strictEqual(ex.status, 200, ex.text);
+        const exb = JSON.parse(ex.text);
+        assert.ok(exb.rows.length >= 30 && exb.rows[0].voltage_a === 230 && exb.rows[0].power_active_total === 12, JSON.stringify(exb.rows[0]));
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${B.point}/explore?from=${iso(now - 3_600_000)}&to=${iso(now)}&interval=raw`)).status, 403);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/explore?from=${iso(now - 86_400_000)}&to=${iso(now)}&interval=raw`)).status, 400);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/explore?from=${iso(now - 3_600_000)}&to=${iso(now)}&channels=nonsense`)).status, 400);
+        // Investigation window: clamped to the assessment.
+        const inv = await call(A.adminToken, 'GET', `/points/${A.point}/investigate?from=${iso(now - 10 * 86_400_000)}&to=${iso(now)}`);
+        assert.strictEqual(inv.status, 200);
+        assert.ok(new Date(JSON.parse(inv.text).from) >= new Date(now - 2 * 86_400_000 - 3_600_000));
+        // Cases: client_admin may track; verified needs a comparison result.
+        assert.strictEqual((await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'bogus' })).status, 400);
+        assert.strictEqual((await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'verified' })).status, 400);
+        const c = await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { owner: 'Facilities', status: 'investigating', next_step: 'Check the HVAC schedule' });
+        assert.strictEqual(c.status, 200);
+        assert.ok(JSON.parse(c.text).watch?.id, 'investigating starts a finding watch');
+        assert.strictEqual((await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'verified', verification: { result: 'improved', note: 'after the schedule change' } })).status, 200);
+        assert.strictEqual(JSON.parse((await call(A.adminToken, 'GET', `/assessments/${A.assessment}/cases`)).text)[0].owner, 'Facilities');
+        assert.strictEqual((await call(A.viewerToken, 'PATCH', `/recommendations/${A.rec}/case`, { owner: 'x' })).status, 403);
+        const audit = await q(`SELECT count(*)::int AS n FROM audit_log WHERE entity_type = 'recommendation' AND entity_id = $1 AND action = 'finding_case.update'`, [A.rec]);
+        assert.strictEqual(audit[0].n, 2);
+        // Finding watch: staff conclude and review it; clients see it with the case.
+        assert.strictEqual((await call(A.adminToken, 'POST', `/recommendations/${A.rec}/watch/conclude`)).status, 403);
+        const done = await call(ops, 'POST', `/recommendations/${A.rec}/watch/conclude`);
+        assert.strictEqual(done.status, 200, done.text);
+        assert.match(JSON.parse(done.text).conclusion.text, /### In short[\s\S]*### Suggested next step/);
+        let listed = JSON.parse((await call(A.viewerToken, 'GET', `/assessments/${A.assessment}/cases`)).text)[0].watch;
+        assert.strictEqual(listed.status, 'concluded');
+        assert.strictEqual((await call(A.adminToken, 'POST', `/recommendations/${A.rec}/watch/review`, { note: 'x' })).status, 403);
+        assert.strictEqual((await call(ops, 'POST', `/recommendations/${A.rec}/watch/review`, { note: 'Checked: agreed' })).status, 200);
+        listed = JSON.parse((await call(A.viewerToken, 'GET', `/assessments/${A.assessment}/cases`)).text)[0].watch;
+        assert.strictEqual(listed.staff_note, 'Checked: agreed');
+        assert.ok((await q(`SELECT 1 FROM email_outbox WHERE purpose = 'finding_watch' AND dedupe_key LIKE $1`, [`watch:${listed.id}:%`])).length >= 1);
+        // A new watch; viewers cannot stop it, the client admin can.
+        await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'open' });
+        assert.ok(JSON.parse((await call(A.adminToken, 'PATCH', `/recommendations/${A.rec}/case`, { status: 'investigating' })).text).watch?.id);
+        assert.strictEqual((await call(A.viewerToken, 'POST', `/recommendations/${A.rec}/watch/stop`)).status, 403);
+        assert.strictEqual((await call(A.adminToken, 'POST', `/recommendations/${A.rec}/watch/stop`)).status, 200);
+        assert.strictEqual((await call(A.adminToken, 'POST', `/recommendations/${A.rec}/watch/stop`)).status, 404);
+        const actions = (await q(`SELECT action FROM audit_log WHERE entity_id = $1 AND action LIKE 'finding_watch.%' ORDER BY id`, [A.rec])).map((x) => x.action);
+        assert.deepStrictEqual(actions, ['finding_watch.start', 'finding_watch.conclude', 'finding_watch.review', 'finding_watch.start', 'finding_watch.stop']);
+        // Close-ups: the worst moments of A's own point, reading by reading.
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/moments?kind=bogus`)).status, 400);
+        await require('@gridiq/db').refreshAggregates(pool, new Date(now - 3 * 86_400_000), new Date(now + 3_600_000));
+        const mo = await call(A.viewerToken, 'GET', `/points/${A.point}/moments?kind=sags&from=${iso(now - 10 * 86_400_000)}&to=${iso(now)}`);
+        assert.strictEqual(mo.status, 200, mo.text);
+        const moments = JSON.parse(mo.text).moments;
+        assert.ok(moments.length >= 1 && moments[0].series.length >= 1 && moments[0].unit === 'V');
+        assert.ok(moments.every((m) => new Date(m.from) >= new Date(now - 2 * 86_400_000 - 3_600_000)), 'inside the assessment window');
+        // Point briefing: staff only; validated answers; it reaches the finding hint and the summary.
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/briefing`)).status, 403);
+        assert.strictEqual((await call(A.adminToken, 'PATCH', `/points/${A.point}`, { context: { location: 'main_board' } })).status, 403);
+        assert.strictEqual((await call(ops, 'PATCH', `/points/${A.point}`, { context: { location: 'on the roof' } })).status, 400);
+        assert.strictEqual((await call(ops, 'PATCH', `/points/${A.point}`, { context: { location: 'main_board', loads: ['motors', 'vsd'], start_method: 'dol', pf_kvar: 50 } })).status, 200);
+        const br = JSON.parse((await call(ops, 'GET', `/points/${A.point}/briefing`)).text);
+        assert.strictEqual(br.context.pf_kvar, undefined); // follow-up without its condition is dropped
+        assert.strictEqual(br.next, 'supply');
+        assert.ok(br.summary[0].includes('main distribution board') && br.hints.some((h) => h.kind === 'sags'));
+        const sum = JSON.parse((await call(A.viewerToken, 'GET', `/assessments/${A.assessment}/summary?point=${A.point}`)).text);
+        assert.ok((sum.point_detail?.briefing ?? []).some((t) => t.includes('main distribution board')));
+        // Removing evidence keeps the row for the record.
+        const id = JSON.parse(made.text).id;
+        assert.strictEqual((await call(A.adminToken, 'POST', `/evidence/${id}/remove`)).status, 200);
+        assert.ok((await q(`SELECT removed_at FROM evidence_refs WHERE id = $1`, [id]))[0].removed_at);
+        // Before/after windows must lie inside the assessment.
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/compare?a_from=${iso(now - 40 * 3_600_000)}&a_to=${iso(now - 30 * 3_600_000)}&b_from=${iso(now - 10 * 3_600_000)}&b_to=${iso(now)}`)).status, 200);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/compare?a_from=${iso(now - 40 * 86_400_000)}&a_to=${iso(now - 39 * 86_400_000)}&b_from=${iso(now - 10 * 3_600_000)}&b_to=${iso(now)}`)).status, 400);
+    });
+
+    await t.test('the consultant explains a window of the caller\'s own assessment only', async () => {
+        const w = { point_id: A.point, from: iso(now - 3 * 3_600_000), to: iso(now) };
+        const ok = await call(A.adminToken, 'POST', `/assessments/${A.assessment}/chat`, { message: 'Explain this window', window: w });
+        assert.strictEqual(ok.status, 200, ok.text);
+        const body = JSON.parse(ok.text);
+        assert.match(body.answer, /### In short/);
+        assert.ok(body.evidence.includes('window'));
+        assert.strictEqual((await call(A.adminToken, 'POST', `/assessments/${A.assessment}/chat`, { message: 'x', window: { ...w, point_id: B.point } })).status, 400);
+        assert.strictEqual((await call(A.adminToken, 'POST', `/assessments/${B.assessment}/chat`, { message: 'x', window: { ...w, point_id: B.point } })).status, 403);
+    });
+
+    await t.test('provisional share links and booking requests', async () => {
+        assert.strictEqual((await call(A.viewerToken, 'POST', `/assessments/${A.assessment}/preview-shares`, {})).status, 403);
+        const made = await call(A.adminToken, 'POST', `/assessments/${A.assessment}/preview-shares`, { kind: 'overview', label: 'for the board' });
+        assert.strictEqual(made.status, 201, made.text);
+        const share = JSON.parse(made.text);
+        assert.ok(new Date(share.expires_at) <= new Date(now + 5 * 86_400_000 + 60_000)); // never past the end
+        const token = share.path.split('/').pop();
+        const pdf = await fetch(`http://127.0.0.1:${apiPort}/public/preview/${token}`);
+        assert.strictEqual(pdf.status, 200);
+        assert.strictEqual(pdf.headers.get('content-type'), 'application/pdf');
+        assert.strictEqual((await q(`SELECT opened_count FROM preview_shares WHERE id = $1`, [share.id]))[0].opened_count, 1);
+        assert.strictEqual((await call(B.adminToken, 'POST', `/preview-shares/${share.id}/revoke`)).status, 403);
+        assert.strictEqual((await call(A.adminToken, 'POST', `/preview-shares/${share.id}/revoke`)).status, 200);
+        assert.strictEqual((await fetch(`http://127.0.0.1:${apiPort}/public/preview/${token}`)).status, 410);
+        assert.strictEqual((await fetch(`http://127.0.0.1:${apiPort}/public/preview/${'x'.repeat(43)}`)).status, 404);
+        // Bookings: a viewer may ask; another tenant's site is refused; only staff handle them.
+        assert.strictEqual((await call(A.viewerToken, 'POST', '/booking-requests', { purpose: 'nonsense' })).status, 400);
+        assert.strictEqual((await call(A.viewerToken, 'POST', '/booking-requests', { purpose: 'follow_up', project_id: B.site })).status, 403);
+        const bk = await call(A.viewerToken, 'POST', '/booking-requests', { purpose: 'follow_up', project_id: A.site, assessment_id: A.assessment, duration_days: 14, preferred_start: '2027-02-01', contact_phone: '012 345 6789' });
+        assert.strictEqual(bk.status, 201, bk.text);
+        const booking = JSON.parse(bk.text);
+        assert.deepStrictEqual(leaks((await call(A.adminToken, 'GET', '/booking-requests')).text), []);
+        assert.ok(!(await call(B.adminToken, 'GET', '/booking-requests')).text.includes(booking.id));
+        assert.strictEqual((await call(A.adminToken, 'PATCH', `/booking-requests/${booking.id}`, { status: 'booked' })).status, 403);
+        assert.strictEqual((await call(ops, 'PATCH', `/booking-requests/${booking.id}`, { status: 'contacted' })).status, 200);
+    });
+
     await t.test('the SLD upload refuses another tenant\'s site before writing the file', async () => {
         const form = new FormData();
         form.append('pdf', new Blob([`${A.mark}-overwrite`], { type: 'application/pdf' }), 'x.pdf');
@@ -225,7 +371,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
 
     await t.test('a client never sees drafts, internal notes or unpublished reports', async () => {
         const failures = [];
-        const hidden = [A.draft, `${A.mark}-DRAFT`, `${A.mark}-INTERNAL`, A.unpublished, `${A.mark}-UNPUB`, 'internal_notes'];
+        const hidden = [A.draft, `${A.mark}-DRAFT`, `${A.mark}-INTERNAL`, A.unpublished, `${A.mark}-UNPUB`, 'internal_notes', '"payment_reference"', '"quote"'];
         for (const [method, p] of ROUTES.filter(([m]) => m === 'GET')) {
             const r = await call(A.adminToken, 'GET', fill(p, A));
             const seen = hidden.filter((h) => r.text.includes(h));
@@ -243,7 +389,7 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
     });
 
     await t.test('client_viewer is read-only', async () => {
-        const allowed = [/\/compliance\/ask$/, /\/alerts\/:id\/read$/, /\/recommendations\/:id\/notify$/, /^\/v1\/exports$/];
+        const allowed = [/\/compliance\/ask$/, /\/alerts\/:id\/read$/, /\/recommendations\/:id\/notify$/, /^\/v1\/exports$/, /^\/booking-requests$/];
         const failures = [];
         for (const [method, p] of ROUTES.filter(([m]) => m !== 'GET')) {
             if (allowed.some((re) => re.test(p))) continue;
@@ -252,27 +398,55 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         }
         assert.deepStrictEqual(failures, []);
         assert.strictEqual((await call(A.viewerToken, 'POST', `/alerts/${A.alert}/read`)).status, 200);
-        assert.strictEqual((await call(A.viewerToken, 'GET', `/meters/${A.meter}/readings?raw=1`)).status, 200);
+        assert.strictEqual((await call(A.viewerToken, 'GET', `/points/${A.point}/readings`)).status, 200);
+        // Legacy device-keyed telemetry is staff-only: it cannot be confined to an assessment.
+        assert.strictEqual((await call(A.viewerToken, 'GET', `/meters/${A.meter}/readings?raw=1`)).status, 403);
     });
 
-    await t.test('live_data_visible = false hides telemetry until a report is published', async () => {
-        const site = (await q(`INSERT INTO projects (tenant_id, name, live_data_visible) VALUES ($1, $2, false) RETURNING id`, [A.tenant, `${A.mark}-hidden`]))[0].id;
-        const meter = (await q(`INSERT INTO meters (site_id, name) VALUES ($1, 'hidden meter') RETURNING id`, [site]))[0].id;
+    await t.test('telemetry follows a live assessment grant, and stops at end_at with no job running', async () => {
+        const site = (await q(`INSERT INTO projects (tenant_id, name) VALUES ($1, $2) RETURNING id`, [A.tenant, `${A.mark}-later`]))[0].id;
+        const meter = (await q(`INSERT INTO meters (site_id, name) VALUES ($1, 'later meter') RETURNING id`, [site]))[0].id;
         await q(`INSERT INTO meter_readings (time, meter_id, power_active_total, time_source) VALUES (NOW() - INTERVAL '1 minute', $1, 5, 'DEVICE')`, [meter]);
-        assert.strictEqual((await call(A.adminToken, 'GET', `/meters/${meter}/readings?raw=1`)).status, 403);
+        const read = () => call(A.adminToken, 'GET', `/points/${meter}/readings`);
+        // No assessment: nothing, whatever the project says.
+        assert.strictEqual((await read()).status, 403);
         assert.strictEqual((await call(A.adminToken, 'GET', `/projects/${site}/energy-balance`)).status, 404);
-        const list = JSON.parse((await call(A.adminToken, 'GET', '/meters')).text);
-        assert.strictEqual(list.find((m) => m.id === meter).latest_reading, null);
-        assert.strictEqual((await call(ops, 'GET', `/meters/${meter}/readings?raw=1`)).status, 200);
-        // Publish a report: draft → approved → published, by an internal user.
-        const rep = JSON.parse((await call(ops, 'POST', '/reports', { project_id: site, period_start: iso(now - 86_400_000), period_end: iso(now) })).text);
-        assert.strictEqual((await call(ops, 'POST', `/reports/${rep.id}/publish`)).status, 409); // not approved yet
-        assert.strictEqual((await call(A.adminToken, 'POST', `/reports/${rep.id}/approve`)).status, 403); // clients cannot
-        assert.strictEqual((await call(ops, 'POST', `/reports/${rep.id}/approve`)).status, 200);
-        assert.strictEqual((await call(ops, 'POST', `/reports/${rep.id}/publish`)).status, 200);
-        assert.strictEqual((await call(A.adminToken, 'GET', `/meters/${meter}/readings?raw=1`)).status, 200);
-        const log = await q(`SELECT action FROM audit_log WHERE entity_id = $1 ORDER BY id`, [rep.id]);
-        assert.deepStrictEqual(log.map((r) => r.action), ['report.create', 'report.approve', 'report.publish']);
+        assert.strictEqual((await call(ops, 'GET', `/points/${meter}/readings`)).status, 200);
+        // Staff: draft → payment → grant → start.
+        const a = JSON.parse((await call(ops, 'POST', '/assessments', { project_id: site, duration_days: 7 })).text);
+        assert.strictEqual(a.status, 'draft');
+        assert.strictEqual((await call(A.adminToken, 'POST', `/assessments/${a.id}/start`, { confirm: true })).status, 403); // clients cannot
+        assert.strictEqual((await call(ops, 'POST', `/assessments/${a.id}/start`, { confirm: true })).status, 409);       // unpaid
+        assert.strictEqual((await call(ops, 'PATCH', `/assessments/${a.id}`, { payment_state: 'paid', payment_reference: 'INV-1' })).status, 200);
+        const email = `client_admin.${A.mark}@test.local`.toLowerCase();
+        assert.strictEqual((await call(ops, 'POST', `/assessments/${a.id}/grants`, { email })).status, 201);
+        assert.strictEqual((await read()).status, 403); // granted, but the clock has not started
+        const started = JSON.parse((await call(ops, 'POST', `/assessments/${a.id}/start`, { confirm: true })).text);
+        assert.strictEqual(started.status, 'active');
+        assert.strictEqual(new Date(started.end_at) - new Date(started.start_at), 7 * 86_400_000);
+        assert.strictEqual((await read()).status, 200);
+        // The viewer of the same tenant has no grant on this one.
+        assert.strictEqual((await call(A.viewerToken, 'GET', `/points/${meter}/readings`)).status, 403);
+        // The clock runs out (the expiry job is not running here): access stops at once,
+        // for the still-valid session token, while A's other assessment stays live.
+        await q(`UPDATE assessments SET start_at = NOW() - INTERVAL '7 days', end_at = NOW() - INTERVAL '1 second' WHERE id = $1`, [a.id]);
+        assert.strictEqual((await q(`SELECT status FROM assessments WHERE id = $1`, [a.id]))[0].status, 'active');
+        assert.strictEqual((await read()).status, 403);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/readings`)).status, 200);
+        // An extension (audited) reopens it; an early close shuts it again.
+        assert.strictEqual((await call(ops, 'POST', `/assessments/${a.id}/extend`, { days: 2 })).status, 400); // reason required
+        assert.strictEqual((await call(ops, 'POST', `/assessments/${a.id}/extend`, { days: 2, reason: 'meter offline for a day' })).status, 200);
+        assert.strictEqual((await read()).status, 200);
+        assert.strictEqual((await call(ops, 'POST', `/assessments/${a.id}/close`, { reason: 'client asked' })).status, 200);
+        assert.strictEqual((await read()).status, 403);
+        const log = await q(`SELECT action FROM audit_log WHERE entity_type = 'assessment' AND entity_id = $1 ORDER BY id`, [a.id]);
+        assert.deepStrictEqual(log.map((r) => r.action),
+            ['assessment.create', 'assessment.update', 'assessment.grant', 'assessment.start', 'assessment.extend', 'assessment.close']);
+        // A revoked grant ends access too.
+        await q(`UPDATE assessment_grants SET revoked_at = NOW() WHERE assessment_id = $1`, [A.assessment]);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/readings`)).status, 403);
+        await q(`UPDATE assessment_grants SET revoked_at = NULL WHERE assessment_id = $1`, [A.assessment]);
+        assert.strictEqual((await call(A.adminToken, 'GET', `/points/${A.point}/readings`)).status, 200);
     });
 
     await t.test('a device that served another client is out of reach of the legacy meter routes', async () => {
@@ -348,6 +522,15 @@ test('tenant scoping across every route', { skip: !url && 'TEST_DATABASE_URL not
         const member = await made.json();
         assert.strictEqual(member.tenant_id, A.tenant);
         assert.strictEqual((await authCall(A.adminToken, 'POST', '/users', { email: `eng.${run}@t.local`, password: 'pw-123456', role: 'engineer' })).status, 403);
+        // Without a password the user is invited: passwordless, with an invitation in the outbox.
+        const inv = await authCall(A.adminToken, 'POST', '/users', { email: `Invitee.${run}@t.local`, role: 'client_viewer' });
+        assert.strictEqual(inv.status, 201);
+        const invited = await inv.json();
+        assert.strictEqual(invited.invited, true);
+        assert.strictEqual(invited.email, `invitee.${run}@t.local`);
+        assert.strictEqual((await q(`SELECT password_hash FROM users WHERE id = $1`, [invited.id]))[0].password_hash, '!passwordless');
+        assert.strictEqual((await q(`SELECT count(*)::int AS n FROM email_outbox WHERE dedupe_key = $1 AND purpose = 'invite'`, [`invite:${invited.id}`]))[0].n, 1);
+        assert.strictEqual((await authCall(A.adminToken, 'POST', '/users', { email: `short.${run}@t.local`, password: 'short', role: 'client_viewer' })).status, 400);
         // Changing and removing: own tenant only; not itself.
         assert.strictEqual((await authCall(A.adminToken, 'PATCH', `/users/${member.id}`, { role: 'client_admin' })).status, 200);
         const bUser = (await q(`SELECT id FROM users WHERE tenant_id = $1 LIMIT 1`, [B.tenant]))[0].id;

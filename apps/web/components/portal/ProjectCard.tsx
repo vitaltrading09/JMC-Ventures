@@ -1,51 +1,57 @@
 "use client";
 
-import Link from "next/link";
-import { fmtAgo, fmtDate } from "@/lib/api";
-import { num } from "@/lib/format";
-import type { PortalProject } from "@/lib/portal";
-import { Badge } from "@/components/ops/ui";
+// A site tile on the client home page: the whole tile opens the site. It shows
+// only what a first look needs: the assessment state, time left, and how many
+// findings need attention (with the main one). Details live inside the site.
 
-/** A project with its live tiles: incomer kW now, today's kWh, coverage, alerts, latest report. */
-export function ProjectCard({ p }: { p: PortalProject }) {
+import Link from "next/link";
+import { ArrowRight, CheckCircle2, AlertTriangle, Lock, Clock } from "lucide-react";
+import { fmtDate } from "@/lib/api";
+import type { PortalProject } from "@/lib/portal";
+import type { Assessment } from "@/lib/assessments";
+import { elapsedFraction } from "@/lib/assessments";
+
+export function ProjectCard({ p, a }: { p: PortalProject; a: Assessment | null }) {
     const t = p.tiles;
+    const findings = t?.findings ?? [];
+    const attention = findings.filter((f) => f.priority <= 2).length;
+    const pct = a?.live ? Math.round(elapsedFraction(a) * 100) : null;
     return (
         <Link href={`/portal/projects/${p.id}`}
-            className="block rounded-xl border border-slate-800 bg-slate-900/50 p-5 hover:border-slate-600 transition-colors">
-            <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                    <h3 className="font-semibold text-white truncate">{p.name}</h3>
-                    <p className="text-xs text-slate-500 truncate">{[p.end_client_name, p.address].filter(Boolean).join(" · ") || " "}</p>
-                </div>
-                <Badge tone={p.status === "active" ? "green" : p.status === "planned" ? "blue" : "grey"}>{p.status}</Badge>
+            className="group flex flex-col min-h-[230px] rounded-2xl border border-line bg-surface p-5 shadow-sm transition hover:border-blue-400/60 hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
+            <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-ink truncate">{p.name}</h3>
+                <p className="text-sm text-faint truncate">{p.address || p.end_client_name || " "}</p>
             </div>
-            {t ? (
-                <div className="grid grid-cols-3 gap-3 mt-4">
-                    <div>
-                        <p className="text-xs text-slate-500">Incomer now</p>
-                        <p className="text-lg font-semibold text-white">{t.incomer_kw === null ? "–" : `${num(t.incomer_kw, 1)} kW`}</p>
-                        {t.incomer_at && <p className="text-[11px] text-slate-500">{fmtAgo(t.incomer_at)}, 1-min avg</p>}
+
+            <div className="mt-4 text-sm">
+                {a?.live ? (
+                    <>
+                        <p className="flex items-center gap-1.5 text-ink-3"><Clock className="h-4 w-4 text-faint" aria-hidden />Assessment running · <span className="tabular-nums">{a.remaining} left</span></p>
+                        <div className="mt-2 h-1.5 rounded-full bg-surface-3 overflow-hidden" aria-label={`${pct} % of the assessment elapsed`}>
+                            <div className="h-full bg-blue-500/80" style={{ width: `${pct}%` }} />
+                        </div>
+                    </>
+                ) : a?.effective_status === "ended" ? (
+                    <p className="flex items-center gap-1.5 text-muted"><Lock className="h-4 w-4" aria-hidden />Assessment ended{a.delivery_open && a.delivery_until ? ` · reports until ${fmtDate(a.delivery_until)}` : ""}</p>
+                ) : a ? (
+                    <p className="text-muted">Assessment starts when the meter is commissioned.</p>
+                ) : <p className="text-muted">No assessment for this site.</p>}
+            </div>
+
+            <div className="mt-auto pt-5">
+                {t ? attention > 0 ? (
+                    <div className="flex items-start gap-2">
+                        <AlertTriangle className="h-5 w-5 text-warn shrink-0 mt-0.5" aria-hidden />
+                        <div className="min-w-0">
+                            <p className="font-semibold text-ink">{attention} finding{attention === 1 ? "" : "s"} to look at</p>
+                            <p className="text-sm text-muted line-clamp-2">{findings[0]?.title}</p>
+                        </div>
                     </div>
-                    <div>
-                        <p className="text-xs text-slate-500">Today (SAST)</p>
-                        <p className="text-lg font-semibold text-white">{t.today_kwh === null ? "–" : `${num(t.today_kwh)} kWh`}</p>
-                        <p className="text-[11px] text-slate-500">grid import</p>
-                    </div>
-                    <div>
-                        <p className="text-xs text-slate-500">Data coverage</p>
-                        <p className={`text-lg font-semibold ${t.coverage_24h !== null && t.coverage_24h < 0.95 ? "text-amber-300" : "text-white"}`}>
-                            {t.coverage_24h === null ? "–" : `${Math.round(t.coverage_24h * 100)} %`}</p>
-                        <p className="text-[11px] text-slate-500">last 24 h</p>
-                    </div>
-                </div>
-            ) : (
-                <p className="text-sm text-slate-400 mt-4">Live data for this project is shared through published reports.</p>
-            )}
-            <div className="flex items-center justify-between gap-3 mt-4 pt-3 border-t border-slate-800 text-xs">
-                <span className="text-slate-400">
-                    {p.latest_report ? <>Latest report: {p.latest_report.title ?? "Report"} ({fmtDate(p.latest_report.period_start)} – {fmtDate(new Date(new Date(p.latest_report.period_end).getTime() - 1))})</> : "No published report yet"}
-                </span>
-                {t && t.open_alerts > 0 && <Badge tone="amber">{t.open_alerts} open alert{t.open_alerts === 1 ? "" : "s"}</Badge>}
+                ) : (
+                    <p className="flex items-center gap-2 font-semibold text-ink"><CheckCircle2 className="h-5 w-5 text-ok" aria-hidden />No issues found so far</p>
+                ) : <p className="text-sm text-muted">{p.latest_report ? "Final reports available" : "Nothing to show yet"}</p>}
+                <p className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-accent">Open site<ArrowRight className="h-4 w-4 transition group-hover:translate-x-0.5" aria-hidden /></p>
             </div>
         </Link>
     );

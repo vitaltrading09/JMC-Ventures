@@ -24,7 +24,7 @@ export default function PortalAlerts() {
             <div className="flex gap-2 mb-4">
                 {(["open", "all"] as const).map((s) => (
                     <button key={s} onClick={() => setShow(s)}
-                        className={`px-3 py-1.5 rounded-lg text-sm border ${show === s ? "bg-blue-600/20 border-blue-500/40 text-blue-200" : "border-slate-700 text-slate-400"}`}>
+                        className={`px-3 py-1.5 rounded-lg text-sm border ${show === s ? "bg-blue-600/20 border-blue-500/40 text-accent" : "border-line-strong text-muted"}`}>
                         {s === "open" ? "Open" : "All"}
                     </button>
                 ))}
@@ -37,7 +37,7 @@ export default function PortalAlerts() {
                                 <td className="py-2 pr-4 whitespace-nowrap">{fmtDateTime(a.created_at)}</td>
                                 <td className="py-2 pr-4"><Badge tone={TONE(a.severity)}>{a.severity}</Badge></td>
                                 <td className="py-2 pr-4">{a.meter_name}</td>
-                                <td className="py-2 pr-4 text-slate-300">{a.message}</td>
+                                <td className="py-2 pr-4 text-ink-3">{a.message}</td>
                                 <td className="py-2 text-right">{!a.is_read && <Button variant="secondary" disabled={read.isPending} onClick={() => read.mutate(a.id)}>Mark read</Button>}</td>
                             </tr>
                         ))}

@@ -1,247 +1,206 @@
 "use client";
 
-import { useState, useRef, useEffect } from 'react';
-import { MessageSquare, X, Send, Loader2, Sparkles, Bot, User, Zap, AlertTriangle } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
+// The assessment consultant (engineering UI brief §9). A docked drawer bound
+// to the assessment of the site on screen: on a site page it can only talk
+// about that site; navigating to another site rebinds it, clears the
+// conversation view and drops any answer still in flight for the old one.
+// The server picks the data (the assessment's own dataset) and enforces access
+// and budgets. Other components open it with askConsultant(text) (lib/portal).
 
-interface ChatMessage {
-    id: string;
-    role: 'user' | 'assistant';
-    content: string;
-}
+import { useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
+import { MessageSquare, X, Send, Lock } from "lucide-react";
+import { apiGet, apiSend, fmtDateTime, TZ_LABEL } from "@/lib/api";
+import { usePortalAssessments } from "@/components/portal/AssessmentBanner";
+import type { AskWindow } from "@/lib/portal";
+
+interface Msg { role: "user" | "assistant"; content: string; provider?: string | null; basis?: string; evidence?: string[] }
+
+const SUGGESTIONS = [
+    "When does this site use the most power, and why might that be?",
+    "Is the voltage distortion concentrated in one phase or period?",
+    "What does the power factor tell us here?",
+    "What should we tell the feasibility engineer?",
+];
+const EVIDENCE_LABEL: Record<string, string> = {
+    demand: "Demand", energy: "Energy", coverage: "Data coverage", executive: "Summary", patterns: "Operating pattern",
+    "power_quality.thd_v": "Voltage THD", "power_quality.pf": "Power factor", "power_quality.voltage": "Voltage",
+    feasibility_readiness: "Feasibility handover", window: "The selected window",
+};
 
 export function ChatWidget() {
-    const [isOpen, setIsOpen] = useState(false);
-    const [userInput, setUserInput] = useState("");
-    const [isLoading, setIsLoading] = useState(false);
-    const [context, setContext] = useState("");
-    const [suggestions, setSuggestions] = useState<string[]>([]);
-    const [showSuggestions, setShowSuggestions] = useState(true);
-    const [messages, setMessages] = useState<ChatMessage[]>([
-        { id: '1', role: 'assistant', content: 'Hello! I\'m your **Grid-IQ AI Consultant** — I have access to your live energy data. Ask me anything about your sites, power quality, costs, or alerts.' }
-    ]);
+    const [open, setOpen] = useState(false);
+    const [input, setInput] = useState("");
+    const [busy, setBusy] = useState(false);
+    const [msgs, setMsgs] = useState<Msg[]>([]);
+    const [pending, setPending] = useState<{ text: string; window?: AskWindow } | null>(null);
+    const [sel, setSel] = useState<string | null>(null);
+    const end = useRef<HTMLDivElement>(null);
+    const bound = useRef<string | null>(null);   // the assessment answers may be shown for
+    const assessments = usePortalAssessments();
+    const live = (assessments.data ?? []).filter((a) => a.live);
+    // On a site page the consultant is bound to that site's assessment only.
+    const pathname = usePathname();
+    const onScreen = /^\/portal\/projects\/([0-9a-f-]{36})/.exec(pathname ?? "")?.[1] ?? null;
+    const current = onScreen
+        ? live.find((a) => a.project_id === onScreen) ?? null
+        : live.find((a) => a.id === sel) ?? live[0] ?? null;
 
-    const messagesEndRef = useRef<HTMLDivElement>(null);
-
-    // Fetch context + suggestions when chat opens
+    // Rebind: a new context starts a clean view; late answers for the old one are dropped.
     useEffect(() => {
-        if (!isOpen || context) return;
-        const fetchContext = async () => {
-            try {
-                const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/ai-context`, {
-                    credentials: 'include',
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    setContext(data.context || '');
-                    if (data.suggestions?.length) setSuggestions(data.suggestions);
-                }
-            } catch (err) {
-                console.error("Failed to fetch AI context:", err);
-            }
+        bound.current = current?.id ?? null;
+        setMsgs([]); setBusy(false);
+        if (!open || !current) return;
+        const id = current.id;
+        apiGet<{ messages: Msg[] }>(`/ingestion/assessments/${id}/chat`)
+            .then((r) => { if (bound.current === id) setMsgs(r.messages); })
+            .catch(() => { if (bound.current === id) setMsgs([]); });
+    }, [open, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        const onAsk = (e: Event) => {
+            const d = (e as CustomEvent<string | { text: string; window?: AskWindow }>).detail;
+            setOpen(true);
+            if (typeof d === "string" ? d : d?.text) setPending(typeof d === "string" ? { text: d } : d);
         };
-        fetchContext();
-    }, [isOpen]);
-
+        window.addEventListener("gridiq:ask", onAsk);
+        return () => window.removeEventListener("gridiq:ask", onAsk);
+    }, []);
+    // Docked: the page makes room instead of being covered (globals.css, html[data-consultant]).
     useEffect(() => {
-        if (messagesEndRef.current) {
-            messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
-        }
-    }, [messages, isLoading]);
+        document.documentElement.dataset.consultant = open ? "open" : "closed";
+        return () => { delete document.documentElement.dataset.consultant; };
+    }, [open]);
+    useEffect(() => { end.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [msgs]);
+    useEffect(() => { if (open && pending && current && !busy) { const q = pending; setPending(null); send(q.text, q.window); } }, [open, pending, current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const sendMessage = async (text: string) => {
-        if (!text.trim() || isLoading) return;
-        setShowSuggestions(false);
-
-        const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', content: text };
-        setMessages(prev => [...prev, userMsg]);
-        setUserInput("");
-        setIsLoading(true);
-
-        const botId = (Date.now() + 1).toString();
-        setMessages(prev => [...prev, { id: botId, role: 'assistant', content: '' }]);
-
+    const send = async (text: string, win?: AskWindow) => {
+        if (!text.trim() || !current) return;
+        const id = current.id;
+        setInput("");
+        setMsgs((m) => [...m, { role: "user", content: text }, { role: "assistant", content: "" }]);
+        setBusy(true);
         try {
-            // First, proactively fetch the absolute freshest context so the AI has real-time data
-            let currentContext = context;
-            const ctxRes = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/ingestion/ai-context`, {
-                credentials: 'include',
-            });
-            if (ctxRes.ok) {
-                const ctxData = await ctxRes.json();
-                currentContext = ctxData.context || '';
-                setContext(currentContext);
-            }
-
-            const apiMessages = messages.concat(userMsg).map(m => ({ role: m.role, content: m.content }));
-
-            const res = await fetch('/api/chat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: apiMessages, context: currentContext }),
-            });
-
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || `API error ${res.status}`);
-
-            setMessages(prev =>
-                prev.map(m => m.id === botId ? { ...m, content: data.text || 'No response.' } : m)
-            );
-        } catch (err: any) {
-            console.error("Chat error:", err);
-            setMessages(prev =>
-                prev.map(m => m.id === botId ? { ...m, content: `**Error:** ${err.message}` } : m)
-            );
-        } finally {
-            setIsLoading(false);
-        }
+            const r = await apiSend<{ answer: string; provider: string; basis: { period_from: string; period_to: string; provisional: boolean; coverage: { point: string; fraction: number | null }[] }; evidence: string[] }>(
+                "POST", `/ingestion/assessments/${id}/chat`, win ? { message: text, window: win } : { message: text });
+            if (bound.current !== id) return;   // the user moved to another site meanwhile
+            const cov = r.basis.coverage.map((c) => `${c.point} ${c.fraction === null ? "–" : Math.round(c.fraction * 100) + " %"}`).join(", ");
+            const basis = `${fmtDateTime(r.basis.period_from)} → ${fmtDateTime(r.basis.period_to)} ${TZ_LABEL}${r.basis.provisional ? " · provisional" : ""} · data ${cov}`;
+            setMsgs((m) => [...m.slice(0, -1), { role: "assistant", content: r.answer, provider: r.provider, basis, evidence: r.evidence }]);
+        } catch (e: any) {
+            if (bound.current !== id) return;
+            setMsgs((m) => [...m.slice(0, -1), { role: "assistant", content: `Could not answer: ${e.message}` }]);
+        } finally { if (bound.current === id) setBusy(false); }
     };
 
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        sendMessage(userInput);
-    };
-
-    // Detect and style special card sections from AI markdown
-    const renderMessage = (content: string) => {
-        if (!content) return (
-            <span className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" />
-                <span className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
-                <span className="w-1.5 h-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }} />
-            </span>
-        );
-
-        // Check if content has alert or insight cards — wrap them in styled containers
-        const hasAlert = content.includes('## 🚨 Alert');
-        const hasInsight = content.includes('## 💡 Insight');
-
+    if (!open) {
+        // A site page has the Consultant button in its header: no floating button over the content.
+        if (onScreen) return null;
         return (
-            <div className={`prose prose-invert prose-sm max-w-none
-                ${hasAlert ? '[&_h2:has-text]:text-amber-400' : ''}
-                prose-h2:text-sm prose-h2:font-bold prose-h2:mt-2 prose-h2:mb-1
-                prose-strong:text-white prose-li:my-0.5 prose-p:my-1
-            `}>
-                <ReactMarkdown
-                    components={{
-                        h2: ({ children }) => {
-                            const text = String(children);
-                            if (text.includes('🚨')) return (
-                                <div className="flex items-center gap-1.5 text-amber-400 font-bold text-sm mt-3 mb-1 border-b border-amber-400/30 pb-1">
-                                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-                                    <span>{text.replace('🚨 ', '')}</span>
-                                </div>
-                            );
-                            if (text.includes('💡')) return (
-                                <div className="flex items-center gap-1.5 text-blue-400 font-bold text-sm mt-3 mb-1 border-b border-blue-400/30 pb-1">
-                                    <Zap className="w-3.5 h-3.5 flex-shrink-0" />
-                                    <span>{text.replace('💡 ', '')}</span>
-                                </div>
-                            );
-                            return <h2 className="text-white font-bold text-sm mt-2 mb-1">{children}</h2>;
-                        }
-                    }}
-                >
-                    {content}
-                </ReactMarkdown>
-            </div>
+            <button onClick={() => setOpen(true)} aria-label="Open the GridIQ consultant"
+                className="fixed bottom-6 right-6 z-40 h-12 rounded-full bg-blue-600 px-4 text-white shadow-lg hover:bg-blue-500 flex items-center gap-2 print:hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-300">
+                <MessageSquare className="h-5 w-5" aria-hidden /><span className="text-sm font-medium">Consultant</span>
+            </button>
         );
-    };
+    }
 
     return (
-        <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end">
-            {isOpen && (
-                <div className="w-[360px] sm:w-[420px] h-[540px] max-h-[80vh] bg-slate-900 border border-slate-700/60 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.6)] flex flex-col mb-4 overflow-hidden animate-in fade-in slide-in-from-bottom-5 duration-300">
-
-                    {/* Header */}
-                    <div className="px-4 py-3 bg-gradient-to-r from-blue-900/50 to-indigo-900/50 border-b border-slate-700/60 flex items-center justify-between">
-                        <div className="flex items-center gap-2.5">
-                            <div className="w-9 h-9 rounded-full bg-blue-500/20 border border-blue-500/30 flex items-center justify-center text-blue-400">
-                                <Sparkles className="w-4 h-4" />
-                            </div>
-                            <div>
-                                <h3 className="font-semibold text-white text-sm">Grid-IQ AI</h3>
-                                <p className="text-xs text-blue-400 font-medium flex items-center gap-1">
-                                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                                    Live data connected · Gemini 2.5
-                                </p>
-                            </div>
-                        </div>
-                        <button onClick={() => setIsOpen(false)} className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors">
-                            <X className="w-4 h-4" />
-                        </button>
-                    </div>
-
-                    {/* Messages */}
-                    <div className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth">
-                        {messages.map((m) => (
-                            <div key={m.id} className={`flex gap-2.5 ${m.role === 'user' ? 'ml-auto flex-row-reverse max-w-[80%]' : 'max-w-[92%]'}`}>
-                                <div className={`flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs ${m.role === 'user' ? 'bg-indigo-500 text-white' : 'bg-slate-800 border border-slate-700 text-blue-400'}`}>
-                                    {m.role === 'user' ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
-                                </div>
-                                <div className={`px-3.5 py-2.5 rounded-2xl text-sm ${m.role === 'user'
-                                    ? 'bg-indigo-500 text-white rounded-tr-none'
-                                    : 'bg-slate-800 border border-slate-700/50 text-slate-200 rounded-tl-none'
-                                    }`}>
-                                    {m.role === 'user' ? m.content : renderMessage(m.content)}
-                                </div>
-                            </div>
-                        ))}
-
-                        {/* Smart suggestion chips — only shown at start */}
-                        {showSuggestions && suggestions.length > 0 && messages.length <= 1 && (
-                            <div className="flex flex-col gap-1.5 pt-1">
-                                <p className="text-[10px] text-slate-500 font-medium uppercase tracking-wider">Quick questions</p>
-                                {suggestions.map((s, i) => (
-                                    <button
-                                        key={i}
-                                        onClick={() => sendMessage(s)}
-                                        className="text-left text-xs px-3 py-2 rounded-xl border border-slate-700 bg-slate-800/60 hover:bg-slate-700/60 hover:border-blue-500/40 text-slate-300 hover:text-white transition-all"
-                                    >
-                                        {s}
-                                    </button>
-                                ))}
+        <aside aria-label="GridIQ consultant"
+            className="fixed z-50 inset-0 lg:inset-auto lg:top-0 lg:right-0 lg:h-screen lg:w-[400px] bg-surface border-l border-line-strong/60 flex flex-col print:hidden">
+            <div className="px-4 py-3 border-b border-line flex items-start gap-2.5">
+                <div className="flex-1 min-w-0">
+                    <h2 className="font-semibold text-ink text-sm">GridIQ consultant</h2>
+                    {!onScreen && live.length > 1 ? (
+                        <select aria-label="Assessment" className="mt-1 bg-surface-2 rounded px-1.5 py-0.5 text-xs text-ink-2" value={current?.id ?? ""} onChange={(e) => setSel(e.target.value)}>
+                            {live.map((a) => <option key={a.id} value={a.id}>{a.project_name} · {a.reference}</option>)}
+                        </select>
+                    ) : current ? (
+                        <p className="mt-1 inline-flex flex-wrap gap-1 text-[11px]">
+                            <span className="rounded bg-surface-2 px-1.5 py-0.5 text-ink-2">{current.project_name}</span>
+                            <span className="rounded bg-surface-2 px-1.5 py-0.5 text-ink-3 tabular-nums">{current.reference}</span>
+                            <span className="rounded bg-surface-2 px-1.5 py-0.5 text-muted">{fmtDateTime(current.start_at)} → now</span>
+                        </p>
+                    ) : null}
+                </div>
+                <button onClick={() => setOpen(false)} aria-label="Close the consultant" className="text-muted hover:text-ink p-1"><X className="w-4 h-4" /></button>
+            </div>
+            {!current ? (
+                <div className="flex-1 p-6 text-sm text-ink-3 flex gap-3"><Lock className="w-5 h-5 text-faint shrink-0" aria-hidden />
+                    {onScreen ? "This site has no live assessment, so the consultant is not available here." : "The consultant answers questions about an assessment while it is running. You have no live assessment right now."}</div>
+            ) : (
+                <>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm" aria-live="polite">
+                        {msgs.length === 0 && (
+                            <div className="space-y-2">
+                                <p className="text-muted">Questions about this site&apos;s measurements. Answers state the period and data they use, and separate what was measured from possible explanations. Advisory only: never work on live equipment yourself.</p>
+                                {SUGGESTIONS.map((s) => <button key={s} onClick={() => send(s)} className="block text-left w-full text-accent hover:text-accent text-xs border border-line-strong rounded-lg px-3 py-2">{s}</button>)}
                             </div>
                         )}
-
-                        <div ref={messagesEndRef} />
+                        {msgs.map((m, i) => m.role === "user" ? (
+                            <div key={i} className="text-right"><div className="inline-block max-w-[90%] rounded-xl px-3 py-2 bg-blue-600 text-white text-left whitespace-pre-wrap">{m.content}</div></div>
+                        ) : (
+                            <div key={i}>
+                                {m.content && <p className="text-[11px] uppercase tracking-wide text-faint mb-1">{m.provider === "none" ? "Measured-data summary" : m.provider ? "Consultant answer (AI, from the measured data)" : "Answer"}</p>}
+                                <div className="rounded-xl px-4 py-3 bg-surface-2 text-ink">{m.content ? <Answer text={m.content} /> : <span className="text-faint">Working…</span>}</div>
+                                {(m.basis || (m.evidence?.length ?? 0) > 0) && (
+                                    <details className="mt-1 text-[11px] text-faint">
+                                        <summary className="cursor-pointer">Evidence and basis</summary>
+                                        {m.basis && <p className="mt-1">{m.basis}</p>}
+                                        {!!m.evidence?.length && <p className="mt-1">Sections: {m.evidence.map((e) => EVIDENCE_LABEL[e] ?? e).join(", ")}</p>}
+                                    </details>
+                                )}
+                            </div>
+                        ))}
+                        <div ref={end} />
                     </div>
-
-                    {/* Input */}
-                    <div className="p-3 border-t border-slate-700/60 bg-slate-900/50">
-                        <form onSubmit={handleSubmit} className="relative flex items-center">
-                            <input
-                                value={userInput}
-                                onChange={(e) => setUserInput(e.target.value)}
-                                placeholder="Ask about your energy data..."
-                                className="w-full bg-slate-800/80 border border-slate-700 text-sm text-white rounded-full pl-4 pr-12 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all placeholder:text-slate-500"
-                            />
-                            <button
-                                type="submit"
-                                disabled={isLoading || !userInput.trim()}
-                                className="absolute right-1.5 p-2 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-full transition-colors"
-                            >
-                                {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                            </button>
-                        </form>
-                        <p className="text-center mt-2 text-[10px] text-slate-600">Grid-IQ AI · Always verify critical decisions manually</p>
-                    </div>
-                </div>
+                    <form onSubmit={(e) => { e.preventDefault(); send(input); }} className="p-3 border-t border-line flex gap-2">
+                        <label htmlFor="consultant-input" className="sr-only">Question</label>
+                        <input id="consultant-input" value={input} onChange={(e) => setInput(e.target.value)} placeholder={`Ask about ${current.project_name}…`} disabled={busy}
+                            className="flex-1 bg-canvas border border-line-strong rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        <button disabled={busy || !input.trim()} aria-label="Send" className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg px-3"><Send className="w-4 h-4" /></button>
+                    </form>
+                </>
             )}
+        </aside>
+    );
+}
 
-            {/* FAB */}
-            <button
-                onClick={() => setIsOpen(!isOpen)}
-                className={`flex items-center justify-center w-14 h-14 rounded-full shadow-[0_0_20px_rgba(59,130,246,0.5)] transition-all duration-300 hover:scale-105 relative ${isOpen ? 'bg-slate-800 text-slate-300 border border-slate-700' : 'bg-blue-600 hover:bg-blue-500 text-white'}`}
-            >
-                {isOpen ? <X className="w-6 h-6" /> : <MessageSquare className="w-6 h-6" />}
-                {!isOpen && (
-                    <span className="absolute top-0 right-0 flex h-3 w-3">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
-                        <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500 border-2 border-slate-950" />
-                    </span>
-                )}
-            </button>
+const SECTION_STYLE: Record<string, string> = {
+    "in short": "text-[15px] font-medium text-ink",
+    "what you can expect to find on site": "",
+    basis: "text-xs text-faint",
+};
+
+/**
+ * Renders an answer written in "### Heading" sections with "- " bullets (the
+ * consultant's fixed structure). Plain text without headings renders as is.
+ * No HTML is interpreted: text only.
+ */
+export function Answer({ text }: { text: string }) {
+    const blocks = text.split(/\n(?=###\s)/).map((b) => b.trim()).filter(Boolean);
+    if (!blocks.some((b) => b.startsWith("### "))) return <p className="whitespace-pre-wrap">{text}</p>;
+    return (
+        <div className="space-y-3">
+            {blocks.map((b, i) => {
+                if (!b.startsWith("### ")) return <p key={i} className="whitespace-pre-wrap text-sm text-ink-3">{b}</p>;
+                const [head, ...rest] = b.split("\n");
+                const title = head.replace(/^###\s*/, "").trim();
+                const lines = rest.map((l) => l.trim()).filter(Boolean);
+                const bullets = lines.filter((l) => /^[-•*]\s/.test(l)).map((l) => l.replace(/^[-•*]\s+/, "").replace(/\*\*/g, ""));
+                const prose = lines.filter((l) => !/^[-•*]\s/.test(l)).join(" ").replace(/\*\*/g, "");
+                const key = title.toLowerCase();
+                return (
+                    <section key={i} className={key === "basis" ? "border-t border-line pt-2" : ""}>
+                        <h4 className={`text-[11px] font-semibold uppercase tracking-wide ${key === "what you can expect to find on site" || key === "suggested next step" ? "text-accent" : "text-faint"}`}>{title}</h4>
+                        {prose && <p className={`mt-0.5 ${SECTION_STYLE[key] ?? "text-sm text-ink-2"}`}>{prose}</p>}
+                        {bullets.length > 0 && (
+                            <ul className={`mt-1 space-y-1 text-sm ${key === "what you can expect to find on site" ? "text-ink-2" : "text-ink-3"}`}>
+                                {bullets.map((x, j) => <li key={j} className="flex gap-2"><span aria-hidden className="mt-2 h-1 w-1 shrink-0 rounded-full bg-current opacity-60" /><span>{x}</span></li>)}
+                            </ul>
+                        )}
+                    </section>
+                );
+            })}
         </div>
     );
 }

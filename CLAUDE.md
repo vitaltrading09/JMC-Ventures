@@ -1,17 +1,23 @@
-# PowerGuard — Claude Code Project Brief
+# GridIQ — Claude Code Project Brief
 
 > Read this first. It gives you full context on what this project is, what's been built, what's pending, and how to work on it.
+> Product direction: *GridIQ implementation prompt* (11 November 2026). Audit, plan and status: `docs/gridiq/`.
 
 ---
 
-## What is PowerGuard?
+## What is GridIQ?
 
-PowerGuard is a **multi-tenant power quality monitoring and AI advisory SaaS platform** built for the South African industrial/commercial energy market.
+GridIQ is a **company-operated meter fleet and fixed-period electrical assessment platform** for South African
+commercial, industrial and agricultural sites (ZAR, Africa/Johannesburg by default).
 
-**Business model:** Flat monthly SaaS subscription per site.  
-**Primary users:** Energy-intensive businesses (factories, commercial buildings, mines).  
-**Operator:** JMC Ventures / PowerGuard admin team.  
-**Key value proposition:** Energy score, demand charge management, power quality monitoring, tariff optimisation, and monthly AI-generated site performance reports — delivered as a subscription even after a client installs solar (EPC handles O&M; PowerGuard handles ongoing advisory).
+- GridIQ owns a reusable fleet of meters (Acuvim II + web module). A meter is installed at a client's site for a
+  purchased **assessment** (7/14/21/30 days, or custom). The meter stays a company asset with its own history.
+- During the assessment the client sees live data, history, findings and an AI consultant. Access stops exactly at
+  the end; the client then receives frozen reports (overview, power quality, feasibility handover) and a data package.
+- Data is kept 3 (or 6) calendar months after the end, then deleted with a receipt.
+- Feasibility modelling (PV/battery sizing, financials) belongs to another party: GridIQ supplies data, not sizing.
+- The old monthly SaaS, broker portfolio, savings calculator, PV/BESS sizing and leads are off or behind flags.
+- Earlier documents and code call the product PowerGuard or Grid-IQ; GridIQ is the name.
 
 ---
 
@@ -35,7 +41,6 @@ PowerGuard is a **multi-tenant power quality monitoring and AI advisory SaaS pla
 
 ```
 Browser ──https──▶ caddy (:443, APP_DOMAIN)
-                     ├── /api/chat*  → web:3000   (Next.js route, not the gateway)
                      ├── /api/*      → gateway:8081 (prefix stripped)
                      │                   ├── /auth/*      → auth:3001
                      │                   └── /ingestion/* → api:3002   (ROLES=api)
@@ -228,6 +233,31 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   - **Tests**: `test/v1.test.js` (unit). `test/db/public-api.test.js` runs the real gateway,
     auth and api end to end (keys, scopes, corrections, CSV, PDF, exports and expiry).
     The scoping test also scans the v1 route declarations.
+- **Client dashboard, rule findings, metering report (2026-11, after Phase 9)**:
+  - Portal overview tiles (`components/portal/ProjectCard.tsx`, from `GET /portal/projects` →
+    `tiles.meters | top_alerts | findings`): per metered point a live / delayed / silent light
+    (last raw reading ≤ 2 min / ≤ 15 min / older), 1-minute kW, V, PF; the top 3 open alerts and
+    findings, each linking to its detail; refreshed every 15 s. A finding's chat button opens the
+    AI consultant with the question (`askConsultant` → `gridiq:ask` event → `ChatWidget`).
+  - **Draft findings for clients**: `CLIENT_SEES_DRAFT_FINDINGS=true` (compose default, owner's
+    decision) lets clients read draft / in-review findings, labelled "Draft · not yet reviewed"
+    (`seesUnpublishedFindings` in `src/scope.ts`); dismissed ones and internal notes stay hidden.
+    Unset (code default, tests) = published only. `/v1/findings` stays published-only.
+  - **Rule findings** (`src/findings-rules.ts`, jobs role hourly and 2 min after start, no AI
+    key needed): per installed point, 7 days of `point_readings_10m`/`30m` → drafts of type
+    `RULE_LOW_PF | RULE_HIGH_THD_V | RULE_CURRENT_IMBALANCE | RULE_MDI_EXCEEDED | RULE_VOLTAGE_SAGS
+    | RULE_HIGH_BASELOAD` with `evidence.engine = 'rules'` and the numbers used. A draft is refreshed
+    while the condition holds and superseded when it clears; published and recently dismissed ones
+    are left alone.
+  - **Metering report** (`src/metering-report.ts`, `GET /points/:id/metering-report?from&to`, ≤ 93
+    days, default 30; page `/portal/projects/[id]/points/[pointId]/report`, linked from the point
+    page, printable): register energy, TOU split and cost, maximum demand and when, load factor,
+    baseload, average weekday/weekend day, best and worst 10-minute values with phase and time,
+    feasibility pointers, and rough peak-shaving / TOU-arbitrage / solar own-use sizing with
+    the assumptions (`ASSUMPTIONS`) and a disclaimer.
+  - A 30-minute interval counts as covered when 80 % of its minutes have samples **or** its
+    samples span ≥ 22.5 min (sparse boxes, e.g. one reading every 5 minutes). Only the new code
+    uses this; `src/demand.ts` and data-health alerting still use minutes only.
 - The ingest container reaches the broker as `mqtts://${MQTT_DOMAIN}:8883`.
   `MQTT_DOMAIN` is a network alias of the mosquitto container, so the TLS
   hostname matches the certificate without leaving the host.
@@ -238,6 +268,128 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   the server): `pg/ caddy/ caddy-config/ mosquitto/data/ mqtt-certs/ uploads/`.
 - Uploads (CSV staging, SLD PDFs) go to `UPLOAD_DIR` (default `/data/uploads`).
   Stored SLD paths are relative to it; legacy `uploads/...` rows still resolve.
+- **GridIQ assessments (2026-11-11, branch `gridiq-assessments`; migrations `1793830000000_assessments`,
+  `1793830100000_boundary-attribution`, `1793830200000_deliverables-retention-login`; docs in `docs/gridiq/`)**:
+  - Tables: `assessment_packages` (integer cents, draft until a VAT basis is set), `assessments` (four independent
+    clocks: access `[start_at, end_at)` + `closed_at`; report_status; delivery_days; retention_months /
+    retention_until / retention_status), `assessment_points`, `assessment_grants` (named access by user or email),
+    `maintenance_events`, `devices.status` available/reserved/in_transit/deployed/maintenance/retired,
+    `devices.capability_profile`, `projects.site_context`, `deployments.planned_install_at/planned_removal_at`.
+  - **Client access = a live assessment grant**, checked in SQL on every request (`liveAssessmentSql`,
+    `telemetrySql` in `src/scope.ts`): status active, not closed, `start_at <= NOW() < end_at`, grant unrevoked.
+    No job, token, cache or API key extends it. `projects.live_data_visible` and "a published report" no longer
+    grant anything. API keys read only while the project has a live assessment. Reads are clamped to the window and
+    aligned inward to whole buckets (`clampToAccess`, `alignInward`). Legacy device-keyed `/meters/:id/*` telemetry
+    is staff-only. Exports are re-checked when run and at download (`exportEntitledSql`). Reports, PDFs and share
+    links: live or within the delivery window (`deliverySql`).
+  - **Boundary attribution**: `deployment_readings_<w>` (generated by `packages/db/tools/gen-boundary-views.js`)
+    takes interior buckets from `readings_<w>` and recomputes buckets that straddle an install/removal from only the
+    in-window samples; `point_readings_*` read from them (same columns and corrections).
+  - Lifecycle (`src/assessments/lifecycle.ts`, routes `src/assessments/routes.ts`): draft → scheduled → active (start
+    needs payment paid/exception and confirm; end = start + days × 24 h) → ended; extend/close/cancel need a reason;
+    all audited. Jobs: expiry 1 min (follow-up only).
+  - Reports (`src/reports/`): `dataset.ts` builds one deterministic dataset (SHA-256 of canonical JSON, calc/rule/
+    template versions); `pdf.ts` renders overview / adaptive power quality / handover (pdfkit); `package.ts` writes
+    the data package (CSV + manifest with checksums, formula-safe text, empty = not measured); `closeout.ts`:
+    close-out job (5 min, after `ASSESSMENT_LATE_DATA_HOURS`), revisions (issued datasets frozen by the
+    `reports_freeze_issued` trigger; corrections supersede with a reason), provisional previews, delivery links,
+    late-data detection. PQ drafts wait for staff review; overview and handover are issued automatically.
+  - Email (`src/notify/email.ts`): `email_outbox`, dedupe keys, retries; `EMAIL_PROVIDER` smtp | file | unset.
+  - Retention (`src/assessments/retention.ts`, hourly): the documented step that deletes raw readings (master rule
+    5); receipt in `assessment_purges`, ranges in `deletion_tombstones`; restore with
+    `deploy/scripts/apply-tombstones.sh` before starting services.
+  - Consultant (`src/consultant.ts`): `POST /assessments/:id/chat`, server-side dataset retrieval, budgets
+    (`ai_budget_cents`, `AI_MESSAGES_PER_HOUR`), providers anthropic (default `claude-opus-5-5`) / openai / none;
+    without a provider it answers from the dataset. The old OpenAI route `apps/web/app/api/chat` was removed (Cloudflare branch).
+  - Auth (`services/auth-service/src/login.ts`): email-code sign-in (10 min, single use, 5 attempts, throttled, no
+    enumeration, codes only hashed and never logged; invited recipients become client_viewers on first sign-in),
+    staff TOTP (`/mfa/setup`, `/mfa/enable`, `STAFF_MFA_REQUIRED`). Sessions are HttpOnly cookies (already were).
+  - Web: `/ops` home (clients, fleet map from recorded coordinates, status, ending soon, exceptions, calibration
+    due), `/ops/assessments[/id]`, `/ops/packages`, asset history on `/ops/fleet/[id]`, site context and assessments
+    on the ops project page; portal assessment banner, no-access/ended states, deliverables in Reports;
+    `/delivery/[token]` (public, files only); `/login` email-code flow.
+  - API v1: `/v1/assessments`, `/v1/assessments/{id}/package`. Handover guide: `docs/gridiq/API-HANDOVER.md`.
+- **Engineering UI and reports (2026-11-12, branch `engineering-ui`; brief `GridIQ-Engineering-UI-and-Reports-Claude-Prompt.md`)**:
+  - Site summary: `src/reports/summary.ts` `buildSummary(ds, pointId?)` (glance sentences, four metrics with definitions,
+    four categories ok | investigate | insufficient with the rule that decided them, ≤ 3 findings with `next`, fingerprint,
+    feasibility readiness). No overall score. Served by `GET /assessments/:id/summary?point=` (consultant router, same
+    access as the chat; dataset cached 2 min) and used by the PDF executive page.
+  - Dataset (calc/rules `2026.11.2`): coverage per unique 10-minute slot at each slot's own cadence (`slotCoverage`;
+    mixed cadences disclosed, never summed past the window); `patterns.typical_weekday/weekend` (`typicalDay`: hourly
+    median, P10–P90 when ≥ 3 days); limitations in SAST.
+  - Portal site workspace (`app/portal/projects/[id]`): context strip `components/portal/SiteHeader.tsx`; tabs Summary
+    (`SummaryTab.tsx`), Energy and demand (assessment to date by default, actual range in every subtitle), Power quality
+    (`PowerQualityView.tsx`, from the dataset; replaces the old health-check view), Findings and actions, Reports and
+    data, Site details. Phase styling (colour + dash) in `lib/summary.ts` `PHASE`, mirrored in `pdf.ts` `PH`.
+  - Consultant: docked drawer (`html[data-consultant]` + `.consultant-shift` in `globals.css`); on a site page it is bound
+    to that site's live assessment only; navigation rebinds and drops late answers. Clients see "Measured-data summary"
+    when no model is used; the "no provider configured" note is staff-only.
+  - Rule finding texts follow the brief's recommendation rules (no capacitor/filter sizing, no rand estimate for baseload).
+  - PDFs: ~20 mm margins, 10.5 pt body, cover contents with page numbers, bookmarks, executive assessment page, numbered
+    figures with captions, small tables kept whole, long ones repeat their header.
+  - Ops: "Meter assets" / "Deploy meter" wording, content-sized queues, map explains zero located meters.
+  - Capability checklist: `docs/gridiq/CAPABILITY-MATRIX.md` (columns 1–3 unverified until the hardware pilot).
+  - Theme tokens: `tailwind.config.ts` colours `canvas surface surface-2/3 line line-strong ink ink-2/3 muted faint accent
+    ok warn bad` → `rgb(var(--c-*))`, values per `[data-theme]` in `globals.css` (plus `--chart-*`/`--tooltip-*` for
+    Recharts). Portal: `components/ThemeRoot.tsx`, light by default, dark toggle in the sidebar (localStorage only).
+    Ops sets `data-theme="dark"`. New portal UI uses token classes, never `slate-*`/`text-white` (except on saturated buttons).
+  - Portal sidebar is a drawer below 1024 px; skip link; visible focus on themed areas.
+  - Client navigation (2026-11-12 walkthrough): `/portal` is "Your sites", a grid of site tiles (`ProjectCard.tsx`).
+    Inside a site the sidebar switches to the site's sections (`lib/siteNav.ts`, `?view=overview|findings|finding&f=<id>|
+    energy|pq|investigate|reports|site`; old `?tab=` links still map). Findings are tiles (`FindingTiles.tsx`); a finding
+    has its own page (`FindingDetail.tsx`: measured → why it can matter → what to check → follow-up → the investigation
+    charts on the finding's window, channels per type in `lib/findings.ts`).
+  - Client experience pass (2026-11-12): every section is an `InsightCard` (`components/portal/Insight.tsx`: headline
+    sentence → one chart → takeaway → one action, method folded; `Sparkline`, `BulletBar`, `Skeleton`). Overview: `Journey`
+    (day X of N, real milestones), number tiles with 14-day trends. Energy (`EnergyView.tsx`): peak vs contracted limit with
+    top-5 intervals linking to Investigation (`?view=investigate&from&to`), load-duration curve (`/points/:id/demand` →
+    `duration_curve`, `hours_above_90pct_mdi`), daily energy, date × hour heatmap; no time-of-use cost (owner's decision).
+    Power quality: one bullet-bar row per quantity, detail folded. Investigation: starting points (`startingPoints`).
+    Site details: installation card and data-completeness calendar (`SiteDetails.tsx`).
+  - Sharing and booking (`src/sharing.ts`, migration `1793850000000_preview-shares-bookings`): client admins share the
+    PROVISIONAL report after 24 h of data (`preview_shares`, token hashed, valid until the earlier of expiry and the
+    assessment end, checked on every open; public page `/shared/<token>`, API `/public/preview/:token[?check=1]`).
+    "Book a follow-up assessment" (`booking_requests`; any client user incl. viewers) → ops Home panel, email to
+    `OPS_NOTIFY_EMAIL` when set.
+  - Data explorer (site section "Data explorer", `components/portal/DataExplorer.tsx`; `GET /points/:id/explore?from&to&
+    interval=auto|raw|1m|10m|1h&channels=`): up to 8 of `EXPLORE_CHANNELS` (`src/investigate.ts`; aggregate channels have
+    avg/min/max at every interval, per-phase P/Q/S/PF, L-L voltages and neutral current are raw only); raw ≤ 6 h (30 000 rows),
+    1m ≤ 3 d, 10m ≤ 31 d; corrections applied as in the point views; one chart per unit, synced readout, values table with
+    jump-to-time, client-side CSV, live refresh every 15 s.
+  - Overview (second pass): meter-silent banner, one hero card (headline + area list | compact journey), tiles energy /
+    demand / load factor / open findings; the context strip hides "time left" on the overview.
+  - Investigation (`src/investigate.ts`, migration `1793840000000_evidence-and-cases`): `GET /points/:id/investigate`
+    (≤ 31 days; 1m ≤ 6 h, 10m ≤ 4 d, else 1h; avg + bucket min/max + events), `GET /points/:id/compare` (before/after
+    10-minute stats, both windows inside the assessment), `evidence_refs` (saved windows; in the dataset as `evidence` and
+    in the overview PDF; removal keeps the row), `finding_cases` (owner, status, next step, due, verification; `verified`
+    needs a comparison result; audited). Writes: staff and client_admin. Web: `components/portal/InvestigateView.tsx`
+    (tab "Events and investigation", synced cursor, brush zoom, before/after, phase/channel toggles), findings as cases
+    with "Verify improvement" in `ProjectTabs.tsx`.
+  - Finding watches (`src/finding-watch.ts`, migration `1793860000000_finding-watches`): moving a finding to
+    "investigating" (`PATCH /recommendations/:id/case`) starts a watch of its condition at its point until the due date
+    (end of that SAST day) or 3 days, ≥ 1 day, never past the assessment end. Jobs role every 15 min: one note per SAST
+    day once settled (30 min), then a conclusion (verdict persists | intermittent | not_seen | insufficient; five sections
+    incl. "Suggested next step"). Measured-data text by default; with an AI provider and budget the model rewrites it from
+    the same evidence (cost in `ai_messages`). Shown to clients at once as "Automated conclusion · not yet reviewed by
+    GridIQ"; staff `POST /recommendations/:id/watch/review` (note) and `/watch/conclude` (now); staff/client_admin
+    `/watch/stop`; "not needed" or reopening stops it. Email to the starter and client admins with a grant. Returned as
+    `watch` on `GET /assessments/:id/cases`; web `components/portal/WatchPanel.tsx` (its suggestion pre-fills the action).
+  - Close-ups (`src/moments.ts`, `GET /points/:id/moments?kind=sags|voltage_high|thd|demand|imbalance|pf&from&to&limit`):
+    the worst 1-minute values of the window (≥ 30 min apart), each with every stored reading around it (2 min before to
+    3 after; ±15 min when the excursion runs off the frame, ±45 min for sparse meters) and `momentFacts`: exact extreme,
+    phases, duration, the load just before and at it, and a reading `site | supply | unclear` with what to verify. After
+    the first, only moments beyond the level get a card. Web: `components/portal/Closeups.tsx` on the finding page;
+    `MomentTeaser` on the site overview ("The moment that stood out": the most urgent open finding that has a moment,
+    compact card linking to it; hidden when nothing crossed its level).
+  - Point briefing (`src/point-context.ts`, migration `1793870000000_point-context`: `measurement_points.context`): the
+    consultant's questions to staff per point (connection, supplier, transformer, loads, largest motor and start method,
+    PF correction, generation, sensitive equipment, reported symptoms; follow-ups only when they apply). Staff:
+    `GET /points/:id/briefing`, `PATCH /points/:id {context}` (validated by `normaliseContext`); web
+    `components/ops/PointBriefing.tsx` on the ops project page. `siteHint(kind, ctx)` tailors rule findings
+    (`evidence.site_hint`, shown as "On your site"), watch conclusions and the consultant's measured-data answers;
+    `describeContext` goes into the dataset (`points[].briefing`), the model context and portal Site details.
+  - Speed: site tiles cached per site (fresh 10 s, stale ≤ 90 s with one background rebuild); the assessment dataset is
+    served stale ≤ 30 min while it rebuilds. Benchmark: `test/load/assessment-benchmark.js`.
 
 ---
 
@@ -252,7 +404,6 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
 | `/dashboard/tools/pv-sizer`, `/dashboard/savings`, `/dashboard/value`, `/dashboard/sites/[id]` (simulation tab) | Sizing and value tools, kept behind `NEXT_PUBLIC_FEATURE_TOOLS` (build arg from `FEATURE_TOOLS`, off by default). Every other old `/dashboard` and `/admin` URL redirects (`movedTo` in `middleware.ts`): clients to `/portal`, staff to `/ops` | Flagged |
 | `/ops` | **Ops console (Phase 8, internal roles):** Home, Fleet (+ device), Install wizard, Deployment (commissioning, corrections, remove), Review (findings, reports), Projects (+ project: points, energy balance, tariffs, live-data switch), Data health, Clients, Leads. Staff land here after login | ✅ Done |
 | `/portal` | **Client portal (Phase 8):** Overview (live tiles), Projects, Project (tabs: Overview, Metering layout, Energy balance, Load profile, Demand, Power quality, Findings, Reports), Point (the per-meter chart, by point), Alerts, Settings (branding, users). Reads `src/portal.ts` (point views, scoped); no internal fields | ✅ Done |
-| `/api/chat` | AI chat route (OpenAI — pending migration to Claude). Caddy routes `/api/chat*` to web, all other `/api/*` to the gateway | ✅ Done |
 
 ### Backend Services
 
@@ -285,7 +436,7 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
   project page, read-only in the portal's Metering layout tab.
 - The per-meter/point chart: `components/charts/MeasurementChart.tsx` (3-phase V/I, P/Q/S, PF,
   THD, frequency, energy; NRS 048-2 reference lines; states its aggregate and SAST).
-- The AI chat widget (`components/dashboard/ChatWidget.tsx`, `/api/chat`) sits in the portal layout.
+- The consultant widget (`components/dashboard/ChatWidget.tsx`, API `/ingestion/assessments/:id/chat`) sits in the portal layout.
 - Adding meters is ops-only: Fleet → New box (shows the broker username and topic), then Install.
   The old Add Meter screen is gone; CSV import is `/ops/import`.
 
@@ -323,6 +474,12 @@ bash deploy/status.sh                     # every service healthy
 - `JWT_SECRET` (32+ chars) is shared by every container. There are no
   credential fallbacks in code; services exit at startup without `DATABASE_URL` / `JWT_SECRET`.
 - Open `https://localhost` and accept the local-CA warning.
+
+**Demo assessments.** Clients see data only through a live assessment, so after seeding readings run
+`ALLOW_DEMO_SEED=true DATABASE_URL=... npx tsx scripts/seed-assessments.ts`: labelled `[DEMO]` assessments for the
+five demo sites (healthy HQ, factory over its MDI, mall with a harmonic issue, data centre 6 h in = insufficient data,
+Durban ended two days ago) granted to `demo@grid-iq.co.za`. Sign-in codes and other emails land in
+`.data/outbox/*.eml` with `EMAIL_PROVIDER=file`.
 
 **Seed the database (local dev only)**, through the override's 127.0.0.1:5432:
 ```bash
@@ -371,6 +528,8 @@ docker compose stop api               # ingestion keeps running: api, ingest and
 bash deploy/scripts/build-multiarch.sh   # buildx linux/arm64 + linux/amd64 for every image
 # Ingest load test (20 meters × 1 Hz + a 2 h store-and-forward replay; see the file header)
 npx tsx services/ingestion-service/test/load/simulate.ts --meters 20 --minutes 10 --backlog-hours 2
+# Read-side benchmark: 30 days at 1 Hz for one point, then dataset, PDFs and chart queries (throwaway migrated DB only)
+BENCH_DATABASE_URL=postgres://... node services/ingestion-service/test/load/assessment-benchmark.js --days 30
 npm run build && npm test             # web build needs NEXT_PUBLIC_API_URL (apps/web/.env.local)
 ```
 
@@ -384,6 +543,39 @@ then `npm run dev`. The ingestion service runs all three roles in one process
 After adding or pulling a migration, apply it from the host with
 `npm run migrate -w packages/db` (uses `DATABASE_URL` from your shell). Services
 refuse to start until it has run.
+
+### Live demo feed (local dev only)
+
+The five demo meters publish over MQTT every 5 s through the real ingest path
+(`src/demo-feed.ts`, compose profile `demo`), so the portal tiles show them live.
+Run `scripts/seed-readings.ts` first to fill history up to now. One-time setup:
+```bash
+# .env: DEMO_FEED_ALLOW=true and DEMO_FEED_MQTT_PASSWORD=<random>
+# mosquitto/config/acl: the "user demo-feed / topic write acuvim/+/telemetry" block (acl.example)
+MSYS_NO_PATHCONV=1 docker compose exec mosquitto mosquitto_passwd -b /mosquitto/config/passwd demo-feed '<DEMO_FEED_MQTT_PASSWORD>'
+docker compose kill -s SIGHUP mosquitto
+docker compose --profile demo up -d demo-feed     # stop: docker compose --profile demo stop demo-feed
+```
+- The energy register continues from each meter's last stored value. Rows are normal MQTT rows
+  (`time_source = 'DEVICE'`), on demo meters only. Never create the `demo-feed` broker user on a server.
+- Caddy's local certificates last ~12 h: if ingest or the feed log `certificate has expired`,
+  run `bash deploy/scripts/sync-mqtt-certs.sh`.
+
+### Public link to the local stack (Cloudflare quick tunnel, testing only)
+
+No server, account, card or domain: compose profile `tunnel` runs `cloudflared` and gives a
+random `https://<words>.trycloudflare.com` address for the web app and `/api`.
+```bash
+# once: in .env, WEB_API_URL=/api (the web calls the API on its own origin), then
+docker compose build web && docker compose up -d web
+MSYS_NO_PATHCONV=1 docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile   # after a Caddyfile change
+docker compose --profile tunnel up -d tunnel && bash deploy/tunnel-url.sh
+docker compose --profile tunnel stop tunnel        # take it offline
+```
+- cloudflared reaches Caddy's plain `http://:8080` listener on the compose network (never
+  published); Caddy trusts its `X-Forwarded-Proto`, so redirects stay on the tunnel's https host.
+- The address changes on every start, works only while this PC runs, and carries no MQTT
+  (meters cannot use it). Anyone with the link reaches the login page.
 
 ### Test a meter reading via MQTT
 Local dev, plain listener on 127.0.0.1:1883 (from the override). The ACL only
@@ -438,22 +630,17 @@ Compose stack behind Caddy with a real domain. The steps are in
 
 ## Pending Tasks (Priority Order)
 
-### 2. Migrate AI chat from OpenAI to Claude
-- File: `apps/web/app/api/chat/route.ts`
-- Currently uses OpenAI — migrate to Anthropic Claude Sonnet
-- Also inject energy score + top recommendations as context so chat is site-aware
+The GridIQ status table, launch decisions and follow-ups are in `docs/gridiq/PLAN-AND-STATUS.md` and
+`docs/gridiq/AUDIT.md`. In short:
 
-### 3. Oracle migration (plan phases 2–5, then Part D)
-- Phases 2–9 done (6 fleet model, 7 roles/scoping/review, 8 ops console + client portal in three PRs, 9 public API, API keys, exports, report PDFs). Parquet exports are a later addition (CSV now). Phase 9 is the plan's last build phase; what remains is Part D, the owner's go-live runbook (Oracle VM, DNS, first start, smoke tests, meter cutover, backups, Milestone A checklist). The legacy `sites`/`meters` views stay until the API itself moves to the new names. Part D is the owner's go-live runbook.
-- Phase 8 conventions: new pages use TanStack Query and `apps/web/lib/api.ts` (`apiGet`, `apiSend`, SAST date helpers: every chart and date states its basis and time zone); ops UI blocks in `components/ops/ui.tsx`; fleet health rules in `lib/ops.ts` (`deviceHealth`, `projectFlags`); portal types/role hook in `lib/portal.ts`; the shared chart `components/charts/MeasurementChart.tsx` (meter page and portal point page) and `components/fleet/BalanceView.tsx`. Portal API (`src/portal.ts`): `/portal/projects`, `/portal/projects/:id`, `/points/:id/readings|load-profile|demand|power-quality`, all from `point_readings_*` (corrected, per deployment window). Client admins manage their own users through the auth service (`GET/POST/PATCH/DELETE /users`). Setup (projects, points, installs, CSV import) is ops-only; client_admin manages its own users.
-
-### 4. Security hardening
-- Replace localStorage JWT storage with HTTPOnly cookies
-- Ensure all ingestion-service endpoints validate JWT tenant scope
-
-### 5. Stripe / billing integration
-- Monthly subscription per site
-- Webhook for payment events
+1. Business decisions: VAT basis and inclusions per package, prices, exact meter hardware and capabilities, email
+   provider, retention wording vs backup retention, AI provider and budget.
+2. Phase 5 pilot on real Acuvim hardware (cadence, buffering, replay, coverage, delivery, operator effort).
+3. Follow-ups: internal cost/contribution view; AI digest of new findings; WhatsApp adapter (flagged); individual
+   harmonic orders and device events ingestion; make CSV backdating of deployments an explicit audited choice;
+   restructure the shared dashboard tabs (Overview, Live readings, Energy and demand, Power quality, Findings,
+   Reports/data); token CSRF in addition to SameSite=Strict; performance benchmark of a 30-day 1 Hz assessment.
+4. Oracle go-live (Part D of `docs/planning/GRIDIQ_ORACLE_PLAN.md`): the owner's runbook.
 
 ---
 
@@ -475,7 +662,8 @@ Compose stack behind Caddy with a real domain. The steps are in
 ## Code Conventions
 
 - **API calls:** All frontend calls go through `NEXT_PUBLIC_API_URL` (the API gateway). Never call auth/ingestion services directly.
-- **Auth:** JWT stored in localStorage (to be migrated to HTTPOnly cookies). Sent as `Authorization: Bearer <token>`.
+- **Auth:** the session JWT is an HttpOnly, SameSite=Strict cookie set by the auth service (localStorage holds display info only); API keys and scripts send `Authorization: Bearer`.
+- **Client data access:** never gate on roles or projects alone: client reads go through `telemetrySql` / `findPoint` (live assessment grant) and clamp ranges with `clampToAccess` + `alignInward`. A new client route needs a test in `test/db/scoping.test.js` (scanned) and, if it serves deliverables, `deliverySql`.
 - **Tenant isolation:** through `req.scope` and the repository functions in `services/ingestion-service/src/scope.ts` only; no route writes its own `role === 'super_admin'` / `tenant_id = $n` check. A new route must be covered by `test/db/scoping.test.js` (it scans the sources for routes).
 - **Roles:** check `req.scope.isInternal` / `canWrite(req.scope)`, never role strings; client data shown to clients goes through `forClient`.
 - **New tables and queries** use `projects`, `devices`, `measurement_points`, `deployments`; attribute readings to a project or point only through `point_readings_*` (never by `devices.site_id`).

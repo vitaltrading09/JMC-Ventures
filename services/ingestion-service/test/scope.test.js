@@ -77,7 +77,16 @@ test('scope filters', async (t) => {
 
     await t.test('telemetry and moved-device conditions apply to clients only', () => {
         assert.strictEqual(telemetrySql(buildScope({ role: 'super_admin' }), 'p'), 'TRUE');
-        assert.match(telemetrySql(buildScope({ role: 'client_viewer', tenantId: A }), 'p'), /p\.live_data_visible OR EXISTS/);
+        // Clients: a live assessment grant for this user; no user id = nothing.
+        const uid = '11111111-1111-1111-1111-111111111111';
+        const sql = telemetrySql(buildScope({ role: 'client_viewer', tenantId: A, userId: uid }), 'p');
+        assert.match(sql, /ax\.project_id = p\.id/);
+        assert.match(sql, /ax\.start_at <= NOW\(\) AND NOW\(\) < ax\.end_at/);
+        assert.match(sql, new RegExp(`g\.user_id = '${uid}'`));
+        assert.doesNotMatch(sql, /live_data_visible/);
+        assert.match(telemetrySql(buildScope({ role: 'client_viewer', tenantId: A }), 'p'), /FALSE/);
+        // A non-UUID user id is never inlined.
+        assert.match(telemetrySql(buildScope({ role: 'client_viewer', tenantId: A, userId: "x' OR 1=1 --" }), 'p'), /FALSE/);
         assert.strictEqual(exclusiveDeviceSql(buildScope({ role: 'engineer' }), 'd', []), 'TRUE');
     });
 

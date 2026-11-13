@@ -65,7 +65,7 @@ export default function ValueLedgerPage() {
     return (
         <div className="space-y-8 animate-in fade-in duration-500">
             <div>
-                <h1 className="text-3xl font-bold tracking-tight text-white">What Grid-IQ Has Caught</h1>
+                <h1 className="text-3xl font-bold tracking-tight text-white">What GridIQ Has Caught</h1>
                 <p className="text-slate-400 mt-1">
                     The running record of what continuous monitoring has found on your sites.
                 </p>

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-    title: "Grid-IQ | Intelligent Energy Optimization",
+    title: "GridIQ | Site energy assessments",
     description: "Enterprise Multi-Tenant SaaS Platform for Energy Intelligence",
 };
 

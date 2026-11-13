@@ -1,0 +1,163 @@
+{
+  "schema": "gridiq.assessment-package/1",
+  "dataset_schema": "gridiq.assessment-dataset/1",
+  "assessment": {
+    "id": "8f62a425-86c8-4b98-98a2-2ceb7264b0d3",
+    "reference": "GQ-A-0004",
+    "client": "Demo Corporation",
+    "site": "Durban Distribution Ctr",
+    "period_from": "2026-11-02T19:00:36.240Z",
+    "period_to": "2026-11-09T19:00:36.240Z",
+    "timezone": "Africa/Johannesburg",
+    "revision": 2
+  },
+  "points": [
+    {
+      "id": "b7a6f33c-5b87-436a-9b78-c0b3269aca29",
+      "name": "PV",
+      "role": "pv",
+      "parent_point_id": "b3a3ffc8-855a-451d-b738-897b01ad1949",
+      "deployments": [
+        {
+          "sign": 1,
+          "model": "Acuvim II",
+          "scale": 1,
+          "device": null,
+          "removed_at": null,
+          "installed_at": "2026-11-05T20:17:00.000Z"
+        }
+      ],
+      "coverage": 0.109,
+      "gaps": [
+        {
+          "to": "2026-11-05T20:40:00.000Z",
+          "from": "2026-11-02T19:00:36.240Z"
+        },
+        {
+          "to": "2026-11-08T21:30:00.000Z",
+          "from": "2026-11-06T15:00:00.000Z"
+        },
+        {
+          "to": "2026-11-09T19:00:36.240Z",
+          "from": "2026-11-08T21:40:00.000Z"
+        }
+      ]
+    },
+    {
+      "id": "b3a3ffc8-855a-451d-b738-897b01ad1949",
+      "name": "Warehouse Main",
+      "role": "incomer",
+      "parent_point_id": null,
+      "deployments": [
+        {
+          "sign": 1,
+          "model": "EM6400",
+          "scale": 1,
+          "device": null,
+          "removed_at": null,
+          "installed_at": "2026-08-05T20:45:00.000Z"
+        }
+      ],
+      "coverage": 1,
+      "gaps": [
+        {
+          "to": "2026-11-08T21:30:00.000Z",
+          "from": "2026-11-06T15:00:00.000Z"
+        },
+        {
+          "to": "2026-11-09T19:00:36.240Z",
+          "from": "2026-11-08T21:40:00.000Z"
+        }
+      ]
+    }
+  ],
+  "conventions": {
+    "timestamps": "UTC ISO 8601",
+    "rows": "period-ending: period_start <= t < period_end",
+    "missing": "empty cell (never zero)",
+    "sign": "import positive; the deployment sign correction is applied",
+    "corrected": "deployment sign and scale corrections applied; original raw readings are unchanged",
+    "units": {
+      "voltage": "V (phase-to-neutral)",
+      "current": "A",
+      "power_active": "kW",
+      "power_reactive": "kvar",
+      "power_apparent": "kVA",
+      "power_factor": "signed ratio",
+      "frequency": "Hz",
+      "thd": "% of fundamental",
+      "energy": "kWh (register value)"
+    },
+    "column_units": {
+      "voltage_a_avg": "V",
+      "voltage_b_avg": "V",
+      "voltage_c_avg": "V",
+      "current_a_avg": "A",
+      "current_b_avg": "A",
+      "current_c_avg": "A",
+      "power_active_total_avg": "kW",
+      "power_reactive_total_avg": "kvar",
+      "power_apparent_total_avg": "kVA",
+      "power_factor_total_avg": "",
+      "frequency_avg": "Hz",
+      "thd_voltage_a_avg": "%",
+      "thd_voltage_b_avg": "%",
+      "thd_voltage_c_avg": "%",
+      "thd_current_a_avg": "%",
+      "thd_current_b_avg": "%",
+      "thd_current_c_avg": "%",
+      "energy_import_total_last": "kWh",
+      "energy_export_total_last": "kWh"
+    }
+  },
+  "versions": {
+    "calc": "gridiq-calc-2026.11.1",
+    "rules": "gridiq-rules-2026.11.1",
+    "template": "gridiq-templates-2026.11.1"
+  },
+  "files": [
+    {
+      "name": "load_profile_30min.csv",
+      "description": "30-minute interval load profile per point (kW, kVA, billed-demand basis)",
+      "rows": 222,
+      "bytes": 49171,
+      "sha256": "8a5241a8d88b049e0e267f8cf18e775b9582e2858a0ed327f56b6f06388dc8ed"
+    },
+    {
+      "name": "readings_1min.csv",
+      "description": "1-minute averages of the core channels per point (raw 1-second data available on request within retention)",
+      "rows": 3077,
+      "bytes": 1066102,
+      "sha256": "704b261435c689cd5460452bd5b2cf2ce9af1a52cbff07bdaa5961c0ed271305"
+    },
+    {
+      "name": "daily_energy.csv",
+      "description": "SAST daily peaks and energy (hourly power-integration estimate; period totals use the registers)",
+      "rows": 9,
+      "bytes": 1143,
+      "sha256": "2a393787970686159e98e8b481b61b6b2cb4558525bfc27282a7f54063ea32b7"
+    },
+    {
+      "name": "findings.csv",
+      "description": "Rule findings with their review state (observations and recommended verification; not engineering conclusions)",
+      "rows": 1,
+      "bytes": 974,
+      "sha256": "88259bb1735491564f4eeace6d47da0611e1b32f4c06c8fc51bcf339092fb886"
+    },
+    {
+      "name": "handover-r2.pdf",
+      "description": "report PDF (frozen revision)",
+      "rows": null,
+      "bytes": 8287,
+      "sha256": "08d8771ed4eae9994efe66d222e5582425648e46ea1a976e5037678c7d625ba2"
+    },
+    {
+      "name": "overview-r2.pdf",
+      "description": "report PDF (frozen revision)",
+      "rows": null,
+      "bytes": 12529,
+      "sha256": "3136ed9be042d1352ec7beffcf9d3b7522446ce5f3f99260f0a64c34b30750dc"
+    }
+  ],
+  "generated_at": "2026-11-11T19:13:53.214Z"
+}

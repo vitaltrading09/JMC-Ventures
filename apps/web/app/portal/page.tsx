@@ -1,43 +1,38 @@
 "use client";
 
-// Portal overview: every project at a glance, open alerts, latest published reports.
+// Client home: the client's sites as tiles. Everything else (findings, charts,
+// reports) is one click away inside a site; alerts have their own page.
 
-import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { apiGet, fmtDateTime, TZ_LABEL } from "@/lib/api";
+import { apiGet } from "@/lib/api";
 import type { PortalProject } from "@/lib/portal";
 import { ProjectCard } from "@/components/portal/ProjectCard";
-import { PageHeader, Panel, Loading, ErrorBox, Empty, Badge } from "@/components/ops/ui";
+import { usePortalAssessments } from "@/components/portal/AssessmentBanner";
+import { Loading, ErrorBox, Empty } from "@/components/ops/ui";
 
-interface Alert { id: string; meter_name: string; type: string; severity: string; message: string; created_at: string; is_read: boolean; }
-
-export default function PortalOverview() {
+export default function PortalHome() {
     const projects = useQuery({ queryKey: ["portal-projects"], queryFn: () => apiGet<PortalProject[]>("/ingestion/portal/projects"), refetchInterval: 60_000 });
-    const alerts = useQuery({ queryKey: ["alerts"], queryFn: () => apiGet<Alert[]>("/ingestion/alerts") });
-    const open = (alerts.data ?? []).filter((a) => !a.is_read).slice(0, 8);
+    const assessments = usePortalAssessments();
+    const assessmentFor = (id: string) => (assessments.data ?? []).filter((a) => a.project_id === id)
+        .sort((a, b) => Number(b.live) - Number(a.live) || new Date(b.start_at ?? 0).getTime() - new Date(a.start_at ?? 0).getTime())[0] ?? null;
+    const sites = (projects.data ?? []).filter((p) => p.status !== "archived");
+    const live = sites.filter((p) => assessmentFor(p.id)?.live).length;
 
     return (
-        <div className="space-y-6">
-            <PageHeader title="Overview" subtitle={`Your projects at a glance. Live values are 1-minute averages; times ${TZ_LABEL}.`} />
-            {projects.isLoading ? <Loading /> : projects.error ? <ErrorBox error={projects.error} /> : (projects.data ?? []).length === 0
-                ? <Empty>No projects yet.</Empty> : (
-                    <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-                        {projects.data!.filter((p) => p.status !== "archived").map((p) => <ProjectCard key={p.id} p={p} />)}
+        <div className="max-w-6xl">
+            <header className="mb-8">
+                <h1 className="text-[28px] font-semibold text-ink">Your sites</h1>
+                <p className="mt-1 text-[15px] text-muted">
+                    {sites.length ? `${live} of ${sites.length} site${sites.length === 1 ? "" : "s"} being measured now. Open a site to see what was measured, what we found and what to do next.` : " "}
+                </p>
+            </header>
+            {projects.isLoading ? <Loading /> : projects.error ? <ErrorBox error={projects.error} /> : sites.length === 0
+                ? <Empty>No sites yet. GridIQ adds your site when your assessment is booked.</Empty> : (
+                    <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+                        {[...sites].sort((a, b) => Number(!!assessmentFor(b.id)?.live) - Number(!!assessmentFor(a.id)?.live) || a.name.localeCompare(b.name))
+                            .map((p) => <ProjectCard key={p.id} p={p} a={assessmentFor(p.id)} />)}
                     </div>
                 )}
-            <Panel title="Open alerts" actions={<Link href="/portal/alerts" className="text-xs text-blue-300 hover:underline">all alerts</Link>}>
-                {alerts.isLoading ? <Loading /> : open.length === 0 ? <Empty>No open alerts.</Empty> : (
-                    <ul className="divide-y divide-slate-800">
-                        {open.map((a) => (
-                            <li key={a.id} className="flex items-start gap-3 py-2 text-sm">
-                                <Badge tone={a.severity === "CRITICAL" || a.severity === "HIGH" ? "red" : a.severity === "WARNING" || a.severity === "MEDIUM" ? "amber" : "grey"}>{a.severity}</Badge>
-                                <span className="text-slate-300 flex-1">{a.meter_name}: {a.message}</span>
-                                <span className="text-xs text-slate-500 whitespace-nowrap">{fmtDateTime(a.created_at)}</span>
-                            </li>
-                        ))}
-                    </ul>
-                )}
-            </Panel>
         </div>
     );
 }

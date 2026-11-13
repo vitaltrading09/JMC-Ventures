@@ -8,3 +8,8 @@ pattern write acuvim/%u/telemetry
 # ingest service
 user gridiq-ingest
 topic read acuvim/+/telemetry
+
+# Local dev only: the live demo feed (compose profile "demo") publishes for every
+# demo meter. Never create this user on a server.
+user demo-feed
+topic write acuvim/+/telemetry

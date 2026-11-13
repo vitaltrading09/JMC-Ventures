@@ -22,14 +22,23 @@ import { buildRenewalReview, runRenewalSweep } from './renewal';
 import { fleetRouter, extendFirstDeployment } from './fleet/routes';
 import { runCommissioning } from './fleet/commissioning';
 import {
-    buildScope, normaliseRole, viewerMayCall, tenantSql, telemetrySql, exclusiveDeviceSql, forClient, canWrite,
-    findSite, findMeter, findOwned, meterParam, siteParam, requireWrite,
+    buildScope, normaliseRole, viewerMayCall, tenantSql, telemetrySql, deliverySql, exclusiveDeviceSql, forClient, canWrite,
+    findSite, findMeter, findOwned, meterParam, siteParam, requireWrite, seesUnpublishedFindings,
 } from './scope';
 import { reviewRouter } from './review';
 import { opsRouter } from './ops';
 import { portalRouter } from './portal';
+import { assessmentsRouter, expireAssessments } from './assessments/routes';
+import { deliverablesRouter, runCloseouts, notifyNearingEnd } from './reports/closeout';
+import { sendDueEmails } from './notify/email';
+import { consultantRouter } from './consultant';
+import { investigateRouter } from './investigate';
+import { sharingRouter } from './sharing';
+import { runRetention } from './assessments/retention';
+import { runWatches } from './finding-watch';
 import { v1Router } from './v1/routes';
 import { runExports, expireExports } from './v1/exports-job';
+import { runRuleFindings } from './findings-rules';
 import { randomBytes, createHash } from 'crypto';
 import {
     generateAndStoreSiteRecommendations,
@@ -335,7 +344,43 @@ function registerJobs(pool: Pool) {
         }
     });
 
-    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00, exports 1m)');
+    // Rule-based findings (src/findings-rules.ts): drafts from 7 days of measured data,
+    // hourly and once two minutes after start. No AI provider needed.
+    let findingRules = false;
+    const runRules = async () => {
+        if (findingRules) return;
+        findingRules = true;
+        try {
+            const c = await runRuleFindings(pool);
+            if (c.inserted || c.cleared) console.log(`[FINDINGS] rules: ${c.points} points, ${c.inserted} new, ${c.refreshed} refreshed, ${c.cleared} cleared`);
+        } catch (e: any) {
+            console.error('[FINDINGS] rules run failed:', e?.message || e);
+        } finally {
+            findingRules = false;
+        }
+    };
+    cron.schedule('7 * * * *', runRules);
+    // Assessments past end_at → ended (follow-up only; access already stops in SQL).
+    cron.schedule('* * * * *', async () => {
+        try {
+            const n = await expireAssessments(pool);
+            if (n) console.log(`[assessments] ${n} ended`);
+        } catch (e: any) { console.error('[assessments] expiry failed:', e?.message || e); }
+    });
+    // Close-out after the end + late-data window; nearing-end notices; the email
+    // outbox; retention purges. Each is idempotent and safe to run on restart.
+    const job = (name: string, fn: () => Promise<number>) => async () => {
+        try { const n = await fn(); if (n) console.log(`[jobs] ${name}: ${n}`); }
+        catch (e: any) { console.error(`[jobs] ${name} failed:`, e?.message || e); }
+    };
+    cron.schedule('*/5 * * * *', job('assessment close-out', () => runCloseouts(pool)));
+    cron.schedule('*/15 * * * *', job('nearing-end notices', () => notifyNearingEnd(pool)));
+    cron.schedule('* * * * *', job('email outbox', () => sendDueEmails(pool)));
+    cron.schedule('17 * * * *', job('retention purge', () => runRetention(pool)));
+    cron.schedule('3-59/15 * * * *', job('finding watches', () => runWatches(pool)));
+    setTimeout(runRules, 120_000).unref();
+
+    console.log('[jobs] Cron schedules registered (score 5m, renewal 06:00, predictive 30m, alerts: events 1m, demand/data health 5m, 10-minute quality 10m, THD-I trend 07:00, exports 1m, rule findings 1h, assessment expiry 1m, close-out 5m, notices 15m, email 1m, retention 1h)');
 }
 
 // Health of the roles this process runs. Shared by the api /health route and
@@ -419,6 +464,14 @@ app.use(opsRouter(pool, authenticateToken));
 app.use(portalRouter(pool, authenticateToken));
 // Public API v1 (src/v1/routes.ts): API keys or sessions, OpenAPI at /v1/openapi.json, docs at /v1/docs.
 app.use(v1Router(pool, authenticateToken));
+// GridIQ assessments: packages, lifecycle, access grants, asset history (src/assessments/routes.ts).
+app.use(assessmentsRouter(pool, authenticateToken));
+// Report revisions, previews, deliverables and final-delivery links (src/reports/closeout.ts).
+app.use(deliverablesRouter(pool, authenticateToken));
+// The assessment consultant (src/consultant.ts): scoped retrieval, budgets, provider adapters.
+app.use(consultantRouter(pool, authenticateToken));
+app.use(investigateRouter(pool, authenticateToken));
+app.use(sharingRouter(pool, authenticateToken));
 
 // Deep health for an external uptime monitor (src/health.ts). Token header,
 // no JWT: the monitor is not a user. Disabled unless HEALTH_TOKEN is set.
@@ -1316,7 +1369,7 @@ app.get('/meters/:id/compliance/history', authenticateToken, meterParam(pool, { 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Value ledger — what Grid-IQ has caught for this client. Shown when the
+// Value ledger — what GridIQ has caught for this client. Shown when the
 // invoice lands: the running record of monitoring actually earning its keep.
 // ─────────────────────────────────────────────────────────────────────────────
 // ── Maximum demand, on the basis the utility actually bills ──────────────────
@@ -1819,6 +1872,9 @@ function publicRateLimited(ip: string): boolean {
     return entry.count > 30;                       // 30 views/minute/IP
 }
 
+/** Share links act like a key on their project: delivery rules, no user grant. */
+const LINK_SCOPE = { ...buildScope({ role: 'client_viewer', tenantId: null }), apiKey: { id: 'share-link', scopes: [], projectIds: null } };
+
 app.get('/public/report/:token', async (req: any, res) => {
     const ip = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '')
         .split(',')[0].trim();
@@ -1839,10 +1895,12 @@ app.get('/public/report/:token', async (req: any, res) => {
         const q = await client.query(`
             SELECT s.id, s.meter_id, s.period_days, s.expires_at, s.revoked_at,
                    r.status AS report_status, r.period_start, r.period_end,
+                   ${deliverySql(LINK_SCOPE, 'pj')} AS deliverable,
                    t.brand_name, t.brand_logo_url, t.brand_footer
             FROM report_shares s
             LEFT JOIN reports r ON r.id = s.report_id
             LEFT JOIN tenants t ON s.tenant_id = t.id
+            LEFT JOIN projects pj ON pj.id = s.site_id
             WHERE s.token_hash = $1
         `, [sha256(token)]);
         share = q.rows[0];
@@ -1860,6 +1918,9 @@ app.get('/public/report/:token', async (req: any, res) => {
     }
     // Phase 7: a link serves only a report an internal user has published.
     if (share.report_status !== 'published') return res.status(410).json({ error: 'not_published' });
+    // GridIQ assessments: a link works only while the project's assessment is
+    // live or within its final-delivery window.
+    if (!share.deliverable) return res.status(410).json({ error: 'assessment_ended' });
 
     try {
         // The published report's own period, not "the last N days".
@@ -2365,7 +2426,7 @@ app.get('/sites/scores', authenticateToken, async (req: any, res) => {
 // GET /sites/:id/recommendations — active recommendations for a site
 app.get('/sites/:id/recommendations', authenticateToken, siteParam(pool), async (req: any, res) => {
     try {
-        const recs = await getSiteRecommendations(pool, req.params.id, req.scope.isInternal);
+        const recs = await getSiteRecommendations(pool, req.params.id, seesUnpublishedFindings(req.scope));
         res.json(recs.map((r) => forClient(req.scope, r)));
     } catch (err) {
         res.status(500).json({ error: 'Error fetching recommendations' });
@@ -2375,7 +2436,7 @@ app.get('/sites/:id/recommendations', authenticateToken, siteParam(pool), async 
 // GET /recommendations — all recommendations for the tenant
 app.get('/recommendations', authenticateToken, async (req: any, res) => {
     try {
-        const recs = await getTenantRecommendations(pool, req.scope.filterTenantId, req.scope.isInternal);
+        const recs = await getTenantRecommendations(pool, req.scope.filterTenantId, seesUnpublishedFindings(req.scope));
         res.json(recs.map((r) => forClient(req.scope, r)));
     } catch (err) {
         res.status(500).json({ error: 'Error fetching recommendations' });
@@ -2407,7 +2468,7 @@ app.post('/sites/:id/recommendations/generate', authenticateToken, siteParam(poo
 // GET /meters/:id/recommendations — active recommendations for a single meter
 app.get('/meters/:id/recommendations', authenticateToken, meterParam(pool), async (req: any, res) => {
     try {
-        const recs = await getMeterRecommendations(pool, req.params.id, req.scope.isInternal);
+        const recs = await getMeterRecommendations(pool, req.params.id, seesUnpublishedFindings(req.scope));
         res.json(recs.map((r) => forClient(req.scope, r)));
     } catch (err) {
         res.status(500).json({ error: 'Error fetching meter recommendations' });
@@ -2443,7 +2504,7 @@ app.post('/recommendations/:id/notify', authenticateToken, async (req: any, res)
     try {
         // The recommendation belongs to this tenant and, for a client, is published.
         const rec = await findOwned(client, req.scope, 'recommendations', id,
-            req.scope.isInternal ? 'TRUE' : "x.review_status = 'published'");
+            seesUnpublishedFindings(req.scope) ? "x.review_status <> 'dismissed'" : "x.review_status = 'published'");
         if (!rec) return res.status(403).json({ error: 'Forbidden' });
 
         // Prevent duplicate active leads for the same recommendation

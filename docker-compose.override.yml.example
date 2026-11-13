@@ -21,3 +21,8 @@ services:
       # With APP_DOMAIN=localhost Caddy issues certificates from its own local
       # CA; sync-mqtt-certs.sh copies that root to mqtt-certs/ca.crt.
       MQTT_CA_CERT: /mqtt-certs/ca.crt
+
+  # Live demo feed (profile "demo"): trusts the same local Caddy CA as ingest.
+  demo-feed:
+    environment:
+      MQTT_CA_CERT: /mqtt-certs/ca.crt

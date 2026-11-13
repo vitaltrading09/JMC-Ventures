@@ -8,7 +8,7 @@ export interface FleetRow {
     name: string;
     serial_number: string | null;
     model: string | null;
-    status: "in_stock" | "deployed" | "maintenance" | "retired";
+    status: "available" | "reserved" | "in_transit" | "deployed" | "maintenance" | "retired";
     mqtt_username: string | null;
     calibration_due_on: string | null;
     firmware: string | null;
@@ -22,6 +22,10 @@ export interface FleetRow {
     project_id: string | null;
     project_name: string | null;
     tenant_name: string | null;
+    /** Recorded installation location of the current project (not live GPS). */
+    gps_lat: number | null;
+    gps_lon: number | null;
+    project_address: string | null;
     last_seen: string | null;
     coverage_24h: string | number | null;
     /** The box's reporting interval (median sample spacing), seconds. */

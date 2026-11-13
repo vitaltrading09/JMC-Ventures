@@ -101,7 +101,7 @@ export default function PVSizerPage() {
                                     className="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
                                 />
                                 <div className="mt-2 text-xs text-slate-500">
-                                    Pulls from the project tariff (set by Grid-IQ)
+                                    Pulls from the project tariff (set by GridIQ)
                                 </div>
                             </div>
 

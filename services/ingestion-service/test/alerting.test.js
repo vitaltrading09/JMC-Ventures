@@ -24,7 +24,7 @@ test('undervoltage on 10-minute RMS: NRS 048 defaults, worst phase first, basis 
     assert.strictEqual(rest.length, 0);
     assert.strictEqual(a.type, 'VOLTAGE_SAG');
     assert.strictEqual(a.severity, 'CRITICAL');
-    assert.match(a.message, /^10-minute RMS voltage below the 207 V limit on L2 201\.3 V, L3 205\.0 V \(10:20–10:30 UTC\)/);
+    assert.match(a.message, /^10-minute RMS voltage below the 207 V limit on L2 201\.3 V, L3 205\.0 V \(12:20–12:30 SAST\)/);
     assert.match(a.message, /10-minute values/);
     assert.strictEqual(a.dedupeKey, '2026-11-04T10', 'one per meter per type per hour');
 });
@@ -60,7 +60,7 @@ test('demand: 30-minute averages against contracted MDI and the kW limit', () =>
     const base = { tenant_id: 't1', meter_id: 'm1', bucket: '2026-11-04T10:00:00Z', minutes: 30, kva_demand: '816.2', kw_demand: '790', contracted_mdi_kva: '800', alert_max_kw: '750' };
     const out = evaluateDemand(base);
     assert.deepStrictEqual(out.map((a) => a.type), ['MDI_EXCEEDED', 'PEAK_DEMAND']);
-    assert.match(out[0].message, /^30-minute average demand of 816\.2 kVA \(10:00–10:30 UTC\) exceeded the 800 kVA contracted MDI \(102%\)/);
+    assert.match(out[0].message, /^30-minute average demand of 816\.2 kVA \(12:00–12:30 SAST\) exceeded the 800 kVA contracted MDI \(102%\)/);
     assert.match(out[1].message, /^30-minute average demand of 790\.0 kW/);
     assert.strictEqual(out[0].dedupeKey, '2026-11-04T10:00:00.000Z');
     assert.deepStrictEqual(evaluateDemand({ ...base, kva_demand: '730', kw_demand: '700' }).map((a) => a.type), ['MDI_WARNING']);
@@ -70,7 +70,7 @@ test('demand: 30-minute averages against contracted MDI and the kW limit', () =>
 test('instantaneous MDI warning keeps its careful wording', () => {
     const [a] = evaluateInstantMdi({ tenant_id: 't1', meter_id: 'm1', bucket: '2026-11-04T10:07:00Z', kva_max: '812', contracted_mdi_kva: '800' });
     assert.strictEqual(a.type, 'MDI_INSTANT');
-    assert.match(a.message, /^Instantaneous load reached 812\.0 kVA at 10:07 UTC \(highest 1-second reading in that minute\)/);
+    assert.match(a.message, /^Instantaneous load reached 812\.0 kVA at 12:07 SAST \(highest 1-second reading in that minute\)/);
     assert.match(a.message, /Billed demand is the highest 30-minute average/);
     assert.deepStrictEqual(evaluateInstantMdi({ tenant_id: 't1', meter_id: 'm1', bucket: 'x', kva_max: '700', contracted_mdi_kva: '800' }), []);
 });
@@ -81,7 +81,7 @@ test('events: by type and duration, per-site minimum, keyed on the event', () =>
     const [a] = evaluateEvent(ev, 10);
     assert.strictEqual(a.type, 'EVENT_UNDERVOLTAGE');
     assert.strictEqual(a.dedupeKey, 'e-1');
-    assert.match(a.message, /^Undervoltage on L2 lasting 42 s from 10:05 UTC: lowest 196\.2 V against the 207 V limit \(event duration from 1-second readings/);
+    assert.match(a.message, /^Undervoltage on L2 lasting 42 s from 12:05 SAST: lowest 196\.2 V against the 207 V limit \(event duration from 1-second readings/);
     assert.deepStrictEqual(evaluateEvent({ ...ev, duration_s: 6 }, 10), [], 'shorter than the default minimum');
     assert.deepStrictEqual(evaluateEvent({ ...ev, event_alert_min_s: 60 }, 10), [], 'site minimum wins');
     const [ongoing] = evaluateEvent({ ...ev, ended_at: null, duration_s: 400, type: 'OVERFREQUENCY', channel: 'frequency', extreme_value: 51.37, threshold: 51 }, 10);
@@ -106,7 +106,7 @@ test('data health', async (t) => {
     await t.test('coverage below 95% relative to the meter\'s usual interval', () => {
         const [a] = evaluateHealth(row({ hour_samples: 3240 }), now, 5);
         assert.strictEqual(a.type, 'LOW_COVERAGE');
-        assert.match(a.message, /90% data coverage in the hour from 09:00 UTC \(3240 of about 3600 readings/);
+        assert.match(a.message, /90% data coverage in the hour from 11:00 SAST \(3240 of about 3600 readings/);
         // A meter that reports every 5 minutes is complete with 12 readings an hour.
         assert.deepStrictEqual(evaluateHealth(row({ hour_samples: 12, typical_spacing_s: 300 }), now, 5), []);
     });

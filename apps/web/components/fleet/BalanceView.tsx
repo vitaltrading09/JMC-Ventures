@@ -17,7 +17,7 @@ export interface Balance {
 }
 
 export function BalanceView({ b }: { b: Balance }) {
-    const kwh = (v: number | null) => (v === null ? <span className="text-amber-300">not available</span> : `${num(v)} kWh`);
+    const kwh = (v: number | null) => (v === null ? <span className="text-warn">not available</span> : `${num(v)} kWh`);
     const rows: [string, number | null][] = [
         ["Grid import", b.grid_import_kwh], ["Grid export", b.grid_export_kwh], ["PV generation", b.pv_generation_kwh],
         ["Battery discharge", b.bess_discharge_kwh], ["Battery charge", b.bess_charge_kwh], ["Generator", b.generator_kwh],
@@ -26,19 +26,19 @@ export function BalanceView({ b }: { b: Balance }) {
     return (
         <div className="grid lg:grid-cols-2 gap-6">
             <div>
-                <dl className="divide-y divide-slate-800 text-sm">
-                    {rows.map(([l, v]) => <div key={l} className="flex justify-between py-1.5"><dt className="text-slate-400">{l}</dt><dd className="text-slate-100">{kwh(v)}</dd></div>)}
+                <dl className="divide-y divide-line text-sm">
+                    {rows.map(([l, v]) => <div key={l} className="flex justify-between py-1.5"><dt className="text-muted">{l}</dt><dd className="text-ink">{kwh(v)}</dd></div>)}
                 </dl>
-                {!b.complete && <p className="text-xs text-amber-300 mt-2">Incomplete: {b.not_available.length ? b.not_available.join("; ") : "a point has under 95 % coverage"}.</p>}
+                {!b.complete && <p className="text-xs text-warn mt-2">Incomplete: {b.not_available.length ? b.not_available.join("; ") : "a point has under 95 % coverage"}.</p>}
             </div>
             <Table head={["Point", "Import", "Export", "Coverage", "Basis"]}>
                 {b.points.map((x) => (
                     <tr key={x.id}>
-                        <td className="py-1.5 pr-3">{x.name} <span className="text-slate-500 text-xs">{ROLE_LABEL[x.role] ?? x.role}</span></td>
+                        <td className="py-1.5 pr-3">{x.name} <span className="text-faint text-xs">{ROLE_LABEL[x.role] ?? x.role}</span></td>
                         <td className="py-1.5 pr-3">{x.import_kwh === null ? "–" : num(x.import_kwh)}</td>
                         <td className="py-1.5 pr-3">{x.export_kwh === null ? "–" : num(x.export_kwh)}</td>
                         <td className="py-1.5 pr-3">{Math.round(x.coverage * 100)} %</td>
-                        <td className="py-1.5 pr-3 text-xs text-slate-500">{x.method.replace("_", " ")}</td>
+                        <td className="py-1.5 pr-3 text-xs text-faint">{x.method.replace("_", " ")}</td>
                     </tr>
                 ))}
             </Table>

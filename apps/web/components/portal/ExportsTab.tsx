@@ -76,11 +76,11 @@ export function ExportsTab({ project }: { project: PortalProjectDetail }) {
                                 <td className="py-2 pr-4">{e.point_name}</td>
                                 <td className="py-2 pr-4">{e.interval}</td>
                                 <td className="py-2 pr-4 whitespace-nowrap text-xs">{fmtDateTime(e.from)} – {fmtDateTime(e.to)}</td>
-                                <td className="py-2 pr-4"><Badge tone={TONE[e.status]}>{e.status}</Badge>{e.error && <span className="ml-2 text-xs text-red-300">{e.error}</span>}</td>
-                                <td className="py-2 pr-4 text-xs text-slate-400">{e.rows !== null ? `${e.rows.toLocaleString()} rows · ${size(e.bytes)}` : ""}</td>
+                                <td className="py-2 pr-4"><Badge tone={TONE[e.status]}>{e.status}</Badge>{e.error && <span className="ml-2 text-xs text-bad">{e.error}</span>}</td>
+                                <td className="py-2 pr-4 text-xs text-muted">{e.rows !== null ? `${e.rows.toLocaleString()} rows · ${size(e.bytes)}` : ""}</td>
                                 <td className="py-2 text-right whitespace-nowrap">
-                                    {e.download_url && <a className="text-sm text-blue-300 hover:underline" href={apiUrl(e.download_url.replace(/^\/api/, ""))}>Download</a>}
-                                    {e.status === "done" && e.expires_at && <span className="ml-2 text-xs text-slate-500">until {fmtDateTime(e.expires_at)}</span>}
+                                    {e.download_url && <a className="text-sm text-accent hover:underline" href={apiUrl(e.download_url.replace(/^\/api/, ""))}>Download</a>}
+                                    {e.status === "done" && e.expires_at && <span className="ml-2 text-xs text-faint">until {fmtDateTime(e.expires_at)}</span>}
                                 </td>
                             </tr>
                         ))}
@@ -88,10 +88,10 @@ export function ExportsTab({ project }: { project: PortalProjectDetail }) {
                 )}
             </Panel>
 
-            <Panel title="From your own systems" subtitle="The same readings through the Grid-IQ API, with an API key (Settings → API keys).">
-                <pre className="text-xs bg-slate-950 border border-slate-800 rounded p-3 overflow-x-auto text-slate-300">{`curl -H "Authorization: Bearer $GRIDIQ_API_KEY" \\\n  "${example}"`}</pre>
-                <p className="mt-2 text-xs text-slate-500">
-                    Timestamps are UTC and period-ending; every row has its sample count, coverage and flags. <a className="text-blue-300 hover:underline" href={apiUrl("/docs/")} target="_blank" rel="noreferrer">API documentation</a>
+            <Panel title="From your own systems" subtitle="The same readings through the GridIQ API, with an API key (Settings → API keys).">
+                <pre className="text-xs bg-canvas border border-line rounded p-3 overflow-x-auto text-ink-3">{`curl -H "Authorization: Bearer $GRIDIQ_API_KEY" \\\n  "${example}"`}</pre>
+                <p className="mt-2 text-xs text-faint">
+                    Timestamps are UTC and period-ending; every row has its sample count, coverage and flags. <a className="text-accent hover:underline" href={apiUrl("/docs/")} target="_blank" rel="noreferrer">API documentation</a>
                 </p>
             </Panel>
         </div>

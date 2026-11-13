@@ -7,6 +7,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiSend, fmtDateTime, fmtDate, TZ_LABEL } from "@/lib/api";
 import { ROLE_LABEL } from "@/lib/ops";
 import { PageHeader, Panel, Table, Badge, Loading, ErrorBox, Empty, Button, Field, inputClass } from "@/components/ops/ui";
+import { AssetHistory } from "@/components/ops/AssetHistory";
 
 interface Deployment {
     id: string; installed_at: string; removed_at: string | null; point_name: string; role: string;
@@ -50,10 +51,10 @@ export default function DevicePage() {
                 actions={<>
                     <Badge tone={d.status === "deployed" ? "green" : d.status === "maintenance" ? "amber" : "grey"}>{d.status.replace("_", " ")}</Badge>
                     {open ? <Link href={`/ops/deployments/${open.id}`}><Button variant="secondary">Current deployment</Button></Link>
-                        : d.status !== "retired" && <Link href={`/ops/install?device=${d.id}`}><Button>Install</Button></Link>}
+                        : d.status !== "retired" && <Link href={`/ops/install?device=${d.id}`}><Button>Deploy</Button></Link>}
                 </>} />
 
-            <Panel title="Deployment history" subtitle={`Every place this box has measured. Times ${TZ_LABEL}.`}>
+            <Panel title="Deployment history" subtitle={`Every place this meter has measured. Times ${TZ_LABEL}.`}>
                 {d.deployments.length === 0 ? <Empty>Never deployed.</Empty> : (
                     <Table head={["Project", "Point", "Installed", "Removed", "Corrections", "Commissioning", ""]}>
                         {d.deployments.map((x) => (
@@ -72,6 +73,8 @@ export default function DevicePage() {
                     </Table>
                 )}
             </Panel>
+
+            <AssetHistory deviceId={d.id} deployed={!!open} />
 
             <Panel title="Asset details">
                 <form className="grid grid-cols-2 lg:grid-cols-3 gap-3" onSubmit={(e) => {

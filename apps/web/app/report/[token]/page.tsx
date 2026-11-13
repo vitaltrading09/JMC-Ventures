@@ -126,7 +126,7 @@ export default function PublicReportPage({ params }: { params: { token: string }
                     <FIcon className="h-10 w-10 text-slate-400 mx-auto" />
                     <h1 className="text-lg font-bold text-slate-900 mt-4">{f.title}</h1>
                     <p className="text-sm text-slate-600 mt-2 leading-relaxed">{f.body}</p>
-                    <p className="text-[11px] text-slate-400 mt-6">Grid-IQ Power Quality Intelligence</p>
+                    <p className="text-[11px] text-slate-400 mt-6">GridIQ Power Quality Intelligence</p>
                 </div>
             </div>
         );
@@ -143,7 +143,7 @@ export default function PublicReportPage({ params }: { params: { token: string }
                     <div className="mr-auto">
                         <p className="text-sm font-semibold text-white">Shared power quality report — read only</p>
                         <p className="text-xs text-slate-400">
-                            Issued by {data.branding.brand_name || "Grid-IQ"} ·
+                            Issued by {data.branding.brand_name || "GridIQ"} ·
                             {" "}Access expires {expires.toLocaleDateString("en-ZA", {
                                 day: "numeric", month: "long", year: "numeric",
                             })}

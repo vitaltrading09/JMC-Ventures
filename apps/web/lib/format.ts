@@ -16,21 +16,21 @@ export function toNum(v: unknown): number {
     return 0;
 }
 
+/** en-ZA grouping (space) with a decimal POINT everywhere, so 0.733 and 3.4 % read the same way. */
+function fmt(n: number, decimals: number): string {
+    const [i, f] = Math.abs(n).toFixed(decimals).split('.');
+    return `${n < 0 && Number(n.toFixed(decimals)) !== 0 ? '-' : ''}${i.replace(/\B(?=(\d{3})+(?!\d))/g, ' ')}${f ? `.${f}` : ''}`;
+}
+
 /** Rand currency with thousands separators. Defaults to whole Rands (no cents). */
 export function zar(v: unknown, decimals = 0): string {
     const n = toNum(v);
-    return `R ${n.toLocaleString('en-ZA', {
-        minimumFractionDigits: decimals,
-        maximumFractionDigits: decimals,
-    })}`;
+    return `R ${fmt(n, decimals)}`;
 }
 
 /** Plain number with thousands separators. */
 export function num(v: unknown, decimals = 0): string {
-    return toNum(v).toLocaleString('en-ZA', {
-        minimumFractionDigits: decimals,
-        maximumFractionDigits: decimals,
-    });
+    return fmt(toNum(v), decimals);
 }
 
 /**

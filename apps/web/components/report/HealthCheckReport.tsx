@@ -91,9 +91,9 @@ const SEVERITY_STYLE: Record<Severity, { bar: string; chip: string }> = {
 };
 
 const VERDICT: Record<string, { title: string; cls: string; icon: React.ElementType; ring: string }> = {
-    COMPLIANT:           { title: "Compliant",             cls: "text-emerald-700", icon: ShieldCheck, ring: "border-emerald-300 bg-emerald-50" },
-    COMPLIANT_WITH_RISK: { title: "Compliant — with risk", cls: "text-amber-700",   icon: ShieldAlert, ring: "border-amber-300 bg-amber-50" },
-    NON_COMPLIANT:       { title: "Non-compliant",         cls: "text-red-700",     icon: ShieldX,     ring: "border-red-300 bg-red-50" },
+    COMPLIANT:           { title: "Within screening thresholds", cls: "text-emerald-700", icon: ShieldCheck, ring: "border-emerald-300 bg-emerald-50" },
+    COMPLIANT_WITH_RISK: { title: "Within thresholds, with observations", cls: "text-amber-700",   icon: ShieldAlert, ring: "border-amber-300 bg-amber-50" },
+    NON_COMPLIANT:       { title: "Outside screening thresholds", cls: "text-red-700",     icon: ShieldX,     ring: "border-red-300 bg-red-50" },
     INSUFFICIENT_DATA:   { title: "Insufficient data",     cls: "text-slate-600",   icon: MinusCircle, ring: "border-slate-300 bg-slate-50" },
 };
 
@@ -250,11 +250,11 @@ export default function HealthCheckReport({
                 </div>
             </div>
 
-            {/* ── The two scores: whose problem is it? ───────────────────── */}
+            {/* ── Two indicative screening scores (not a certification; correlation does not locate a cause) ── */}
             <div className="pq-break grid grid-cols-2 gap-5 mt-6">
                 {[
-                    { label: "Supply quality",      sub: "Your utility's responsibility", score: report.supply_score },
-                    { label: "Installation health", sub: "Within your control to fix",    score: report.install_score },
+                    { label: "Supply quality",      sub: "Indicative score from voltage, frequency and THD-V at this point; does not establish the cause", score: report.supply_score },
+                    { label: "Installation health", sub: "Indicative score from PF, unbalance and load behaviour",    score: report.install_score },
                 ].map(s => (
                     <div key={s.label} className="rounded-xl border border-slate-200 p-5">
                         <p className="text-[11px] uppercase tracking-wider text-slate-500">{s.label}</p>
@@ -624,13 +624,13 @@ export default function HealthCheckReport({
             <div className="mt-10 pt-4 border-t border-slate-300 flex items-end justify-between text-xs text-slate-500">
                 <div>
                     <p className="font-semibold text-slate-700">
-                        {brand?.brand_name || "Grid-IQ"} Power Quality Intelligence
+                        {brand?.brand_name || "GridIQ"} Power Quality Intelligence
                     </p>
                     <p>
                         {brand?.brand_footer || "grid-iq.co.za"} · Confidential — prepared for {report.site_name}
                     </p>
                     {brand?.brand_name && (
-                        <p className="text-[10px] text-slate-400 mt-0.5">Analysis powered by Grid-IQ</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Analysis powered by GridIQ</p>
                     )}
                 </div>
                 <p>Continuous monitoring · next assessment in {report.period_days} days</p>

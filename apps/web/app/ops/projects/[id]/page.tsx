@@ -1,6 +1,6 @@
 "use client";
 
-// Internal project page: details, the live-data switch, measurement points
+// Internal project page: details, its assessments (client access), measurement points
 // (with the box at each), the energy balance, reports, tariffs and alert
 // thresholds. The client sees the same project in the portal (PR 2).
 
@@ -15,6 +15,8 @@ import { ROLE_LABEL } from "@/lib/ops";
 import { BalanceView, Balance } from "@/components/fleet/BalanceView";
 import { SldView } from "@/components/sld/SldView";
 import { PageHeader, Panel, Table, Badge, Loading, ErrorBox, Empty, Button, Field, inputClass } from "@/components/ops/ui";
+import { Assessment, STATUS_LABEL, STATUS_TONE } from "@/lib/assessments";
+import { PointBriefings } from "@/components/ops/PointBriefing";
 
 interface Point {
     id: string; name: string; role: string; parent_point_id: string | null; nominal_voltage_v: string | null;
@@ -24,10 +26,11 @@ interface Point {
 interface ProjectDetail {
     id: string; tenant_id: string; name: string; end_client_name: string | null; address: string | null; status: string;
     starts_on: string | null; ends_on: string | null; live_data_visible: boolean; notes: string | null; timezone: string;
+    gps_lat: number | null; gps_lon: number | null; site_context: Record<string, unknown> | null;
     points: Point[];
 }
 
-const DETAIL_FIELDS = ["name", "end_client_name", "address", "status", "starts_on", "ends_on", "notes"] as const;
+const DETAIL_FIELDS = ["name", "end_client_name", "address", "gps_lat", "gps_lon", "status", "notes"] as const;
 const SETTINGS_FIELDS: [string, string][] = [
     ["tariff_peak", "Peak tariff (R/kWh)"], ["tariff_standard", "Standard (R/kWh)"], ["tariff_offpeak", "Off-peak (R/kWh)"],
     ["tariff_demand", "Demand (R/kVA)"], ["contracted_mdi_kva", "Contracted MDI (kVA)"], ["alert_max_kw", "Alert above (kW)"],
@@ -62,15 +65,14 @@ export default function OpsProjectPage() {
             <PageHeader title={p.name} subtitle={[p.end_client_name, p.address].filter(Boolean).join(" · ") || undefined}
                 actions={<>
                     <Badge tone={p.status === "active" ? "green" : "grey"}>{p.status}</Badge>
-                    <label className="flex items-center gap-2 text-sm text-slate-300 border border-slate-700 rounded-lg px-3 py-1.5">
-                        <input type="checkbox" checked={p.live_data_visible}
-                            onChange={(e) => saveDetails.mutate({ live_data_visible: e.target.checked })} />
-                        client sees live data
-                    </label>
+                    <Link href="/ops/assessments?new=1"><Button>New assessment</Button></Link>
                 </>} />
-            {!p.live_data_visible && <p className="text-sm text-amber-300 -mt-3">Live data is hidden from the client until a report for this project is published.</p>}
+
+            <ProjectAssessments projectId={id} />
+            <SiteContext projectId={id} context={p.site_context ?? {}} onSaved={refresh} />
 
             <Points projectId={id} points={live} onChange={refresh} />
+            <PointBriefings points={live.map((x) => ({ id: x.id, name: x.name }))} />
 
             <Panel title="Metering layout" subtitle="Single-line diagram with the project's points pinned on it. Edit to upload the site's SLD PDF and place the points.">
                 <SldView projectId={id} editable />
@@ -84,7 +86,7 @@ export default function OpsProjectPage() {
                 <Panel title="Details">
                     <form className="grid grid-cols-2 gap-3" onSubmit={(e) => {
                         e.preventDefault();
-                        const body = Object.fromEntries(DETAIL_FIELDS.map((k) => [k, form[k] === "" ? null : form[k]]));
+                        const body = Object.fromEntries(DETAIL_FIELDS.map((k) => [k, form[k] === "" ? null : k.startsWith("gps_") ? Number(form[k]) : form[k]]));
                         saveDetails.mutate(body);
                     }}>
                         {DETAIL_FIELDS.map((k) => (
@@ -144,9 +146,9 @@ function Points({ projectId, points, onChange }: { projectId: string; points: Po
     };
     const byId = new Map(points.map((x) => [x.id, x]));
     return (
-        <Panel title="Measurement points" subtitle="Places on the site. The box at each comes from its active deployment."
+        <Panel title="Measurement points" subtitle="Places on the site. The meter at each comes from its active deployment."
             actions={<div className="flex gap-2">
-                <Link href="/ops/install"><Button variant="secondary">Install a box</Button></Link>
+                <Link href="/ops/install"><Button variant="secondary">Deploy meter</Button></Link>
                 <Button onClick={() => { setAdding(!adding); setEdit(null); setF(blank); }}><Plus className="h-4 w-4" />Point</Button>
             </div>}>
             {adding && (
@@ -214,6 +216,59 @@ function TariffSettings({ projectId, current }: { projectId: string; current?: R
                 <div className="col-span-3 flex items-center gap-2"><Button type="submit" disabled={save.isPending}>Save</Button>
                     {save.isSuccess && <span className="text-sm text-emerald-300">Saved</span>}</div>
                 <div className="col-span-3"><ErrorBox error={save.error} /></div>
+            </form>
+        </Panel>
+    );
+}
+
+/** The project's assessments: client access follows these, not a project switch. */
+function ProjectAssessments({ projectId }: { projectId: string }) {
+    const q = useQuery({ queryKey: ["assessments", projectId], queryFn: () => apiGet<Assessment[]>(`/ingestion/assessments?project_id=${projectId}`) });
+    return (
+        <Panel title="Assessments" subtitle="Clients see this site's data only through a live assessment they hold a grant on.">
+            {q.isLoading ? <Loading /> : q.error ? <ErrorBox error={q.error} /> : (q.data ?? []).length === 0
+                ? <Empty>No assessment: the client sees no data for this site. Existing (pre-GridIQ) sites need one created, with real dates.</Empty> : (
+                    <ul className="text-sm divide-y divide-slate-800">{(q.data ?? []).map((a) => (
+                        <li key={a.id} className="py-1.5 flex items-center gap-3">
+                            <Badge tone={STATUS_TONE[a.effective_status]}>{STATUS_LABEL[a.effective_status]}</Badge>
+                            <Link className="text-blue-300 hover:underline" href={`/ops/assessments/${a.id}`}>{a.reference}</Link>
+                            <span className="text-slate-400 flex-1">{a.title}</span>
+                            <span className="text-xs text-slate-500">{a.start_at ? `${fmtDateTime(a.start_at)} → ${fmtDateTime(a.effective_end_at)}` : "not started"}</span>
+                        </li>
+                    ))}</ul>
+                )}
+        </Panel>
+    );
+}
+
+const CONTEXT_FIELDS: [string, string, string][] = [
+    ["nominal_voltage", "Nominal voltage", "e.g. 400 V L-L / 230 V L-N, or 11 kV"],
+    ["wiring", "Wiring system", "3-phase 4-wire, 3-wire, single phase"],
+    ["supply", "Supply", "Eskom / municipal, tariff name, transformer kVA"],
+    ["measurement_location", "Measurement location", "PCC, main LV board, a feeder"],
+    ["fault_level", "Fault level (if known)", "kA or MVA, with source"],
+    ["operating_hours", "Operating hours", "e.g. Mon–Fri 06:00–18:00, Sat 07:00–12:00"],
+    ["major_loads", "Major loads", "motors, VSDs, compressors, ovens"],
+    ["pf_correction", "Capacitors / PF correction", "size, stages, detuned?"],
+    ["generation", "PV / inverters / generators / BESS", "sizes and where they connect"],
+    ["symptoms", "Reported symptoms", "nuisance trips, flicker, failed drives"],
+];
+
+/** Site context used by the analysis and reports (prompt section 10). */
+function SiteContext({ projectId, context, onSaved }: { projectId: string; context: Record<string, unknown>; onSaved: () => void }) {
+    const [f, setF] = useState<Record<string, string>>(() => Object.fromEntries(CONTEXT_FIELDS.map(([k]) => [k, String(context[k] ?? "")])));
+    const save = useMutation({
+        mutationFn: () => apiSend("PATCH", `/ingestion/projects/${projectId}`, { site_context: Object.fromEntries(Object.entries(f).filter(([, v]) => v.trim())) }),
+        onSuccess: onSaved,
+    });
+    return (
+        <Panel title="Site context" subtitle="What the reports and consultant may rely on. Unknown is better than guessed.">
+            <form className="grid md:grid-cols-2 lg:grid-cols-3 gap-3" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
+                {CONTEXT_FIELDS.map(([k, label, hint]) => (
+                    <Field key={k} label={label}><input className={inputClass} placeholder={hint} value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></Field>
+                ))}
+                <div className="flex items-end gap-2"><Button type="submit" disabled={save.isPending}>Save context</Button>
+                    {save.isSuccess && <span className="text-sm text-emerald-300">Saved</span>}<ErrorBox error={save.error} /></div>
             </form>
         </Panel>
     );
