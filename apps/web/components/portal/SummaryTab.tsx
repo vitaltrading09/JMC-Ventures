@@ -15,6 +15,7 @@ import { Panel, Empty } from "@/components/ops/ui";
 import { FindingTiles } from "@/components/portal/FindingTiles";
 import { Sparkline, InsightCard } from "@/components/portal/Insight";
 import { Journey } from "@/components/portal/Journey";
+import { MomentTeaser } from "@/components/portal/Closeups";
 import type { Assessment } from "@/lib/assessments";
 
 type Tab = ReturnType<typeof tabForEvidence>;
@@ -101,6 +102,8 @@ export function SummaryTab({ s, onTab, projectId, findings, cases, assessment }:
                     <p className="mt-1 text-sm text-ink-3">{open.length ? "see What we found below" : "nothing needs follow-up so far"}</p>
                 </a>
             </div>
+
+            {s.context.point?.id && <MomentTeaser projectId={projectId} pointId={s.context.point.id} findings={open} />}
 
             <section aria-labelledby="findings-h" className="scroll-mt-20">
                 <div className="flex items-baseline justify-between mb-3">

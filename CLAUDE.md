@@ -378,7 +378,9 @@ Acuvim II / AXM-WEB2 ──mqtts:8883──▶ mosquitto ──▶ ingest (ROLES
     the worst 1-minute values of the window (≥ 30 min apart), each with every stored reading around it (2 min before to
     3 after; ±15 min when the excursion runs off the frame, ±45 min for sparse meters) and `momentFacts`: exact extreme,
     phases, duration, the load just before and at it, and a reading `site | supply | unclear` with what to verify. After
-    the first, only moments beyond the level get a card. Web: `components/portal/Closeups.tsx` on the finding page.
+    the first, only moments beyond the level get a card. Web: `components/portal/Closeups.tsx` on the finding page;
+    `MomentTeaser` on the site overview ("The moment that stood out": the most urgent open finding that has a moment,
+    compact card linking to it; hidden when nothing crossed its level).
   - Point briefing (`src/point-context.ts`, migration `1793870000000_point-context`: `measurement_points.context`): the
     consultant's questions to staff per point (connection, supplier, transformer, loads, largest motor and start method,
     PF correction, generation, sensitive equipment, reported symptoms; follow-ups only when they apply). Staff:

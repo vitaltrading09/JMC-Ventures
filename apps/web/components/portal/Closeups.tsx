@@ -11,7 +11,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ComposedChart, Line, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
-import { Factory, UtilityPole, HelpCircle, MessageSquare, ZoomIn } from "lucide-react";
+import { Factory, UtilityPole, HelpCircle, MessageSquare, ZoomIn, ArrowRight, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { apiGet, fmtDateTime, TZ_LABEL } from "@/lib/api";
 import { num } from "@/lib/format";
@@ -25,6 +25,7 @@ type Row = Record<string, any>;
 type Moment = {
     at: string; from: string; to: string; value: number | null; unit: string; phase: string | null; headline: string; facts: string[];
     reading: "site" | "supply" | "unclear"; reading_text: string; cadence_s: number | null; threshold: number | null; series: Row[];
+    crossed?: boolean;
 };
 
 const SAST = 2 * 3_600_000;
@@ -85,7 +86,12 @@ export function Closeups({ projectId, pointId, kind, window, findingTitle }: {
     );
 }
 
-function Card({ m, i, kind, projectId, pointId, findingTitle }: { m: Moment; i: number; kind: MomentKind; projectId: string; pointId: string; findingTitle?: string }) {
+function Card({ m, i, kind, projectId, pointId, findingTitle, findingHref }: {
+    m: Moment; i: number; kind: MomentKind; projectId: string; pointId: string; findingTitle?: string;
+    /** Compact (the overview teaser): no number, the first fact and the reading only, one link to the finding. */
+    findingHref?: string;
+}) {
+    const compact = !!findingHref;
     const k = KIND[kind];
     const R = READING[m.reading];
     const [hover, setHover] = useState<number | null>(null);
@@ -100,10 +106,10 @@ function Card({ m, i, kind, projectId, pointId, findingTitle }: { m: Moment; i: 
     return (
         <article className="rounded-2xl bg-surface p-5 shadow-sm ring-1 ring-line">
             <header className="flex flex-wrap items-start gap-3">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-3 text-sm font-semibold text-ink-2" aria-hidden>{i + 1}</span>
+                {!compact && <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-3 text-sm font-semibold text-ink-2" aria-hidden>{i + 1}</span>}
                 <div className="min-w-0 flex-1">
                     <p className="text-sm tabular-nums text-muted">{fmtDateTime(m.at)}:{clock(atMs).slice(6)} {TZ_LABEL}</p>
-                    <h4 className="text-xl font-semibold leading-snug text-ink">{m.headline}</h4>
+                    <h4 className="text-lg sm:text-xl font-semibold leading-snug text-ink">{m.headline}</h4>
                 </div>
                 <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${R.cls}`}><R.icon className="h-3.5 w-3.5" aria-hidden />{R.label}</span>
             </header>
@@ -151,9 +157,14 @@ function Card({ m, i, kind, projectId, pointId, findingTitle }: { m: Moment; i: 
             </div>
 
             <ul className="mt-4 space-y-1.5 text-[15px] text-ink-2">
-                {m.facts.map((f, j) => <li key={j} className="flex gap-2"><span aria-hidden className="mt-2.5 h-1 w-1 shrink-0 rounded-full bg-current opacity-50" /><span>{f}</span></li>)}
+                {(compact ? m.facts.slice(1, 2) : m.facts).map((f, j) => <li key={j} className="flex gap-2"><span aria-hidden className="mt-2.5 h-1 w-1 shrink-0 rounded-full bg-current opacity-50" /><span>{f}</span></li>)}
             </ul>
             <p className={`mt-4 rounded-xl px-3.5 py-2.5 text-[15px] ring-1 ${R.cls.replace(/text-\S+/g, "")} text-ink-2`}>{m.reading_text}</p>
+            {compact ? (
+                <Link href={findingHref!} className="mt-4 inline-flex items-center gap-1.5 py-1 text-sm font-medium text-accent hover:underline">
+                    See the full story{findingTitle ? `: ${findingTitle}` : ""}<ArrowRight className="h-4 w-4" aria-hidden />
+                </Link>
+            ) : (
             <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1">
                 <button type="button" className="inline-flex items-center gap-1.5 py-1 text-sm font-medium text-accent hover:underline"
                     onClick={() => askConsultant(`Explain this moment${findingTitle ? ` of the finding "${findingTitle}"` : ""}: ${m.headline} at ${fmtDateTime(m.at)} ${TZ_LABEL}. What most likely happened and what should we check?`, { point_id: pointId, from: m.from, to: m.to })}>
@@ -164,7 +175,37 @@ function Card({ m, i, kind, projectId, pointId, findingTitle }: { m: Moment; i: 
                     <ZoomIn className="h-4 w-4" aria-hidden />See the hour around it
                 </Link>
             </div>
+            )}
         </article>
+    );
+}
+
+/**
+ * The overview teaser: the single most telling moment of the assessment so far,
+ * taken from the most urgent finding that has one, shown as a compact close-up
+ * with a link to that finding. Nothing is shown when no moment crossed its level.
+ */
+export function MomentTeaser({ projectId, pointId, findings }: { projectId: string; pointId: string; findings: any[] }) {
+    const f = [...findings].sort((a, b) => (a.priority ?? 3) - (b.priority ?? 3)).find((x) => momentKindOf(x.type));
+    const kind = f ? momentKindOf(f.type)! : null;
+    const win = f?.evidence?.from ? { from: f.evidence.from, to: f.evidence.to } : null;
+    const q = useQuery({
+        queryKey: ["moments", pointId, kind, win?.from, win?.to, 1],
+        enabled: !!kind,
+        queryFn: () => apiGet<{ moments: Moment[] }>(
+            `/ingestion/points/${pointId}/moments?kind=${kind}&limit=1${win ? `&from=${encodeURIComponent(win.from)}&to=${encodeURIComponent(win.to)}` : ""}`),
+        staleTime: 5 * 60_000,
+    });
+    if (!kind || !f) return null;
+    if (q.isLoading) return <Skeleton className="h-64 w-full" />;
+    const m = q.data?.moments?.[0];
+    if (!m || m.crossed === false) return null;
+    return (
+        <section aria-labelledby="moment-h">
+            <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-accent"><Sparkles className="h-3.5 w-3.5" aria-hidden />The moment that stood out</p>
+            <h2 id="moment-h" className="mt-1 mb-3 text-xl font-semibold text-ink">What the meter caught, {(m.cadence_s ?? 99) <= 1.5 ? "second by second" : "reading by reading"}</h2>
+            <Card m={m} i={0} kind={kind} projectId={projectId} pointId={pointId} findingTitle={f.title} findingHref={siteHref(projectId, "finding", { f: f.id })} />
+        </section>
     );
 }
 
